@@ -41,11 +41,14 @@ let test_self_check _ =
     | Error (`Invalid_packet) -> failwith "self_check: invalid packet"
     | Error `Incomplete_packet -> failwith "incomplete packet"
   | Error _ -> failwith "self_check ascii armor"
-  | Ok (_, pkt_body, next) ->
-    (Public_key_packet.parse_packet pkt_body >>= fun (`DSA pub) ->
+  | Ok (tag, pkt_body, next) ->
+    (Openpgp.parse_packet tag pkt_body >>=
+    begin function
+    | (`DSA pub) ->
     R.ok @@ Printf.printf "\nPkt len:%d - got a DSA key: %s\n"
       Cstruct.(len pkt_body) Public_key_packet.(v4_key_id pkt_body)
-    );()
+    | _ -> R.error `Invalid_packet
+    end);()
   end
 
 let suite = [

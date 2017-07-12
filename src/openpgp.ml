@@ -1,6 +1,5 @@
 open Rresult
 open Types
-open Cs
 open Pervasives (* TODO only for debugging *)
 
 (* TODO
@@ -79,10 +78,23 @@ let decode_ascii_armor (buf : Cstruct.t) =
   else
     Error `Invalid_crc24
 
-let next_packet (full_buf : Cs.t) : ((packet_type * Cs.t * Cs.t) option, [>`Invalid_packet | `Unimplemented_feature of string | `Incomplete_packet]) result =
+let parse_packet packet_tag pkt_body =
+  begin match packet_tag with
+    | Public_key -> Public_key_packet.parse_packet pkt_body
+    | User_id -> Uid_packet.parse_packet pkt_body
+    | Signature -> R.ok `Signature
+  end
+
+let next_packet (full_buf : Cs.t) :
+  ((packet_type * Cs.t * Cs.t) option,
+   [>`Invalid_packet
+   | `Unimplemented_feature of string
+   | `Incomplete_packet]) result =
   if Cs.len full_buf = 0 then Ok None else
   consume_packet_header full_buf
-  |> R.reword_error (function `Incomplete_packet as i -> i |`Invalid_packet_header -> `Invalid_packet)
+  |> R.reword_error (function
+      |`Incomplete_packet as i -> i
+      |`Invalid_packet_header -> `Invalid_packet)
   >>= begin function
   | { new_format ; length_type ; packet_tag } , pkt_header_tl ->
     consume_packet_length length_type pkt_header_tl

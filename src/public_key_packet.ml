@@ -47,6 +47,8 @@ let parse_dsa_asf buf : ([> `DSA of Nocrypto.Dsa.pub], 'error) result =
   consume_mpi buf >>= fun (y , buf) ->
   (* TODO Z.probab_prime p *)
   (* TODO Z.probab_prime q *)
+    (* TODO > val Nocrypto.Numeric.pseudoprime : Z.t -> bool *)
+
   (* TODO Z.numbits gg *)
   (* TODO Z.numbits y *)
 
