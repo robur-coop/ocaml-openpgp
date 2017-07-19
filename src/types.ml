@@ -41,32 +41,33 @@ let string_of_ascii_packet_type =
     | Ascii_signature -> "SIGNATURE"
   end
 
-type packet_type =
-  | Signature
-  | Secret_key
-  | Public_key
-  | Secret_subkey_packet
-  | User_id
-  | Public_key_subpacket
+type packet_tag_type =
+  | Signature_tag
+  | Secret_key_tag
+  | Public_key_tag
+  | Secret_subkey_packet_tag
+  | Uid_tag
+  | User_attribute_tag
+  | Public_key_subpacket_tag
 
 (* see RFC 4880: 4.3 Packet Tags *)
-let packet_enum =
+let packet_tag_enum =
   (* note that in OCaml \XXX is decimal, not octal *)
   [ (* '\001', Public-Key Encrypted Session Key Packet *)
-    ('\002', Signature)
+    ('\002', Signature_tag)
     (* '\003', Symmetric-Key Encrypted Session Key Packet*)
     (* '\004', One-Pass Signature Packet *)
-  ; ('\005', Secret_key)
-  ; ('\006', Public_key)
-  ; ('\007', Secret_subkey_packet)
+  ; ('\005', Secret_key_tag)
+  ; ('\006', Public_key_tag)
+  ; ('\007', Secret_subkey_packet_tag)
     (* '\008', Compressed Data Packet *)
     (* '\009', Symmetrically Encrypted Data Packet *)
     (* '\010', Marker Packet *)
     (* '\011', Literal Data Packet *)
     (* '\012', Trust Packet *)
-  ; ('\013', User_id)
-  ; ('\014', Public_key_subpacket)
-    (* '\017', User Attribute Packet *)
+  ; ('\013', Uid_tag)
+  ; ('\014', Public_key_subpacket_tag)
+  ; '\017', User_attribute_tag (*User Attribute Packet *)
     (* '\018', Symmetrically Encrypted and Integrity Protected Data Packet *)
     (* '\019', Modification Detection Code Packet *)
   ]
@@ -176,11 +177,11 @@ let rec find_enum_sumtype needle = function
 | (value, sumtype)::_ when value = needle -> Ok sumtype
 | _::tl -> find_enum_sumtype needle tl
 
-let packet_type_of_char needle =
-  find_enum_sumtype needle packet_enum
+let packet_tag_type_of_char needle =
+  find_enum_sumtype needle packet_tag_enum
 
-let int_of_packet_type (needle:packet_type) =
-  (find_enum_value needle packet_enum
+let int_of_packet_tag_type (needle:packet_tag_type) =
+  (find_enum_value needle packet_tag_enum
   >>= fun c -> Ok (int_of_char c)
   ) |> R.get_ok
 
@@ -402,7 +403,7 @@ let consume_packet_length length_type buf : ((Cs.t * Cs.t), [`Invalid_length | `
 (* https://tools.ietf.org/html/rfc4880#section-4.2 : Packet Headers *)
 type packet_header =
   { length_type : packet_length_type option
-  ; packet_tag  : packet_type
+  ; packet_tag  : packet_tag_type
   ; new_format  : bool
   }
 
@@ -410,11 +411,11 @@ let char_of_packet_header ph : (char,'error) result =
   begin match ph with
     | {new_format ; packet_tag; _} when new_format = true ->
       (1 lsl 6) lor (* 1 bit, new_format = true *)
-      (int_of_packet_type packet_tag) (* 6 bits*)
+      (int_of_packet_tag_type packet_tag) (* 6 bits*)
       |> R.ok
     | {new_format; packet_tag; length_type = Some length_type;} when new_format = false ->
       ((int_of_packet_length_type length_type) land 0x3) (* 2 bits *)
-      lor (((int_of_packet_type packet_tag) land 0xf) lsl 2) (* 4 bits *)
+      lor (((int_of_packet_tag_type packet_tag) land 0xf) lsl 2) (* 4 bits *)
       |> R.ok
   | _ -> R.error `Invalid_packet_header
   end
@@ -436,10 +437,10 @@ let packet_header_of_char (c : char) : (packet_header,'error) result =
   begin match new_format with
   | true ->
       bits_5_through_0 c_int |> Char.chr
-      |> packet_type_of_char
+      |> packet_tag_type_of_char
       >>= fun pt -> R.ok (pt, None)
   | false ->
-      packet_type_of_char (Char.chr (bits_5_through_2 c_int))
+      packet_tag_type_of_char (Char.chr (bits_5_through_2 c_int))
       >>= fun packet_tag ->
       let length_type = bits_1_through_0 c_int
                      |> packet_length_type_of_int
@@ -486,14 +487,6 @@ let v4_verify_version (buf : Cs.t) :
     R.error (`Unimplemented_version version)
   else
     R.ok ()
-
-module type Packet_type_S =
-  sig
-    type t
-    val deserialize : Cs.t -> (t, 'error) result
-    val serialize : t -> (Cs.t, 'error) result
-    val tags : packet_type list
-  end
 
 let dsa_asf_are_valid_parameters ~(p:Z.t) ~(q:Z.t) ~hash_algo =
   (* From RFC 4880 (we whitelist these parameters): *)

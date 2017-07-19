@@ -1,9 +1,8 @@
-version = "0.1"
 description = "OpenPGP (RFC 4880) library"
+version = "%%VERSION_NUM%%"
 requires = "rresult qcheck oUnit"
 archive(byte) = "openpgp.cma"
 plugin(byte) = "openpgp.cma"
 archive(native) = "openpgp.cmxa"
 plugin(native) = "openpgp.cxms"
 exists_if = "openpgp.cma"
-

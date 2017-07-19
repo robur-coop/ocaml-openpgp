@@ -3,7 +3,7 @@ open QCheck.Test
 open Rresult
 open OUnit2
 open Public_key_packet
-
+open Openpgp
 
 let test_pkp_cstruct = Cs.of_string
 "-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: GnuPG v1\n\nmQMuBFkOBx0RCADSbRim2QNp+1nZKePQ7Oc8TmYXSdP/789Uitw7KVG4vpWsQ49k\nP/GqCbWcCGVoiMg3UVVCBR6KxEvc33TMfsicoLN8ucVXF6RXwFcyBIh0aFRBhNvI\nTj1jvGmOP9QGCYUUXUZ92AXw9LPtK13mC0DjUlPcQ2rpzw5+MZItU1GcJOI1bSyF\nc11gHGm16zs999KCr3ufK0cHvMTbnHPYNPzcj2QVaKiRjp0BpGAtzTQZ29igW00r\nQZqhz38bBvsSU1HdLl8SqiyxGv/+jvnS2HYsWjJBD8oFn4+4Qol3YBdWZBZbJhQ4\nPMxdUQXdGUIjXKLUguwvnqiA7UVsSHverq9zAQDcpJDs4KZIDSKUJR97yNMjf9so\n6HuU4y6yitSrDIKJPQf6Al3ndlyVtfmXsZz/1zDQ1qCsYauQjE6fO2XqOrkOtzz+\n8KP3sizP/CzADJO8YUSJKT+I29ZtQ5zlnDILpv9fWhgOiw9XhaC0BOsC+8DQxZCB\nw6kodbUWk03IFGiqAPNNKMFZZHb9B4sC8+G2c/TYnzMJGuPcf/tZaUqi73CThgqk\nCSiAsSWV3D+OaJpCeTsPa4lzpV5tEZjaZbejXUhgvapkVmRsLGvlDSzuu0srKyXu\n17VYwkjI8YSTfMHxrFJQoAzeRd0KmKkwofi/4HISwGMBq6KV0Ri5Falyk4lmC3LV\nPLR8VEzB4NTihzRWxeimfGcqzodwjc7d4sLSFXVnFQgAxt1Aet64bLtiH8UqdfNx\nvC7tkNW3CoPWm1qhCe2kYzeEw7nrpATrHZb4BeGCCGuJN+a10P5vbQo6xTgaTjbX\nlwGcuWAN3JPLCnYBzIgaXawr2uaLUj8ngZFwo5+z2VlzSKbP68L/Te9sJA0kR5uu\nIGBFvtt1f36adWzN9drP+ik6vMq6i2v8W0NIk4Ox3YKvkzxFyNSxG0e97UCjZzkV\nxdehIja5kegD0LpCwxUByisOBm0ZAvUyju1o1PYsTkdIq1+HMuKNdcEvqxgYXRVV\nTRyJWRE3c/s6SapkyFnUgQ8rpFJB9szksLcVihSO2TlycQltK/Kd/cMx01as7ghJ\nVrQFeWVsbG+IewQTEQgAIwUCWQ4HHQIbAwcLCQgHAwIBBhUIAgkKCwQWAgMBAh4B\nAheAAAoJEGgDEFdHybWaw+8A/0qmk8I3NV0HDKqmcYyOZLfcQvUbcbd1LUNWBM7A\n2lUyAP9PWi8vXliL2D5oXAD4HR3lyfSbd4+sI9u5gmOXG1CNZQ==\n=WdLf\n-----END PGP PUBLIC KEY BLOCK-----"
@@ -48,7 +48,7 @@ let test_self_check _ =
   | Ok (tag, pkt_body, _) ->
     (Openpgp.parse_packet tag pkt_body >>=
     begin function
-    | (`Public_key_packet {algorithm_specific_data = Public_key_packet.DSA_pubkey_asf pub; _}) ->
+    | (Public_key_packet {algorithm_specific_data = Public_key_packet.DSA_pubkey_asf pub; _}) ->
       let()=Printf.printf "\nPkt len:%d - got a %d-bit DSA key: %s\n"
           Cstruct.(len pkt_body) Z.(numbits pub.p) Public_key_packet.(v4_key_id pkt_body) in
       R.ok ()
@@ -65,18 +65,23 @@ let test_verify_signature _ =
   >>= fun pkt_lst ->
   let pk_t, pk_cs =
     begin match List.nth pkt_lst 0 with
-      | `Public_key_packet x , x_cs_tl -> x , x_cs_tl
+      | Public_key_packet x , x_cs_tl -> x , x_cs_tl
       | _ -> failwith "x" end
   in
   let sig_t , sig_cs =
     begin match List.nth pkt_lst 2 with
-      | `Signature_packet res, pkt ->
+      | Signature_packet res, pkt ->
         res, pkt
       | _ -> failwith "verify what?" end
   in
   let first_pkts = [Cstruct.of_bigarray ~len:(sig_cs.off) sig_cs.buffer ] in
+  let packet_tags =
+    let (p,cs) = List.split pkt_lst in
+    let p = List.map Openpgp.packet_tag_of_packet p in
+    List.combine p cs
+  in
   let()=Printf.printf "going to verify everything before %d (%d bytes)\n" sig_cs.off (List.hd first_pkts |> Cs.len)in
-  Signature_packet.verify pkt_lst pk_t sig_t
+  Openpgp.Signature.verify packet_tags pk_t
   |> R.reword_error (fun a -> 31337,a)
  ) with
   | Error (_,`Invalid_signature) ->
@@ -90,11 +95,31 @@ let test_verify_signature _ =
   | Error (_,(`Cstruct_invalid_argument _
              | `Cstruct_out_of_memory)) -> Printf.printf "cstruct fuck"
   | Error (_,`Unimplemented_version _) -> Printf.printf "version bullshit"
+  | Error (_, `Extraneous_packets_after_signature) -> Printf.printf "extraneous data after signature\n"
   | Ok _ -> Printf.printf "------ good signature\n"
   end; ()
+
+let test_keys _ =
+  let files =
+    let dh = Unix.opendir "test/keys/" in
+    let rec loop acc =
+      begin match Unix.readdir dh with
+        | f when Unix.((stat f).st_kind) <> Unix.S_REG ->
+          loop acc
+        | ".." | "." |"" -> loop acc
+        | f  ->
+          loop (f::acc)
+        | exception End_of_file -> Unix.closedir dh; acc
+      end
+    in
+    loop []
+  in
+  files ;
+  ()
 
 let suite = [
   "unpack_ascii_armor" >:: test_unpack_ascii_armor;
   "self_check" >:: test_self_check;
   "verify_signature" >:: test_verify_signature;
+  "keys" >:: test_keys;
   ]

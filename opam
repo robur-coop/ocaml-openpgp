@@ -6,41 +6,46 @@ homepage: "https://github.com/cfcs/ocaml-openpgp"
 dev-repo: "https://github.com/cfcs/ocaml-openpgp.git"
 bug-reports: "https://github.com/cfcs/ocaml-openpgp/issues"
 
-available: [ ocaml-version >= "4.03.0" ]
+available: [ ocaml-version >= "4.04.0"
+| os != "windows"
+]
 
 remove: [
-  ["ocamlfind" "remove" "openpgp"]
+  ["ocamlfind" "remove" "%{name}"]
 ]
 install: [
-  ["ocamlfind" "install" "openpgp"]
+  ["ocamlfind" "install" "%{name}"]
 ]
 build: [
   ["ocaml" "pkg/pkg.ml" "build" "--tests" "false"
-     "--with-mirage"
-       "%{mirage-protocols-lwt+lwt+tcpip:installed}"
-     "--with-lwt"
-       "%{lwt:installed}"
+     "--pkg-name"
+       "%{name}"
   ]
 ]
 build-test: [
-  ["ocaml" "pkg/pkg.ml" "build" "--tests" "true" ]
+  ["ocaml" "pkg/pkg.ml" "build" "--tests" "true"
+   "--pkg-name"
+     "%{name}"
+  ]
   ["ocaml" "pkg/pkg.ml" "test" ]
 ]
 
 depends: [
   "ocamlbuild" {build}
   "ocamlfind" {build}
+  "odoc" {build & doc}
   "oUnit" {test}
   "qcheck" {test}
   "cstruct"
   "usane"
   "hex"
   "nocrypto"
+  "cmdliner" (* { name = "openpgp-cli" } *)
 ]
+
+flags: [ light-uninstall ]
+
 depopts: [
-  (* for the lwt wrapper *)
-    "lwt"
-    "mirage"
 ]
 conflicts: [
 ]
