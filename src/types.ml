@@ -8,14 +8,18 @@ end
 type public_key_algorithm =
   | RSA_encrypt_or_sign
   | RSA_sign_only
+  | Elgamal_encrypt_only
   | DSA
 
 let public_key_algorithm_enum =
   (* RFC 4880: 9.1 Public-Key Algorithms *)
   [ '\001', RSA_encrypt_or_sign
   ; '\003', RSA_sign_only
+  ; '\016', Elgamal_encrypt_only
   ; '\017', DSA
   ]
+
+type mpi = Z.t
 
 type ascii_packet_type =
   | Ascii_public_key_block
@@ -67,10 +71,101 @@ let packet_enum =
     (* '\019', Modification Detection Code Packet *)
   ]
 
+type signature_type =
+  (* RFC 4880: 5.2.1 Signature Types *)
+  | Signature_of_binary_document
+  | Signature_of_canonical_text_document
+  | Standalone_signature
+  | Generic_certification_of_user_id_and_public_key_packet
+  | Persona_certification_of_user_id_and_public_key_packet
+  | Casual_certification_of_user_id_and_public_key_packet
+  | Positive_certification_of_user_id_and_public_key_packet
+  | Subkey_binding_signature
+  | Primary_key_binding_signature
+  | Signature_directly_on_key
+  | Key_revocation_signature
+  | Subkey_revocation_signature
+  | Certification_revocation_signature
+  | Timestamp_signature
+  | Third_party_confirmation_signature
+
+let signature_type_enum =
+   [ '\x00', Signature_of_binary_document
+  ; '\x01', Signature_of_canonical_text_document
+  ; '\x02', Standalone_signature
+  ; '\x10', Generic_certification_of_user_id_and_public_key_packet
+  ; '\x11', Persona_certification_of_user_id_and_public_key_packet
+  ; '\x12', Casual_certification_of_user_id_and_public_key_packet
+  ; '\x13', Positive_certification_of_user_id_and_public_key_packet
+  ; '\x18', Subkey_binding_signature
+  ; '\x19', Primary_key_binding_signature
+  ; '\x1f', Signature_directly_on_key
+  ; '\x20', Key_revocation_signature
+  ; '\x28', Subkey_revocation_signature
+  ; '\x30', Certification_revocation_signature
+    ; '\x40', Timestamp_signature
+    ; '\x50', Third_party_confirmation_signature
+  ]
+
+type signature_subpacket_type =
+  | Signature_creation_time
+  | Signature_expiration_time
+  | Exportable_certification
+  | Trust_signature
+  | Regular_expression
+  | Revocable
+  | Key_expiration_time
+  | Preferred_symmetric_algorithms
+  | Revocation_key
+  | Issuer
+  | Notation_data
+  | Preferred_hash_algorithms
+  | Preferred_compression_algorithms
+  | Key_server_preferences
+  | Preferred_key_server
+  | Primary_user_id
+  | Policy_URI
+  | Key_flags
+  | Signers_user_id
+  | Reason_for_revocation
+  | Features
+  | Signature_target
+  | Embedded_signature
+
+type hash_algorithm =
+  (* RFC 4880: 9.4 Hash Algorithms *)
+  | MD5
+  | SHA1
+  | SHA256
+  | SHA384
+  | SHA512
+  | SHA224
+  (* TODO RIPE-MD/160 *)
+
+let nocrypto_module_of_hash_algorithm : hash_algorithm -> (module Nocrypto.Hash.S) =
+  begin function
+    | MD5 -> (module Nocrypto.Hash.MD5)
+    | SHA1 -> (module Nocrypto.Hash.SHA1)
+    | SHA256 -> (module Nocrypto.Hash.SHA256)
+    | SHA384 -> (module Nocrypto.Hash.SHA384)
+    | SHA512 -> (module Nocrypto.Hash.SHA512)
+    | SHA224 -> (module Nocrypto.Hash.SHA224)
+  end
+
+let hash_algorithm_enum =
+  [ '\001', MD5
+  ; '\002', SHA1
+  ; '\008', SHA256
+  ; '\009', SHA384
+  ; '\010', SHA512
+  ; '\011', SHA224
+  ]
+
 type search_enum =
   | Enum_value
   | Enum_sumtype
 
+(* TODO consider just failwith if not matched *)
 let rec find_enum_value needle = function
 | [] -> Error `Unmatched_enum_sumtype
 | (value, sumtype)::_ when sumtype = needle -> Ok value
@@ -91,6 +186,12 @@ let int_of_packet_type (needle:packet_type) =
 
 let public_key_algorithm_of_char needle =
   find_enum_sumtype needle public_key_algorithm_enum
+  |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
+
+let public_key_algorithm_of_cs_offset cs offset =
+  Cs.e_get_char `Incomplete_packet cs offset
+  >>= fun pk_algo_c ->
+  public_key_algorithm_of_char pk_algo_c
 
 let char_of_public_key_algorithm needle =
   find_enum_value needle public_key_algorithm_enum
@@ -98,6 +199,30 @@ let char_of_public_key_algorithm needle =
 
 let int_of_public_key_algorithm needle =
   char_of_public_key_algorithm needle |> int_of_char
+
+let char_of_signature_type needle =
+  find_enum_value needle signature_type_enum |> R.get_ok
+
+let signature_type_of_char needle =
+  find_enum_sumtype needle signature_type_enum
+  |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
+
+let signature_type_of_cs_offset cs offset =
+  Cs.e_get_char `Incomplete_packet cs offset
+  >>= fun signature_type_c ->
+  signature_type_of_char signature_type_c
+
+let hash_algorithm_of_char needle =
+  find_enum_sumtype needle hash_algorithm_enum
+  |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
+
+let hash_algorithm_of_cs_offset cs offset =
+  Cs.e_get_char `Incomplete_packet cs offset
+  >>= fun hash_algo_c ->
+  hash_algorithm_of_char hash_algo_c
+
+let char_of_hash_algorithm needle =
+  find_enum_value needle hash_algorithm_enum |> R.get_ok
 
 let mpi_len buf : (Uint16.t, 'error) result =
   (* big-endian 16-bit integer len *)
@@ -121,7 +246,21 @@ let mpi_len buf : (Uint16.t, 'error) result =
   in
   search 0
 
-let consume_mpi buf : (Z.t * Cs.t, 'error) result =
+let cs_of_mpi_no_header mpi : Cs.t =
+  Z.to_bits mpi
+  |> Cs.of_string
+  (* TODO |> strip trailing section of nullbytes *)
+  |> Cs.reverse
+
+let cs_of_mpi mpi : (Cs.t, 'error) result =
+  let mpi_body = cs_of_mpi_no_header mpi in
+  mpi_len mpi_body >>= fun body_len ->
+  let mpi_header = Cs.create 2 in
+  Cs.BE.set_uint16 mpi_header 0 body_len
+  >>= fun mpi_header ->
+  R.ok (Cs.concat [mpi_header; mpi_body])
+
+let consume_mpi buf : (mpi * Cs.t, 'error) result =
   (*
    Multiprecision integers (also called MPIs) are unsigned integers used
    to hold large integers such as the ones used in cryptographic
@@ -134,21 +273,10 @@ let consume_mpi buf : (Z.t * Cs.t, 'error) result =
   Cs.BE.e_get_uint16 `Incomplete_packet buf 0
   >>= fun bitlen ->
   let bytelen = (bitlen + 7) / 8 in
+  let()= Printf.printf "going to read%d %S\n" bytelen (Cs.to_string buf) in
   Cs.e_split ~start:2 `Incomplete_packet buf bytelen
   >>= fun (this_mpi , buf_tl) ->
-
-  let reverse_cs cs : string =
-  (* Zarith hides the function for reading little-endian unsigned integers under
-     the name "to_bits".
-     In the spirit of wasting time, the author(s) encourages
-     kindly doing your own bloody string reversing if you want to
-     use Zarith for real-world protocols: *)
-    let out_buf = Buffer.create (Cstruct.len cs) in
-      (for i = Cstruct.(len cs)-1 downto 0 do
-        Buffer.add_char out_buf Cstruct.(get_char cs i)
-      done ; Buffer.contents out_buf)
-  in
-  R.ok ((Z.of_bits (reverse_cs this_mpi)), buf_tl)
+  R.ok ((Z.of_bits (Cs.reverse this_mpi |> Cs.to_string)), buf_tl)
 
 let crc24 (buf : Cs.t) : Cstruct.t =
 (* adopted from the C reference implementation in RFC 4880:
@@ -348,17 +476,16 @@ let () =
   Printf.printf ":%s:\n" Cstruct.(to_string x)
  *)
 
-module Uid_packet = struct
-  let parse_packet (buf : Cs.t) : ('a,'error) result =
-    (* 5.11.  User ID Packet (Tag 13)
-   A User ID packet consists of UTF-8 text that is intended to represent
-   the name and email address of the key holder.  By convention, it
-   includes an RFC 2822 [RFC2822] mail name-addr, but there are no
-   restrictions on its content.  The packet length in the header
-       specifies the length of the User ID.*)
-    (* TODO UTF-8 validation *)
-    R.ok (`UID (Cs.to_string buf))
-end
+let v4_verify_version (buf : Cs.t) :
+  (unit ,
+   [> `Unimplemented_version of char
+   | `Incomplete_packet]) result =
+  Cs.e_get_char `Incomplete_packet buf 0
+  >>= fun version ->
+  if version <> '\x04' then
+    R.error (`Unimplemented_version version)
+  else
+    R.ok ()
 
 module type Packet_type_S =
   sig
@@ -366,4 +493,20 @@ module type Packet_type_S =
     val deserialize : Cs.t -> (t, 'error) result
     val serialize : t -> (Cs.t, 'error) result
     val tags : packet_type list
+  end
+
+let dsa_asf_are_valid_parameters ~(p:Z.t) ~(q:Z.t) ~hash_algo =
+  (* From RFC 4880 (we whitelist these parameters): *)
+  (*   DSA keys MUST also be a multiple of 64 bits, *)
+  (*   and the q size MUST be a multiple of 8 bits. *)
+  (*   1024-bit key, 160-bit q, SHA-1, SHA-224, SHA-256, SHA-384, or SHA-512 hash *)
+  (*   2048-bit key, 224-bit q, SHA-224, SHA-256, SHA-384, or SHA-512 hash *)
+  (*   2048-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
+  (*   3072-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
+  begin match Z.numbits p , Z.numbits q, hash_algo with
+    | 1024 , 160 ,(SHA1|SHA224|SHA256|SHA384|SHA512) ->
+        R.ok ()
+    | 2048 , 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
+    | (2048|3072), 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
+    | _ , _ , _ -> R.error `Nonstandard_DSA_parameters
   end

@@ -80,9 +80,18 @@ let decode_ascii_armor (buf : Cstruct.t) =
 
 let parse_packet packet_tag pkt_body =
   begin match packet_tag with
-    | Public_key -> Public_key_packet.parse_packet pkt_body
-    | User_id -> Uid_packet.parse_packet pkt_body
-    | Signature -> R.ok `Signature
+    | Public_key ->
+      (Public_key_packet.parse_packet pkt_body)
+      >>| (fun pk -> `Public_key_packet pk)
+    | Public_key_subpacket ->
+      (Public_key_packet.parse_packet pkt_body)
+      >>| (fun pk -> `Public_key_subpacket pk)
+    | User_id ->
+      Uid_packet.parse_packet pkt_body
+    | Signature ->
+      Signature_packet.parse_packet pkt_body
+      >>= fun signature ->
+      R.ok (`Signature_packet signature)
   end
 
 let next_packet (full_buf : Cs.t) :
@@ -106,3 +115,20 @@ let next_packet (full_buf : Cs.t) :
       >>= fun (pkt_body, next_packet) ->
       Ok (Some (packet_tag , pkt_body, next_packet))
   end
+
+let parse_packets cs : (('ok * Cs.t) list, int * 'error) result =
+  (* TODO: 11.1.  Transferable Public Keys *)
+  let rec loop acc cs_tl =
+    next_packet cs_tl
+    |> R.reword_error (fun a -> cs_tl.Cstruct.off, a)
+    >>= begin function
+      | Some (packet_type , pkt_body, next_tl) ->
+        (parse_packet packet_type pkt_body
+        |> R.reword_error (fun e -> List.length acc , e))
+        >>= fun parsed ->
+        loop ((parsed,pkt_body)::acc) next_tl
+      | None ->
+        R.ok (List.rev acc)
+    end
+  in
+  loop [] cs

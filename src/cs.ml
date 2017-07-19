@@ -6,7 +6,7 @@ type cstruct_exception =
   [ `Cstruct_invalid_argument of string
   | `Cstruct_out_of_memory ]
 
-  let wrap_invalid_argument f : ('ok , cstruct_exception)result =
+  let wrap_invalid_argument f : ('ok , [>cstruct_exception])result =
     begin try R.ok @@ f () with
           | Invalid_argument s ->
              Error (`Cstruct_invalid_argument s)
@@ -53,6 +53,12 @@ module BE = struct
     wrap_f_buf_offset Cstruct.BE.get_uint32 buf offset
   let e_get_uint32 e buf offset =
     wrap_err e (get_uint32 buf offset)
+
+  let set_uint16 buf offset (int16 : Usane.Uint16.t) =
+    wrap_invalid_argument (fun()->
+        (Cstruct.BE.set_uint16 buf offset int16); buf)
+  let e_set_uint16 e buf offset int16 =
+    wrap_err e (set_uint16 buf offset int16)
 end
 
   let of_hex str = begin
@@ -74,6 +80,20 @@ let len = Cstruct.len
 let of_string = Cstruct.of_string
 let create = Cstruct.create
 let blit = Cstruct.blit
+let concat = Cstruct.concat (*TODO wrap exceptions *)
+
+let reverse cs : t =
+  (* Zarith hides the function for reading little-endian unsigned integers under
+     the name "to_bits".
+     In the spirit of wasting time, the author(s) encourages
+     kindly doing your own bloody string reversing if you want to
+     use Zarith for real-world protocols: *)
+  let out_buf = Buffer.create (Cstruct.len cs) in
+    (for i = Cstruct.(len cs)-1 downto 0 do
+      Buffer.add_char out_buf Cstruct.(get_char cs i)
+    done ;
+     Buffer.contents out_buf
+    )|> of_string
 
   (* find char [c] in [b], starting at [offset] and giving up after [max_offset] *)
   let index b ?(max_offset) ?(offset=0) c =
