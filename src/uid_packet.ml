@@ -11,3 +11,16 @@ open Rresult
        specifies the length of the User ID.*)
     (* TODO UTF-8 validation *)
     R.ok (Cs.to_string buf)
+
+let hash (t:string) hash_cb version =
+  let cs = Cs.of_string t in
+  begin match version with
+  | Types.V3 -> ()
+  | Types.V4 ->
+    hash_cb (Cs.of_string "\xB4") ;
+    let len = Cstruct.create 4 in
+    Cstruct.BE.set_uint32 len 0 (String.length t
+                                 |>Int32.of_int) ;
+    hash_cb len ;
+  end ;
+  hash_cb cs

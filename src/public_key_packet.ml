@@ -16,7 +16,7 @@ type t =
   ; algorithm_specific_data : public_key_asf
   }
 
-let hash_public_key ~pk_body (hash_cb : Cs.t -> unit) : unit =
+let hash_public_key pk_body (hash_cb : Cs.t -> unit) : unit =
   let to_be_hashed =
   let buffer = Buffer.create 100 in
   (* a.1) 0x99 (1 octet)*)
@@ -48,7 +48,7 @@ let v4_fingerprint ~(pk_body:Cs.t) : Cs.t =
     (val (nocrypto_module_of_hash_algorithm SHA1))
   in
   let h = H.init () in
-  let()= hash_public_key ~pk_body (H.feed h) in
+  let()= hash_public_key pk_body (H.feed h) in
   H.get h
 
 let v4_key_id (pk_packet : Cs.t) : string  =
@@ -96,6 +96,27 @@ let parse_dsa_asf buf : (public_key_asf, 'error) result =
 
   let pk : Nocrypto.Dsa.pub = {p;q;gg;y} in
   R.ok (DSA_pubkey_asf pk)
+
+let cs_of_public_key_asf = begin function
+  | DSA_pubkey_asf {p;q;gg;y} ->
+    cs_of_mpi_list [p;q;gg;y] |> R.get_ok
+  end
+
+let serialize {timestamp;algorithm_specific_data} =
+  let buf = Buffer.create 200 in
+  (Buffer.add_char buf '\004' ;
+   (let c = Cs.create 4 in
+    Cs.BE.set_uint32 c 0 timestamp |> R.get_ok
+    |>Cs.to_string
+   )|> Buffer.add_string buf ;
+   begin match algorithm_specific_data with
+     | DSA_pubkey_asf _ ->
+       Buffer.add_char buf (char_of_public_key_algorithm DSA) ;
+   end ;
+   Buffer.add_string buf
+     (Cs.to_string
+       (cs_of_public_key_asf algorithm_specific_data))
+  ); Buffer.contents buf |> Cs.of_string
 
 let parse_packet buf : ('a, [> `Incomplete_packet
                         | `Unimplemented_version of char

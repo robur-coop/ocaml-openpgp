@@ -1,9 +1,50 @@
 open Rresult
 open Usane
 
+let list_find_leading (f: 'a -> ('b,'c)result) (lst : 'a list)
+      : ('d list, 'error) result =
+      let rec loop acc tl =
+        begin match tl with
+        | m::tl ->
+          begin match f m with
+            | Ok value -> loop (value::acc) tl
+            | Error _ -> loop acc []
+          end
+        | [] -> R.ok (List.rev acc)
+        end
+      in
+      loop [] lst
+
+let list_find_leading_pairs (f: 'a -> 'a -> ('c,'err) result)
+    (lst: 'a list) : ('c list, 'err) result =
+    let rec loop acc (haystack: 'a list) =
+      begin match haystack with
+        | a::b::tl ->
+          begin match f a b with
+            | Ok x -> loop (x::acc) tl
+            | Error _ -> R.ok (List.rev acc)
+          end
+        | ([] as tl|_::tl) -> R.ok (List.rev acc)
+      end
+    in
+    loop [] lst
+
+let list_drop_e_n (err:'error) n lst : ('a list,'error) result =
+  let rec loop i = begin function
+    | tl when i <= 0 -> R.ok tl
+    | _::tl -> loop (i-1) tl
+    | [] -> R.error err
+    end
+  in
+  loop n lst;;
+
 module type Keytype = sig
   type t
 end
+
+type openpgp_version =
+  | V3
+  | V4
 
 type public_key_algorithm =
   | RSA_encrypt_or_sign
@@ -47,8 +88,8 @@ type packet_tag_type =
   | Public_key_tag
   | Secret_subkey_packet_tag
   | Uid_tag
-  | User_attribute_tag
   | Public_key_subpacket_tag
+  | User_attribute_tag
 
 (* see RFC 4880: 4.3 Packet Tags *)
 let packet_tag_enum =
@@ -252,14 +293,23 @@ let cs_of_mpi_no_header mpi : Cs.t =
   |> Cs.of_string
   (* TODO |> strip trailing section of nullbytes *)
   |> Cs.reverse
+  |> fun buf -> Cs.strip_leading_char buf '\x00'
 
 let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
   mpi_len mpi_body >>= fun body_len ->
   let mpi_header = Cs.create 2 in
+  let ()= Logs.debug @@ fun m -> m "cs_of_mpi: %d: %s\n" body_len (Cs.to_hex mpi_body) in
   Cs.BE.set_uint16 mpi_header 0 body_len
   >>= fun mpi_header ->
   R.ok (Cs.concat [mpi_header; mpi_body])
+
+let cs_of_mpi_list mpi_list =
+  let rec loop acc = function
+    | hd::tl -> cs_of_mpi hd >>= fun cs ->
+      loop (cs::acc) tl
+    | [] -> R.ok (List.rev acc |> Cstruct.concat)
+  in loop [] mpi_list
 
 let consume_mpi buf : (mpi * Cs.t, 'error) result =
   (*
@@ -274,7 +324,7 @@ let consume_mpi buf : (mpi * Cs.t, 'error) result =
   Cs.BE.e_get_uint16 `Incomplete_packet buf 0
   >>= fun bitlen ->
   let bytelen = (bitlen + 7) / 8 in
-  let()= Printf.printf "going to read%d %S\n" bytelen (Cs.to_string buf) in
+  Logs.debug (fun m -> m "going to read %d: %s" bytelen (Cs.to_hex buf)) ;
   Cs.e_split ~start:2 `Incomplete_packet buf bytelen
   >>= fun (this_mpi , buf_tl) ->
   R.ok ((Z.of_bits (Cs.reverse this_mpi |> Cs.to_string)), buf_tl)
@@ -469,13 +519,6 @@ let generate_rsa size =
   let priv = Nocrypto.Rsa.generate 1024 in (* TODO *)
   (*let pub = Nocrypto.Rsa.pub_of_priv priv in*)
 *)
-(*
-let () =
-  Printf.printf "foo\n%!";
-  let a = Cstruct.of_string "abcyolanda" in
-  let x = crc24 a in
-  Printf.printf ":%s:\n" Cstruct.(to_string x)
- *)
 
 let v4_verify_version (buf : Cs.t) :
   (unit ,

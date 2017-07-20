@@ -25,7 +25,7 @@ let digest_callback hash_algo : digest_feeder =
   let module H = (val (nocrypto_module_of_hash_algorithm hash_algo)) in
   let t = H.init () in
   let feeder cs =
-    let()=Printf.eprintf "%s" (Cs.to_string cs) in
+    Logs.debug (fun m -> m "hashing %d: %s\n" (Cs.len cs) (Cs.to_hex cs)) ;
     H.feed t cs
   in
   (feeder, (fun () -> H.get t))
@@ -131,7 +131,7 @@ let parse_packet buf : (t, 'error) result =
 
   Cs.e_sub `Incomplete_packet buf 0 (7+hashed_len)
   >>= fun to_be_hashed ->
-  Printf.printf "when parsing tbh is %d\n" (Cs.len to_be_hashed);
+
   (* 6+hashed_len: 2: length of unhashed subpacket data *)
   Cs.BE.e_get_uint16 `Incomplete_packet buf (6+hashed_len)
   >>= fun unhashed_len ->

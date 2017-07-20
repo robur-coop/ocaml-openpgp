@@ -13,6 +13,9 @@ module Signature : sig
            Public_key_packet.t ->
            ([> `Good_signature ],
             [> `Extraneous_packets_after_signature
+            | `Incomplete_packet
+            | `Invalid_packet
+            | `Unimplemented_version of char
              | `Invalid_signature
              | `Nonstandard_DSA_parameters
              | `Unimplemented_algorithm of char ])

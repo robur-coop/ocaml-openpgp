@@ -36,6 +36,7 @@ depends: [
   "odoc" {build & doc}
   "oUnit" {test}
   "qcheck" {test}
+  "logs"
   "cstruct"
   "usane"
   "hex"

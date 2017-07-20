@@ -11,7 +11,7 @@ type t = {
   timestamp : Cstruct.uint32 ;
   algorithm_specific_data : public_key_asf
 }
-val hash_public_key : pk_body:Cs.t -> (Cs.t -> unit) -> unit
+val hash_public_key : Cs.t -> (Cs.t -> unit) -> unit
 
 val parse_packet :
            Cstruct.t ->
@@ -21,5 +21,7 @@ val parse_packet :
              | `Unimplemented_algorithm of char
              | `Unimplemented_version of char ])
            Rresult.result
+
+val serialize : t -> Cs.t
 
 val v4_key_id : Cs.t -> string

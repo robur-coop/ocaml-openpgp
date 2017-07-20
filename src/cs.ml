@@ -59,6 +59,12 @@ module BE = struct
         (Cstruct.BE.set_uint16 buf offset int16); buf)
   let e_set_uint16 e buf offset int16 =
     wrap_err e (set_uint16 buf offset int16)
+
+  let set_uint32 buf offset (int32 : Usane.Uint32.t) =
+    wrap_invalid_argument (fun()->
+        (Cstruct.BE.set_uint32 buf offset int32); buf)
+  let e_set_uint32 e buf offset int32 =
+    wrap_err e (set_uint32 buf offset int32)
 end
 
   let of_hex str = begin
@@ -96,7 +102,7 @@ let reverse cs : t =
     )|> of_string
 
   (* find char [c] in [b], starting at [offset] and giving up after [max_offset] *)
-  let index b ?(max_offset) ?(offset=0) c =
+  let index_opt b ?(max_offset) ?(offset=0) c : int option =
     let max = match max_offset with None -> Cstruct.len b | Some m -> (min m Cstruct.(len b)) in
     let rec s = function
     | i when i >= max -> None
@@ -104,7 +110,16 @@ let reverse cs : t =
     | i -> s (i+1)
     in s offset
 
-  (* find substring [needle] in [b] *)
+let index buf ?(max_offset) ?(offset) c : (int, [> `Cstruct_invalid_argument]) result =
+  R.of_option
+    ~none:(fun () -> R.error `Cstruct_invalid_argument)
+    (index_opt buf ?max_offset ?offset c)
+
+let e_index err buf ?(max_offset) ?(offset) c =
+  index buf ?max_offset ?offset c
+  |> R.reword_error (function `Cstruct_invalid_argument -> err )
+
+(* find substring [needle] in [b] *)
   let find b ?(max_offset) ?(offset=0) needle =
     (* TODO label b or needle *)
     let needle_len = Cstruct.len needle
@@ -118,7 +133,7 @@ let reverse cs : t =
     else
     let first_needle = Cstruct.get_char needle 0 in
     let rec next i =
-      begin match index ~max_offset ~offset:i b first_needle with
+      begin match index_opt ~max_offset ~offset:i b first_needle with
       | None -> None
       | Some c_off ->
         if Cstruct.(equal (sub b c_off needle_len) needle) then
@@ -128,3 +143,15 @@ let reverse cs : t =
       end
     in
     next offset
+
+let strip_leading_char buf c : t =
+  let rec loop offset =
+    let max_offset = offset + 1 in
+    match index buf ~offset ~max_offset c with
+    | Ok i -> loop max_offset
+    | Error _ ->
+      e_split `Cstruct_invalid_argument buf offset
+      |> R.get_ok
+      |> fun (_,tl) -> tl
+  in
+  loop 0
