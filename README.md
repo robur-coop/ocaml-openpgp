@@ -6,9 +6,10 @@ OpenPGP library (RFC 4880)
 
 This library implements rudimentary support for OpenPGP.
 
+Right now it's a WiP. The first goal is to implement signature verification / generation (encryption is out of scope for now).
+
 ### Resources
 
-The protocol description is included in this repository in the files [SOCKS4.protocol.txt] and [SOCKS4A.protocol.txt] for SOCKS4 and the 4A extension, respectively.
+The spec is included in this repository in the rfc/ subdirectory.
 
-[SOCKS4.protocol.txt]: ./rfc/SOCKS4.protocol.txt
-[SOCKS4A.protocol.txt]: ./rfc/SOCKS4A.protocol.txt
+[rfc/RFC 4880 - OpenPGP Message Format.html]: ./rfc/RFC 4880 - OpenPGP Message Format.html
