@@ -1,0 +1,2 @@
+# Make Github's "Linguist" tool recognize the RFCs as documentation:
+rfc/* linguist-documentation
