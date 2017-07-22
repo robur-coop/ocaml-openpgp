@@ -157,19 +157,22 @@ let parse_packet buf : (t, 'error) result =
     | RSA_encrypt_or_sign ->
       consume_mpi asf_cs
       >>= fun (m_pow_d_mod_n, asf_tl) ->
-      R.ok (RSA_sig_asf { m_pow_d_mod_n } , asf_tl)
+       R.ok (RSA_sig_asf { m_pow_d_mod_n } , asf_tl)
     | DSA ->
-      consume_mpi asf_cs
-      >>= fun (r , r_tl_cs) ->
-      consume_mpi r_tl_cs
-      >>= fun (s , asf_tl) ->
+      consume_mpi asf_cs >>= fun (r , r_tl_cs) ->
+      consume_mpi r_tl_cs >>= fun (s , asf_tl) ->
       R.ok (DSA_sig_asf {r ; s} , asf_tl)
+    | Elgamal_encrypt_only
+    | RSA_encrypt_only ->
+      Logs.debug (fun m -> m "TODO signature algorithm uses an encrypt-only key");
+      R.error `Invalid_packet
    end
   >>= fun (algorithm_specific_data, should_be_empty) ->
+  if Cs.len should_be_empty <> 0 then begin
+    Logs.debug (fun m -> m "checking 'should be empty' - still contains %d bytes: " (Cs.len should_be_empty)) ;
 
-  if Cs.len should_be_empty <> 0 then
     R.error `Invalid_packet
-  else
+  end else
     R.ok {
           signature_type ;
           hash_algorithm = hash_algo;

@@ -3,13 +3,19 @@ open Rresult
 
 (* RFC 4880: 5.5.2 Public-Key Packet Formats *)
 
-type elgamal_pubkey_asf =
-        {g_pow_k_mod_p : mpi
-                          ;m_mul_y_pow_k_mod_p: mpi}
+type elgamal_pubkey_asf = (* for encryption *)
+        { p : mpi
+        ; g: mpi
+        ; y: mpi}
+
+type rsa_pubkey_asf = Nocrypto.Rsa.pub
 
 type public_key_asf =
   | DSA_pubkey_asf of Nocrypto.Dsa.pub
   | Elgamal_pubkey_asf of elgamal_pubkey_asf
+  | RSA_pubkey_sign_asf of rsa_pubkey_asf
+  | RSA_pubkey_encrypt_asf of rsa_pubkey_asf
+  | RSA_pubkey_encrypt_or_sign_asf of rsa_pubkey_asf
 
 type t =
   { timestamp: Cstruct.uint32
@@ -57,7 +63,7 @@ let v4_key_id (pk_packet : Cs.t) : string  =
    low-order 64 bits of the fingerprint.
   *)
   Cstruct.sub
-    (v4_fingerprint pk_packet)
+    (v4_fingerprint ~pk_body:pk_packet)
     (Nocrypto.Hash.SHA1.digest_size - (64/8))
     (64/8)
   |> Cs.to_hex
@@ -67,10 +73,41 @@ let parse_elgamal_asf buf : (public_key_asf, 'error) result =
      Algorithm Specific Fields for Elgamal encryption:
      - MPI of Elgamal (Diffie-Hellman) value g**k mod p.
      - MPI of Elgamal (Diffie-Hellman) value m * y**k mod p.*)
-  consume_mpi buf >>= fun (g_pow_k_mod_p, buf) ->
-  consume_mpi buf >>= fun (m_mul_y_pow_k_mod_p, should_be_empty) ->
-  let pk = {g_pow_k_mod_p ; m_mul_y_pow_k_mod_p} in
+  consume_mpi buf >>= fun (p, buf) ->
+  consume_mpi buf >>= fun (g,buf) ->
+  consume_mpi buf >>= fun (y, should_be_empty) ->
+  (*y=g**x%p, where x is secret*)
+
+  if Cs.len should_be_empty <> 0 then begin
+    Logs.debug (fun m -> m "Extraneous bytes after El-Gamal MPIs: %d"
+                 (Cs.len should_be_empty)) ;
+    R.error `Invalid_packet
+  end else
+
+  mpis_are_prime [p;g] >>= fun _ ->
+
+  let pk = {p ; g; y} in
   R.ok (Elgamal_pubkey_asf pk)
+
+let parse_rsa_asf buf
+    (purpose:[`Sign|`Encrypt|`Encrypt_or_sign])
+  : (public_key_asf, 'error) result =
+  consume_mpi buf >>= fun (n,buf) ->
+  consume_mpi buf >>= fun (e,should_be_empty) ->
+
+  if Cs.len should_be_empty <> 0 then begin
+    Logs.debug (fun m -> m "Extra bytes after RSA MPIs") ;
+    R.error `Invalid_packet
+  end else
+
+  mpis_are_prime [n;e] >>= fun _ ->
+
+  let pk = Nocrypto.Rsa.{ n; e} in
+  begin match purpose with
+    | `Sign -> RSA_pubkey_sign_asf pk
+    | `Encrypt -> RSA_pubkey_encrypt_asf pk
+    | `Encrypt_or_sign -> RSA_pubkey_encrypt_or_sign_asf pk
+  end |> R.ok
 
 let parse_dsa_asf buf : (public_key_asf, 'error) result =
   consume_mpi buf >>= fun (p , buf) ->
@@ -78,7 +115,10 @@ let parse_dsa_asf buf : (public_key_asf, 'error) result =
   consume_mpi buf >>= fun (gg , buf) ->
   consume_mpi buf >>= fun (y , should_be_empty) ->
 
-  (* TODO validate `should_be_empty` *)
+  if Cs.len should_be_empty <> 0 then begin
+    Logs.debug (fun m -> m "Extraneous bytes after DSA MPIs") ;
+    R.error `Invalid_packet
+  end else
   (* TODO validation of gg and y? *)
   (* TODO Z.numbits gg *)
   (* TODO check y < p *)
@@ -88,31 +128,45 @@ let parse_dsa_asf buf : (public_key_asf, 'error) result =
   >>= fun () ->
 
   (* Check that p and q look like primes: *)
-  if not @@ List.for_all
-      Nocrypto.Numeric.pseudoprime [p;q]
-  then
-    R.error `Nonstandard_DSA_parameters
-  else
+  mpis_are_prime [p;q]
+  >>= fun _ ->
 
-  let pk : Nocrypto.Dsa.pub = {p;q;gg;y} in
+  let pk = {Nocrypto.Dsa.p;q;gg;y} in
   R.ok (DSA_pubkey_asf pk)
 
-let cs_of_public_key_asf = begin function
-  | DSA_pubkey_asf {p;q;gg;y} ->
-    cs_of_mpi_list [p;q;gg;y] |> R.get_ok
+let cs_of_public_key_asf asf =
+  begin match asf with
+  | DSA_pubkey_asf {Nocrypto.Dsa.p;q;gg;y} -> [p;q;gg;y]
+  | Elgamal_pubkey_asf { p ; g ; y } -> [ p; g; y ]
+  | RSA_pubkey_sign_asf p
+  | RSA_pubkey_encrypt_or_sign_asf p
+  | RSA_pubkey_encrypt_asf p -> [ p.Nocrypto.Rsa.n ; p.Nocrypto.Rsa.e ]
   end
+  |> cs_of_mpi_list |> R.get_ok
 
-let serialize {timestamp;algorithm_specific_data} =
+let serialize version {timestamp;algorithm_specific_data} =
   let buf = Buffer.create 200 in
-  (Buffer.add_char buf '\004' ;
+
+  (* version *)
+  (Buffer.add_char buf (char_of_version version) ;
+
+   (* timestamp: *)
    (let c = Cs.create 4 in
     Cs.BE.set_uint32 c 0 timestamp |> R.get_ok
     |>Cs.to_string
    )|> Buffer.add_string buf ;
-   begin match algorithm_specific_data with
-     | DSA_pubkey_asf _ ->
-       Buffer.add_char buf (char_of_public_key_algorithm DSA) ;
-   end ;
+
+   (* public key algorithm: *)
+   (* TODO this API is awkward, but basically what is missing is a "public_key_algorithm_of_packet_tag_type" function: *)
+   Buffer.add_char buf (char_of_public_key_algorithm
+     begin match algorithm_specific_data with
+       | DSA_pubkey_asf _ -> DSA
+       | RSA_pubkey_sign_asf _ -> RSA_sign_only
+       | RSA_pubkey_encrypt_asf _ -> RSA_encrypt_only
+       | RSA_pubkey_encrypt_or_sign_asf _ -> RSA_encrypt_or_sign
+       | Elgamal_pubkey_asf _ -> Elgamal_encrypt_only
+     end) ;
+
    Buffer.add_string buf
      (Cs.to_string
        (cs_of_public_key_asf algorithm_specific_data))

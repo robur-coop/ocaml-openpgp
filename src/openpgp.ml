@@ -163,9 +163,36 @@ let verify
     (public_key : Public_key_packet.t) :
   ('ok , 'error) result
   =
+  (* TODO this function should probably be called "verify_transferable_public_key" - since that's what it verifies (aka output of gpg --export) *)
+
   (* this would be a good place to wonder what kind of crack the spec people smoked while writing 5.2.4: Computing Signatures...*)
   (* RFC 4880: 11.1 Transferable Public Keys *)
 
+  let debug_packets packets =
+    (* TODO learn how to make pretty printers *)
+    Logs.debug (fun m ->
+        m "Amount of packets: %d\n|  %s\n"
+          (List.length packets)
+          (packets|>List.map (fun (tag,cs)->
+               (string_of_packet_tag_type tag) ^" "
+               ^ (begin match Signature_packet.parse_packet cs with
+                   | Error _ -> ""
+                   | Ok s -> string_of_signature_type s.signature_type
+                 end)
+               ^" : "^ (string_of_int (Cs.len cs))
+             )
+           |> String.concat "\n|  ")
+      )
+  in
+
+  let debug_if_any s = begin function
+      | [] -> ()
+      | lst ->
+        Logs.debug (fun m -> m ("%s: %d") s (List.length lst));
+  end
+  in
+
+  debug_packets previous_packets;
   (* RFC 4880: - One Public-Key packet: *)
     begin match previous_packets with
       | (Public_key_tag, pub_cs)::tl ->
@@ -235,11 +262,12 @@ let verify
     (* TODo (followed by zero or more signature packets) -- we fail if there are unsigned Uids - design feature? *)
     find_sig_pair Uid_tag packets
     >>= fun uids_and_sigs ->
+    debug_if_any "uids and sigs" uids_and_sigs;
     let uids_count = List.length uids_and_sigs in
     if uids_count = 0 || uids_count > 1000
     then R.error `Invalid_packet
     else R.ok packets
-    >>= list_drop_e_n `Invalid_packet uids_count
+    >>= list_drop_e_n `Invalid_packet (2*uids_count)
     >>= fun packets ->
     let rec check_uids_and_sigs =
       begin function
@@ -261,14 +289,16 @@ let verify
             Signature_packet.digest_callback signature.hash_algorithm
 
           in
-          let () = Public_key_packet.(hash_cb |> (serialize public_key |> hash_public_key)) in
+          (* TODO handle version *)
+          let () = Public_key_packet.(hash_cb |> (serialize V4 public_key |> hash_public_key)) in
           let () = Uid_packet.hash uid hash_cb V4 in
           construct_to_be_hashed_cs signature
           >>= fun tbh ->
           let()= hash_cb tbh in
           check_signature root_pk
             signature.hash_algorithm hash_final signature
-        |> R.reword_error (function _ -> failwith "failed uid")
+          |> R.reword_error (function err ->
+              Logs.debug (fun m -> m "signature check failed on a uid sig"); err)
           >>= fun _ ->
           check_uids_and_sigs tl
         | [] -> R.ok ()
@@ -280,12 +310,21 @@ let verify
     >>= fun user_attributes_and_sigs ->
     list_drop_e_n `Invalid_packet (List.length user_attributes_and_sigs) packets
     >>= fun packets ->
+
     (* TODO check user_attributes *)
 
-    (* TODO technically these can be followed by revocation signatures; we don't handle that *)
+    debug_if_any "user_attributes" user_attributes_and_sigs ;
+
+    (* TODO technically these (pk subpackets) can be followed by revocation signatures; we don't handle that *)
     find_sig_pair Public_key_subpacket_tag packets
     >>= fun subkeys_and_sigs ->
-    list_drop_e_n `Invalid_packet (List.length subkeys_and_sigs) packets >>= fun packets ->
+    let subkeys_and_sigs_length = List.length subkeys_and_sigs in
+    if subkeys_and_sigs_length > 1000 then
+      R.error `Invalid_packet
+    else
+    list_drop_e_n `Invalid_packet (subkeys_and_sigs_length*2) packets >>= fun packets ->
+
+    debug_if_any "subkeys_and_sigs" subkeys_and_sigs ;
 
     let rec check_subkeys_and_sigs =
       begin function
@@ -300,11 +339,40 @@ let verify
             | _ ->
               R.error `Invalid_packet
           end >>= fun () ->
+
+          (* RFC 4880: 0x18: Subkey Binding Signature
+       This signature is a statement by the top-level signing key that
+             indicates that it owns the subkey.*)
+
           (* set up hashing with this signature: *)
           let (hash_cb, hash_final) =
             Signature_packet.digest_callback signature.hash_algorithm
           in
-          (* TODO implement subkey signature*)
+
+          (* This signature is calculated directly on the
+             primary key and subkey, and not on any User ID or other packets.*)
+          Public_key_packet.hash_public_key root_pub_cs hash_cb ;
+          Public_key_packet.hash_public_key subkey_cs hash_cb ;
+
+          (* A signature that binds a signing subkey MUST have
+       an Embedded Signature subpacket in this binding signature that
+       contains a 0x19 signature made by the signing subkey on the
+             primary key and subkey: *)
+
+          (* TODO implement checking of Embedded Signature subpackets.
+              for now we just reject: *)
+          begin match subkey.Public_key_packet.algorithm_specific_data with
+            | Public_key_packet.RSA_pubkey_encrypt_asf _
+            | Public_key_packet.Elgamal_pubkey_asf _ -> R.ok ()
+            | Public_key_packet.RSA_pubkey_sign_asf _
+            | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf _
+            | Public_key_packet.DSA_pubkey_asf _ ->
+              Logs.debug (fun m -> m "TODO this signature binds a signing subkey. it must have an Embedded Signature subpacket that contains a 0x19 signature made by the signing subkey on the primary key and subkey to prevent a person from stealing other people's keys. this is not implemented, so for safety reasons we reject it. sorry.");
+              Error (`Unimplemented_algorithm
+                       (char_of_public_key_algorithm DSA))
+          end
+          >>= fun () ->
+
           construct_to_be_hashed_cs signature
           >>= fun tbh -> let () = hash_cb tbh in
           check_signature root_pk signature.hash_algorithm
@@ -316,9 +384,10 @@ let verify
     check_subkeys_and_sigs subkeys_and_sigs >>= fun () ->
 
     (* Final check: *)
-    if List.length packets <> 0 then
+    if List.length packets <> 0 then begin
+      debug_packets packets ;
       R.error `Extraneous_packets_after_signature
-    else
+    end else
        R.ok `Good_signature
     (* one byte version
        | V3 -> 4 bytes timestamp

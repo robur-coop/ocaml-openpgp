@@ -24,7 +24,7 @@ let list_find_leading_pairs (f: 'a -> 'a -> ('c,'err) result)
             | Ok x -> loop (x::acc) tl
             | Error _ -> R.ok (List.rev acc)
           end
-        | ([] as tl|_::tl) -> R.ok (List.rev acc)
+        | ([]|(_::_)) -> R.ok (List.rev acc)
       end
     in
     loop [] lst
@@ -46,15 +46,22 @@ type openpgp_version =
   | V3
   | V4
 
+let char_of_version = begin function
+  | V3 -> '\003'
+  | V4 -> '\004'
+  end
+
 type public_key_algorithm =
   | RSA_encrypt_or_sign
   | RSA_sign_only
+  | RSA_encrypt_only
   | Elgamal_encrypt_only
   | DSA
 
 let public_key_algorithm_enum =
   (* RFC 4880: 9.1 Public-Key Algorithms *)
   [ '\001', RSA_encrypt_or_sign
+  ; '\002', RSA_encrypt_only
   ; '\003', RSA_sign_only
   ; '\016', Elgamal_encrypt_only
   ; '\017', DSA
@@ -90,6 +97,16 @@ type packet_tag_type =
   | Uid_tag
   | Public_key_subpacket_tag
   | User_attribute_tag
+
+let packet_tag_string_enum =
+  [ "Signature", Signature_tag
+  ; "Secret_key", Secret_key_tag
+  ; "Public_key", Public_key_tag
+  ; "Secret_subkey", Secret_subkey_packet_tag
+  ; "UID", Uid_tag
+  ; "Public_key_subpacket", Public_key_subpacket_tag
+  ; "User_attribute", User_attribute_tag
+  ]
 
 (* see RFC 4880: 4.3 Packet Tags *)
 let packet_tag_enum =
@@ -147,6 +164,24 @@ let signature_type_enum =
   ; '\x30', Certification_revocation_signature
     ; '\x40', Timestamp_signature
     ; '\x50', Third_party_confirmation_signature
+  ]
+
+let signature_type_string_enum =
+   [ "Signature_of_binary_document", Signature_of_binary_document
+  ; "Canonical_text_document_sig", Signature_of_canonical_text_document
+  ; "Standalone_sig", Standalone_signature
+  ; "Uid_and_pubkey", Generic_certification_of_user_id_and_public_key_packet
+  ; "Uid_and_pubkey", Persona_certification_of_user_id_and_public_key_packet
+  ; "Uid_and_pubkey", Casual_certification_of_user_id_and_public_key_packet
+  ; "Uid_and_pubkey", Positive_certification_of_user_id_and_public_key_packet
+  ; "Subkey_binding", Subkey_binding_signature
+  ; "Primary_key_binding", Primary_key_binding_signature
+  ; "Signature_directly_on_key", Signature_directly_on_key
+  ; "Key_revocation", Key_revocation_signature
+  ; "Subkey_revocation", Subkey_revocation_signature
+  ; "Certification_revocation", Certification_revocation_signature
+    ; "Timestamp", Timestamp_signature
+    ; "Third_party_confirmation", Third_party_confirmation_signature
   ]
 
 type signature_subpacket_type =
@@ -218,6 +253,9 @@ let rec find_enum_sumtype needle = function
 | (value, sumtype)::_ when value = needle -> Ok sumtype
 | _::tl -> find_enum_sumtype needle tl
 
+let string_of_packet_tag_type (needle:packet_tag_type) =
+  (find_enum_value needle packet_tag_string_enum) |> R.get_ok
+
 let packet_tag_type_of_char needle =
   find_enum_sumtype needle packet_tag_enum
 
@@ -241,6 +279,9 @@ let char_of_public_key_algorithm needle =
 
 let int_of_public_key_algorithm needle =
   char_of_public_key_algorithm needle |> int_of_char
+
+let string_of_signature_type needle =
+  find_enum_value needle signature_type_string_enum |> R.get_ok
 
 let char_of_signature_type needle =
   find_enum_value needle signature_type_enum |> R.get_ok
@@ -294,6 +335,19 @@ let cs_of_mpi_no_header mpi : Cs.t =
   (* TODO |> strip trailing section of nullbytes *)
   |> Cs.reverse
   |> fun buf -> Cs.strip_leading_char buf '\x00'
+
+
+let mpis_are_prime lst =
+  let non_primes = List.find_all
+      (fun mpi -> not @@ Nocrypto.Numeric.pseudoprime mpi) lst
+  in
+  if List.length non_primes <> 0
+  then begin
+    let pp p = Cs.to_hex (cs_of_mpi_no_header p) in
+    Logs.debug (fun m -> m "MPIs are not prime: %s"
+               (String.concat " ; " (List.map pp non_primes))) ;
+    R.error (`Invalid_mpi_parameters non_primes)
+  end else R.ok lst
 
 let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
@@ -531,7 +585,7 @@ let v4_verify_version (buf : Cs.t) :
   else
     R.ok ()
 
-let dsa_asf_are_valid_parameters ~(p:Z.t) ~(q:Z.t) ~hash_algo =
+let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo =
   (* From RFC 4880 (we whitelist these parameters): *)
   (*   DSA keys MUST also be a multiple of 64 bits, *)
   (*   and the q size MUST be a multiple of 8 bits. *)
@@ -544,5 +598,5 @@ let dsa_asf_are_valid_parameters ~(p:Z.t) ~(q:Z.t) ~hash_algo =
         R.ok ()
     | 2048 , 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | (2048|3072), 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
-    | _ , _ , _ -> R.error `Nonstandard_DSA_parameters
+    | _ , _ , _ -> R.error (`Invalid_mpi_parameters [p;q])
   end
