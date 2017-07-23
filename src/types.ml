@@ -184,7 +184,7 @@ let signature_type_string_enum =
     ; "Third_party_confirmation", Third_party_confirmation_signature
   ]
 
-type signature_subpacket_type =
+type signature_subpacket_tag =
   | Signature_creation_time
   | Signature_expiration_time
   | Exportable_certification
@@ -208,6 +208,32 @@ type signature_subpacket_type =
   | Features
   | Signature_target
   | Embedded_signature
+
+let signature_subpacket_tag_enum =
+  [ '\002', Signature_creation_time
+  ; '\003', Signature_expiration_time
+  ; '\004', Exportable_certification
+  ; '\005', Trust_signature
+  ; '\006', Regular_expression
+  ; '\007', Revocable
+  ; '\009', Key_expiration_time
+  ; '\011', Preferred_symmetric_algorithms
+  ; '\012', Revocation_key
+  ; '\016', Issuer
+  ; '\020', Notation_data
+  ; '\021', Preferred_hash_algorithms
+  ; '\022', Preferred_compression_algorithms
+  ; '\023', Key_server_preferences
+  ; '\024', Preferred_key_server
+  ; '\025', Primary_user_id
+  ; '\026', Policy_URI
+  ; '\027', Key_flags
+  ; '\028', Signers_user_id
+  ; '\029', Reason_for_revocation
+  ; '\030', Features
+  ; '\031', Signature_target
+  ; '\032', Embedded_signature
+  ]
 
 type hash_algorithm =
   (* RFC 4880: 9.4 Hash Algorithms *)
@@ -294,6 +320,14 @@ let signature_type_of_cs_offset cs offset =
   Cs.e_get_char `Incomplete_packet cs offset
   >>= fun signature_type_c ->
   signature_type_of_char signature_type_c
+
+let signature_subpacket_tag_of_char needle : ('ok',[> `Unimplemented_algorithm of char]) result =
+  find_enum_sumtype needle signature_subpacket_tag_enum
+  |> R.reword_error (function
+      | `Unmatched_enum_value ->
+        Logs.debug (fun m -> m "Unimplemented signature subpacket type 0x%02x"
+                       (Char.code needle));
+      `Unimplemented_algorithm needle) (*more specific info?*)
 
 let hash_algorithm_of_char needle =
   find_enum_sumtype needle hash_algorithm_enum
@@ -457,12 +491,12 @@ let int_of_packet_length_type needle =
 
 let packet_length_type_of_int needle = find_enum_sumtype needle packet_length_type_enum
 
-let consume_packet_length length_type buf : ((Cs.t * Cs.t), [`Invalid_length | `Incomplete_packet | `Unimplemented_feature_partial_length]) result =
+let consume_packet_length length_type buf : ((Cs.t * Cs.t), [>`Invalid_length | `Incomplete_packet | `Unimplemented_feature_partial_length]) result =
   (* see https://tools.ietf.org/html/rfc4880#section-4.2.2 *)
   Cs.e_get_char `Incomplete_packet buf 0
   >>= fun first_c ->
   let first = int_of_char first_c in
-  let consume_old_packet_length : packet_length_type -> (int *Uint32.t, [`Invalid_length | `Incomplete_packet | `Unimplemented_feature_partial_length])result =
+  let consume_old_packet_length : packet_length_type -> (int *Uint32.t, [>`Invalid_length | `Incomplete_packet | `Unimplemented_feature_partial_length])result =
     begin function
       | One_octet -> R.ok (1, Uint32.of_int first)
       | Two_octet ->
@@ -475,7 +509,7 @@ let consume_packet_length length_type buf : ((Cs.t * Cs.t), [`Invalid_length | `
         R.error `Unimplemented_feature_partial_length
     end
   in
-  let consume_new_packet_length =
+  let consume_new_packet_length : char -> ('ok, [>`Invalid_length | `Incomplete_packet]) result=
   begin function
   | ('\000'..'\191') ->
      (* accomodate old+new format-style 1-octet lengths *)

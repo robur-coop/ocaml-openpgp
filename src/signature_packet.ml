@@ -17,7 +17,7 @@ type t = {
   hash_algorithm : hash_algorithm ;
   (* This implementation ignores "unhashed subpacket data",
      so we only store "hashed subpacket data": *)
-  subpacket_data : Cs.t ;
+  subpacket_data : (signature_subpacket_tag * Cs.t) list ;
   algorithm_specific_data : signature_asf;
 }
 
@@ -85,10 +85,10 @@ let construct_to_be_hashed_cs t : ('ok,'error) result =
 
   (* len of hashed subpacket data: *)
   (* TODO add error handling here:*)
-  ichar ((Cs.len t.subpacket_data lsr 8) land 0xff) ;
-  ichar ((Cs.len t.subpacket_data) land 0xff) ;
+  ichar ((List.length t.subpacket_data lsr 8) land 0xff) ;
+  ichar ((List.length t.subpacket_data) land 0xff) ;
 
-  Buffer.add_string buf (Cs.to_string t.subpacket_data) ;
+  Buffer.add_string buf (Cs.concat t.subpacket_data |> Cs.to_string) ;
 
   (* V4 signatures also hash in a final trailer of six octets: the
    version of the Signature packet, i.e., 0x04; 0xFF; and a four-octet,
@@ -104,6 +104,32 @@ let construct_to_be_hashed_cs t : ('ok,'error) result =
     Buffer.add_string buf (Cs.to_string len)
   in
   R.ok (Buffer.contents buf|>Cstruct.of_string)
+
+let parse_subpacket buf : (signature_subpacket_tag , [> `Invalid_packet]) result =
+  Cs.e_split `Invalid_packet buf 1 >>= fun (tag, data) ->
+  signature_subpacket_tag_of_char (Cstruct.get_char tag 0)
+  |> R.reword_error (function `Invalid_length -> `Invalid_packet | err -> err)
+  >>= begin function
+    | _ -> R.error `Invalid_packet
+  end
+
+let parse_subpacket_data buf : ('ok,[> `Invalid_packet | `Unimplemented_algorithm of char | `Incomplete_packet ]) result =
+  let rec loop packets buf =
+    consume_packet_length None buf
+    |> R.reword_error (function
+        (* partial lengths are not allowed in signature subpackets: *)
+        | `Unimplemented_feature_partial_length -> `Invalid_packet
+        | err -> err
+      )
+    >>= fun (pkt, extra) ->
+    parse_subpacket pkt >>= fun pkt_tag ->
+    let packets = ((pkt_tag, pkt)::packets) in
+    if Cs.len extra = 0 then
+      R.ok (List.rev packets)
+    else
+      loop packets extra
+  in
+  loop [] buf
 
 let parse_packet buf : (t, 'error) result =
   (* 0: 1: '\x04' *)
@@ -128,6 +154,9 @@ let parse_packet buf : (t, 'error) result =
   (* 6: hashed_len: hashed subpacket data *)
   Cs.e_sub `Incomplete_packet buf 6 hashed_len
   >>= fun hashed_subpacket_data ->
+
+  parse_subpacket_data hashed_subpacket_data
+  >>= fun subpacket_data ->
 
   Cs.e_sub `Incomplete_packet buf 0 (7+hashed_len)
   >>= fun to_be_hashed ->
@@ -176,6 +205,6 @@ let parse_packet buf : (t, 'error) result =
     R.ok {
           signature_type ;
           hash_algorithm = hash_algo;
-          subpacket_data = hashed_subpacket_data ;
+          subpacket_data = subpacket_data ;
           algorithm_specific_data
          }
