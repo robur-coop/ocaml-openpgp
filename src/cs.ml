@@ -58,11 +58,18 @@ module BE = struct
   let e_set_uint16 e buf offset int16 =
     wrap_err e (set_uint16 buf offset int16)
 
+  let create_uint16 (int16 : Usane.Uint16.t) =
+    let buf = Cstruct.create 2 in
+    Cstruct.BE.set_uint16 buf 0 int16 ; buf
+
   let set_uint32 buf offset (int32 : Usane.Uint32.t) =
     wrap_invalid_argument (fun () ->
         Cstruct.BE.set_uint32 buf offset int32; buf)
   let e_set_uint32 e buf offset int32 =
     wrap_err e (set_uint32 buf offset int32)
+  let create_uint32 (int32 : Usane.Uint32.t) =
+    let buf = Cstruct.create 4 in
+    Cstruct.BE.set_uint32 buf 0 int32 ; buf
 end
 
 let of_hex str =
@@ -77,11 +84,16 @@ let to_string = Cstruct.to_string
 let of_string = Cstruct.of_string
 let equal = Cstruct.equal
 let sub = Cstruct.sub
-let len = Cstruct.len
+let len = Cstruct.len (* TODO consider returning Usane.Uint64.t *)
 let of_string = Cstruct.of_string
 let create = Cstruct.create
 let blit = Cstruct.blit
 let concat = Cstruct.concat (*TODO wrap exceptions *)
+let set_uint8 = Cstruct.set_uint8
+
+let make_uint8 int8 =
+  let buf = create 1 in
+  set_uint8 buf 0 int8 ; buf
 
 let reverse cs : t =
   (* Zarith hides the function for reading little-endian unsigned integers under
@@ -143,7 +155,7 @@ let strip_leading_char buf c : t =
   let rec loop offset =
     let max_offset = offset + 1 in
     match index buf ~offset ~max_offset c with
-    | Ok i -> loop max_offset
+    | Ok _ -> loop max_offset
     | Error _ ->
       e_split `Cstruct_invalid_argument buf offset
       |> R.get_ok

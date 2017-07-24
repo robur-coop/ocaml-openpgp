@@ -14,6 +14,8 @@ module Signature : sig
      ,
      [> `Extraneous_packets_after_signature
      | `Incomplete_packet
+     | `Invalid_length
+     | `Unimplemented_feature_partial_length
      | `Invalid_packet
      | `Unimplemented_version of char
              | `Invalid_signature

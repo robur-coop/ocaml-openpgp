@@ -161,7 +161,18 @@ struct
 let verify
     (previous_packets : (packet_tag_type * Cs.t) list)
     (public_key : Public_key_packet.t) :
-  ('ok , 'error) result
+  ('ok ,
+   [> `Extraneous_packets_after_signature
+   | `Incomplete_packet
+   | `Invalid_packet
+   | `Invalid_length
+   | `Unimplemented_feature_partial_length
+   | `Invalid_signature
+   | `Unimplemented_version of char
+   | `Unimplemented_algorithm of char
+   | `Invalid_mpi_parameters of Types.mpi list
+   ]
+  ) result
   =
   (* TODO this function should probably be called "verify_transferable_public_key" - since that's what it verifies (aka output of gpg --export) *)
 
@@ -192,14 +203,14 @@ let verify
   end
   in
 
-  debug_packets previous_packets;
+  let () = debug_packets previous_packets in
   (* RFC 4880: - One Public-Key packet: *)
-    begin match previous_packets with
-      | (Public_key_tag, pub_cs)::tl ->
-        R.ok (pub_cs, tl)
-      | _ -> R.error `Invalid_signature
-    end
-    >>= fun (root_pub_cs , packets) ->
+  begin match previous_packets with
+    | (Public_key_tag, pub_cs)::tl ->
+      R.ok (pub_cs, tl)
+    | _ -> R.error `Invalid_signature
+  end
+  >>= fun (root_pub_cs , packets) ->
 
     (* check that the root public key in the input matches
        the expected public key.
@@ -219,6 +230,8 @@ let verify
       | _ -> R.error `Invalid_signature
     end
     >>= fun root_pk ->
+
+    (* TODO extract version from the root_pk and make sure the remaining packets use the same version *)
 
     let find_sig_pair (needle_one:packet_tag_type) (haystack:(packet_tag_type*Cs.t)list) =
     (* finds pairs (needle_one, needle_two) at the head of haystack
@@ -289,7 +302,7 @@ let verify
             Signature_packet.digest_callback signature.hash_algorithm
 
           in
-          (* TODO handle version *)
+          (* TODO handle version V3 *)
           let () = Public_key_packet.(hash_cb |> (serialize V4 public_key |> hash_public_key)) in
           let () = Uid_packet.hash uid hash_cb V4 in
           construct_to_be_hashed_cs signature

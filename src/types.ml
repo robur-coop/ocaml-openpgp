@@ -329,6 +329,14 @@ let signature_subpacket_tag_of_char needle : ('ok',[> `Unimplemented_algorithm o
                        (Char.code needle));
       `Unimplemented_algorithm needle) (*more specific info?*)
 
+let char_of_signature_subpacket_tag needle =
+  find_enum_value needle signature_subpacket_tag_enum |> R.get_ok
+
+let cs_of_signature_subpacket_tag needle =
+  char_of_signature_subpacket_tag needle
+  |> String.make 1
+  |> Cs.of_string
+
 let hash_algorithm_of_char needle =
   find_enum_sumtype needle hash_algorithm_enum
   |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
@@ -387,7 +395,9 @@ let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
   mpi_len mpi_body >>= fun body_len ->
   let mpi_header = Cs.create 2 in
-  let ()= Logs.debug @@ fun m -> m "cs_of_mpi: %d: %s\n" body_len (Cs.to_hex mpi_body) in
+  let ()= Logs.debug (fun m -> m "cs_of_mpi: %d: %s\n"
+                         body_len (Cs.to_hex mpi_body))
+  in
   Cs.BE.set_uint16 mpi_header 0 body_len
   >>= fun mpi_header ->
   R.ok (Cs.concat [mpi_header; mpi_body])
@@ -469,7 +479,7 @@ type packet_length_type =
   | One_octet
   | Two_octet
   | Four_octet
-  | Partial_length
+  | Partial_length (*TODO currently have a lot of functions that will throw exceptions when a Partial_length is passed. Consider removing it.*)
 
 let packet_length_type_enum =
   [ (0 , One_octet)
@@ -483,6 +493,18 @@ let packet_length_type_of_size (size : Usane.Uint32.t) =
   | s when -1 = Uint32.compare s 192l -> One_octet
   | s when -1 = Uint32.compare s 8384l -> Two_octet
   | _ -> Four_octet
+  end
+
+let serialize_packet_length cs =
+  let len = Cs.len cs |> Int32.of_int in
+  (* we don't use Usane.Uint32 above because
+     a) we actually want to wrap values larger than 31 bits
+     b) Cs.len returning an int is a shortcoming of the API
+  *)
+  begin match packet_length_type_of_size len with
+    | One_octet -> Cs.make_uint8 (Int32.to_int len)
+    | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)
+    | Four_octet -> Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
   end
 
 let int_of_packet_length_type needle =
