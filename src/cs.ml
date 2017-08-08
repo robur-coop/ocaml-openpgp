@@ -117,14 +117,14 @@ let index_opt b ?(max_offset) ?(offset=0) c : int option =
   in
   s offset
 
-let index buf ?(max_offset) ?(offset) c : (int, [> `Cstruct_invalid_argument]) result =
+let e_index e buf ?(max_offset) ?(offset) c =
+  (* TODO change buf,c order *)
   R.of_option
-    ~none:(fun () -> R.error `Cstruct_invalid_argument)
+    ~none:(fun () -> R.error e)
     (index_opt buf ?max_offset ?offset c)
 
-let e_index err buf ?(max_offset) ?(offset) c =
-  index buf ?max_offset ?offset c
-  |> R.reword_error (function `Cstruct_invalid_argument -> err)
+let index buf ?(max_offset) ?(offset) c : (int, 'error) result =
+  e_index `Cstruct_invalid_argument buf ?max_offset ?offset c
 
 (* find substring [needle] in [b] *)
 let find b ?(max_offset) ?(offset=0) needle =
@@ -151,6 +151,10 @@ let find b ?(max_offset) ?(offset=0) needle =
     in
     next offset
 
+let e_find e b ?max_offset ?offset needle =
+  find b ?max_offset ?offset needle
+  |> R.of_option ~none:(fun () -> Error e)
+
 let strip_leading_char buf c : t =
   let rec loop offset =
     let max_offset = offset + 1 in
@@ -162,3 +166,46 @@ let strip_leading_char buf c : t =
       |> fun (_, tl) -> tl
   in
   loop 0
+
+let strip_trailing_char c buf : t =
+  strip_leading_char (reverse buf) c
+
+let split_by_char c ?offset ?max_offset buf : (t*t, 'error) result =
+  begin match index_opt ?offset ?max_offset buf c with
+    | None -> Ok (Cstruct.create 0 , buf)
+    | Some i -> split_result buf i
+  end
+
+let equal_string str buf =
+  equal buf (of_string str)
+
+let e_equal_string e str buf =
+  match equal_string str buf with
+  | true -> Ok ()
+  | false -> Error e
+
+let e_find_list e buf_list buf : (t,'error) result =
+  (* TODO perhaps the "find" name is a bit confusing here. this is "find" in the sense of List.find, not Cs.find*)
+  match List.find (equal buf) buf_list with
+  | exception Not_found -> Error e
+  | member -> Ok member
+
+let e_find_string_list e str_list buf : (string,'error) result=
+  e_find_list e (List.map of_string str_list) buf
+  >>| to_string
+
+let next_line ?max_length buf : [> `Last_line of t | `Next_tuple of t*t] =
+  begin match index_opt ?max_offset:max_length buf '\n' with
+    | None -> `Last_line buf
+    | Some 0 -> `Next_tuple (Cstruct.create 0 , Cstruct.sub buf 1 (len buf -1))
+    | Some n_idx when Cstruct.get_char buf (n_idx-1) = '\r' ->
+      `Next_tuple (
+        Cstruct.sub buf 0 (n_idx-1),
+        Cstruct.sub buf (n_idx+1) (len buf -n_idx-1)
+      )
+    | Some n_idx ->
+      `Next_tuple (
+        Cstruct.sub buf 0 n_idx ,
+        Cstruct.sub buf (n_idx+1) (len buf - n_idx-1)
+      )
+  end

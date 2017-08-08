@@ -9,8 +9,6 @@ open Types
        MESSAGE, PART X
        SIGNATURE
 *)
-let begin_public_key_block = Cstruct.of_string "-----BEGIN PGP PUBLIC KEY BLOCK-----"
-let end_public_key_block = Cstruct.of_string "-----END PGP PUBLIC KEY BLOCK-----"
 
 type packet_type =
   | Signature_packet of Signature_packet.t
@@ -27,66 +25,98 @@ let packet_tag_of_packet = begin function
 
 let decode_ascii_armor (buf : Cstruct.t) =
   (* see https://tools.ietf.org/html/rfc4880#section-6.2 *)
-  let max_line_length = 73 in
-  Cs.e_index `Invalid buf ~max_offset:max_line_length '\n'
-  >>= fun type_len ->
-  begin match Cs.sub buf 0 type_len with
-  | b when Cstruct.equal b begin_public_key_block -> Ok Ascii_public_key_block
-  | _ -> Error `Invalid_key_type
+  let max_length = 73 in (*maximum line length *)
+
+  begin match Cs.next_line ~max_length buf with
+    | `Next_tuple pair -> Ok pair
+    | `Last_line _ -> Error `Invalid
+  end
+  >>= fun (begin_header, buf) ->
+
+  (* check that it starts with a -----BEGIN... *)
+  Cs.e_split `Invalid begin_header (String.length "-----BEGIN PGP ")
+  >>= fun (begin_pgp, begin_tl) ->
+  Cs.e_equal_string `Invalid "-----BEGIN PGP " begin_pgp >>= fun () ->
+
+  (* check that it ends with five dashes: *)
+  Cs.e_split `Invalid begin_tl (Cs.len begin_tl -5)
+  >>= fun (begin_type , begin_tl) ->
+  Cs.e_equal_string `Invalid "-----" begin_tl >>= fun () ->
+
+  (* check that we know how to handle this type of ascii-armored message: *)
+  begin match Cs.to_string begin_type with
+      | "PUBLIC KEY BLOCK" -> Ok Ascii_public_key_block
+      | "SIGNATURE" -> Ok Ascii_signature
+      | _ -> Error `Invalid_key_type (*TODO better error*)
   end
   >>= fun pkt_type ->
 
   (* skip additional headers (like "Version:") *)
-  Cs.find ~offset:type_len buf Cs.(of_string "\n\n")
-  |> R.of_option ~none:(fun()-> Error `Missing_body)
-  >>= fun header_end ->
-  let header_end = header_end + String.(length "\n\n") in (* TODO add a Cs.find that includes length of matched needle *)
+  let rec skip_headers buf_tl =
+    begin match Cs.next_line ~max_length buf_tl  with
+      | `Last_line _ -> Error `Missing_body
+      | `Next_tuple pair -> Ok pair
+    end
+    >>= fun (header,buf_tl) ->
+    if Cs.len header = 0 then
+      R.ok buf_tl
+    else
+      (* skip to next*)
+      let()= Logs.debug (fun m -> m "Skipping header: %S" (Cs.to_string header)) in
+      skip_headers buf_tl
+  in
+  skip_headers buf
+  >>= fun body ->
+
+  let rec decode_body acc tl : (Cs.t*Cs.t,[> `Invalid]) result =
+    let b64_decode cs =
+      Nocrypto.Base64.decode cs
+      |> R.of_option ~none:(fun()-> Error `Invalid)
+    in
+    begin match Cs.next_line ~max_length:73 tl with
+      | `Last_line _ -> R.error `Invalid (*TODO better error*)
+      | `Next_tuple (cs,tl) when Some 0 = Cs.index_opt cs '=' ->
+        (* the CRC-24 starts with an =-sign *)
+        Cs.e_split ~start:1 `Invalid cs 4
+        >>= fun (b64,must_be_empty) ->
+        if Cs.len must_be_empty <> 0 then Error `Invalid
+        else
+        b64_decode b64 >>= fun target_crc ->
+        let()= Logs.debug (fun m -> m "target crc: %s" (Cs.to_hex target_crc))in
+        begin match List.rev acc |> Cs.concat with
+          | decoded when Cs.equal target_crc (crc24 decoded) ->
+            Ok (decoded, tl)
+          | _ -> Error `Invalid_crc24
+        end
+      | `Next_tuple (cs,tl) ->
+        b64_decode cs >>= fun decoded ->
+        decode_body (decoded::acc) tl
+    end
+  in decode_body [] body
+  >>= fun (decoded, buf) ->
+
+  (* Now we should be at the last line. *)
+  begin match Cs.next_line ~max_length buf with
+    | `Next_tuple ok -> Ok ok
+    | `Last_line cs -> Ok (cs, Cs.create 0)
+  end
+  >>= fun (end_line, buf) ->
+  Cs.e_find_string_list `Invalid ["\n";"\r\n";""] buf
+  >>= fun _ ->
 
   begin match pkt_type with
   | Ascii_public_key_block ->
-    Cs.find ~offset:header_end buf end_public_key_block
-    |> R.of_option ~none:(fun()-> Error `Missing_end_block)
+    Cs.e_equal_string `Missing_end_block "-----END PGP PUBLIC KEY BLOCK-----" end_line
+  | Ascii_signature ->
+    Cs.e_equal_string `Missing_end_block "-----END PGP SIGNATURE-----" end_line
   | Ascii_private_key_block
   | Ascii_message
   | Ascii_message_part_x _
-  | Ascii_message_part_x_of_y _
-  | Ascii_signature ->
+  | Ascii_message_part_x_of_y _ ->
      Error `Malformed (* TODO `Not_implemented *)
   end
-  >>= fun packet_end ->
-
-  Cs.find buf ~offset:header_end ~max_offset:packet_end Cs.(of_string "\n=")
-  |> R.of_option ~none:(fun()-> Error `Missing_crc24)
-  >>= fun body_end ->
-  let body_end = body_end + String.(length "\n") in
-
-  (* 4: length of base64-encoded crc24 *)
-  Cs.sub buf (body_end+String.(length "=")) 4 (* TODO catch exception *)
-  |> Nocrypto.Base64.decode
-  |> R.of_option ~none:(fun()-> Error `Invalid)
-  >>= fun target_crc ->
-
-  let out_buf = Cs.(create ((body_end - header_end)/4*3)) in
-  let rec fill_out_buf offset decoded_offset =
-    if offset >= body_end
-    then Ok (Cs.sub out_buf 0 decoded_offset)
-    else
-    Cs.e_index `Invalid buf ~offset ~max_offset:(min (offset+max_line_length) body_end) '\n'
-    >>= fun next_line ->
-    let line_length = (next_line - offset) in
-    Nocrypto.Base64.decode Cs.(sub buf offset line_length)
-    |> R.of_option ~none:(fun() -> Error `Invalid)
-    >>= fun decoded ->
-    let decoded_len = Cs.len decoded in
-    Cs.blit decoded 0 out_buf decoded_offset decoded_len
-    ; fill_out_buf (next_line+1) (decoded_offset + decoded_len)
-  in
-  fill_out_buf header_end 0
-  >>= fun decoded ->
-  if Cs.equal (crc24 decoded) target_crc
-  then Ok (pkt_type, decoded)
-  else
-    Error `Invalid_crc24
+  >>= fun () ->
+  Ok (pkt_type, decoded)
 
 let parse_packet packet_tag pkt_body : (packet_type,'error) result =
   begin match packet_tag with
