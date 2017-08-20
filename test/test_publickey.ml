@@ -81,7 +81,7 @@ let test_verify_signature _ =
     List.combine p cs
   in
   let()=Printf.printf "going to verify everything before %d (%d bytes)\n" sig_cs.off (List.hd first_pkts |> Cs.len)in
-  Openpgp.Signature.verify packet_tags pk_t
+  Openpgp.Signature.root_pk_of_packets packet_tags
   |> R.reword_error (fun a -> 31337,a)
  ) with
   | Error (_,`Invalid_signature) ->

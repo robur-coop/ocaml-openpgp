@@ -8,9 +8,24 @@ val decode_ascii_armor : Cstruct.t -> (ascii_packet_type * Cstruct.t,
 
 module Signature : sig
   include module type of Signature_packet
-  val verify : (packet_tag_type * Cs.t) list ->
-    Public_key_packet.t ->
-    ([> `Good_signature ]
+  type uid = { uid : Uid_packet.t ; certifications : Signature_packet.t list}
+  type user_attribute = { certifications : Signature_packet.t list }
+  type subkey = { key : Public_key_packet.t ; signature : Signature_packet.t ; revocation : Signature_packet.t option }
+  type transferable_public_key =
+    {
+    (** One Public-Key packet *)
+      root_key : Public_key_packet.t
+      (** Zero or more revocation signatures *)
+      ; revocations : Signature_packet.t list
+    (** One or more User ID packets *)
+    ; uids : uid list
+    (** Zero or more User Attribute packets *)
+    ; user_attributes : user_attribute list
+    (** Zero or more subkey packets *)
+    ; subkeys : subkey list
+    }
+  val root_pk_of_packets : (packet_tag_type * Cs.t) list ->
+    (transferable_public_key * (packet_tag_type * Cs.t) list
      ,
      [> `Extraneous_packets_after_signature
      | `Incomplete_packet

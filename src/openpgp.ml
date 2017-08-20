@@ -188,10 +188,40 @@ module Signature =
 struct
   include Signature_packet
 
-let verify
-    (previous_packets : (packet_tag_type * Cs.t) list)
-    (public_key : Public_key_packet.t) :
-  ('ok ,
+  type uid =
+    { uid : Uid_packet.t
+    ; certifications : Signature_packet.t list
+    }
+
+  type user_attribute =
+    { certifications : Signature_packet.t list
+      (* : User_attribute_packet.t *)
+    }
+
+  type subkey =
+    { key : Public_key_packet.t
+    ; signature : Signature_packet.t
+    (* plus optionally a revocation signatures *)
+    ; revocation : Signature_packet.t option
+    }
+
+  type transferable_public_key =
+    {
+    (* One Public-Key packet *)
+      root_key : Public_key_packet.t
+      (* Zero or more revocation signatures *)
+      ; revocations : Signature_packet.t list
+    (* One or more User ID packets *)
+    ; uids : uid list
+    (* Zero or more User Attribute packets *)
+    ; user_attributes : user_attribute list
+    (* Zero or more subkey packets *)
+    ; subkeys : subkey list
+    }
+
+  let root_pk_of_packets (* TODO aka root_key_of_packets *)
+    (packets : (packet_tag_type * Cs.t) list)
+  : (transferable_public_key * (packet_tag_type * Cs.t) list,
    [> `Extraneous_packets_after_signature
    | `Incomplete_packet
    | `Invalid_packet
@@ -204,10 +234,10 @@ let verify
    ]
   ) result
   =
-  (* TODO this function should probably be called "verify_transferable_public_key" - since that's what it verifies (aka output of gpg --export) *)
+  (* RFC 4880: 11.1 Transferable Public Keys *)
+  (* this function imports the output of gpg --export *)
 
   (* this would be a good place to wonder what kind of crack the spec people smoked while writing 5.2.4: Computing Signatures...*)
-  (* RFC 4880: 11.1 Transferable Public Keys *)
 
   let debug_packets packets =
     (* TODO learn how to make pretty printers *)
@@ -233,9 +263,9 @@ let verify
   end
   in
 
-  let () = debug_packets previous_packets in
+  let () = debug_packets packets in
   (* RFC 4880: - One Public-Key packet: *)
-  begin match previous_packets with
+  begin match packets with
     | (Public_key_tag, pub_cs)::tl ->
       R.ok (pub_cs, tl)
     | _ -> R.error `Invalid_signature
@@ -252,14 +282,9 @@ let verify
     *)
     Public_key_packet.parse_packet root_pub_cs
     |> R.reword_error (function _ -> `Invalid_signature)
-    >>= begin function
-      | u when u.Public_key_packet.algorithm_specific_data
-               = public_key.Public_key_packet.algorithm_specific_data ->
-        (* TODO verify expiry date also? *)
-        R.ok u
-      | _ -> R.error `Invalid_signature
-    end
     >>= fun root_pk ->
+
+    (* TODO verify expiry date*)
 
     (* TODO extract version from the root_pk and make sure the remaining packets use the same version *)
 
@@ -312,7 +337,7 @@ let verify
     else R.ok packets
     >>= list_drop_e_n `Invalid_packet (2*uids_count)
     >>= fun packets ->
-    let rec check_uids_and_sigs =
+    let rec check_uids_and_sigs acc =
       begin function
         | (uid_cs,sig_cs)::tl ->
           Uid_packet.parse_packet uid_cs >>= fun uid ->
@@ -333,7 +358,7 @@ let verify
 
           in
           (* TODO handle version V3 *)
-          let () = Public_key_packet.(hash_cb |> (serialize V4 public_key |> hash_public_key)) in
+          let () = Public_key_packet.(hash_cb |> (serialize V4 root_pk |> hash_public_key)) in
           let () = Uid_packet.hash uid hash_cb V4 in
           construct_to_be_hashed_cs signature
           >>= fun tbh ->
@@ -343,11 +368,11 @@ let verify
           |> R.reword_error (function err ->
               Logs.debug (fun m -> m "signature check failed on a uid sig"); err)
           >>= fun _ ->
-          check_uids_and_sigs tl
-        | [] -> R.ok ()
+          check_uids_and_sigs ({uid; certifications = [signature]}::acc) tl
+        | [] -> R.ok (List.rev acc)
       end
     in
-    check_uids_and_sigs uids_and_sigs >>= fun () ->
+    check_uids_and_sigs [] uids_and_sigs >>= fun verified_uids ->
 
     find_sig_pair User_attribute_tag packets
     >>= fun user_attributes_and_sigs ->
@@ -369,7 +394,7 @@ let verify
 
     debug_if_any "subkeys_and_sigs" subkeys_and_sigs ;
 
-    let rec check_subkeys_and_sigs =
+    let rec check_subkeys_and_sigs acc =
       begin function
         | (subkey_cs,sig_cs)::tl ->
           Public_key_packet.parse_packet subkey_cs
@@ -420,18 +445,25 @@ let verify
           >>= fun tbh -> let () = hash_cb tbh in
           check_signature root_pk signature.hash_algorithm
             hash_final signature
-          >>= fun _ -> check_subkeys_and_sigs tl
-        | [] -> R.ok ()
+          >>= fun _ -> check_subkeys_and_sigs
+                       ({key = subkey; signature; revocation = None}::acc) tl
+        | [] -> R.ok (List.rev acc)
       end
     in
-    check_subkeys_and_sigs subkeys_and_sigs >>= fun () ->
+    check_subkeys_and_sigs [] subkeys_and_sigs >>= fun verified_subkeys ->
 
     (* Final check: *)
-    if List.length packets <> 0 then begin
+    (* TODO if List.length packets <> 0 then begin
       debug_packets packets ;
       R.error `Extraneous_packets_after_signature
-    end else
-       R.ok `Good_signature
+    end else *)
+       R.ok ({
+         root_key = root_pk
+       ; revocations = [] (* TODO *)
+       ; uids = verified_uids
+       ; user_attributes = [] (* TODO *)
+       ; subkeys = verified_subkeys
+       }, packets)
     (* one byte version
        | V3 -> 4 bytes timestamp
        | V4 -> pk algo, hash algo, two bytes len of sig->hashed, version, 0xff, len of all this data hashed

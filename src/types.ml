@@ -3,38 +3,33 @@ open Usane
 
 let list_find_leading (f: 'a -> ('b,'c)result) (lst : 'a list)
       : ('d list, 'error) result =
-      let rec loop acc tl =
-        begin match tl with
+      let rec loop acc = function
         | m::tl ->
           begin match f m with
             | Ok value -> loop (value::acc) tl
             | Error _ -> loop acc []
           end
         | [] -> R.ok (List.rev acc)
-        end
       in
       loop [] lst
 
 let list_find_leading_pairs (f: 'a -> 'a -> ('c,'err) result)
     (lst: 'a list) : ('c list, 'err) result =
-    let rec loop acc (haystack: 'a list) =
-      begin match haystack with
+    let rec loop acc = function
         | a::b::tl ->
           begin match f a b with
             | Ok x -> loop (x::acc) tl
             | Error _ -> R.ok (List.rev acc)
           end
         | ([]|(_::_)) -> R.ok (List.rev acc)
-      end
     in
     loop [] lst
 
 let list_drop_e_n (err:'error) n lst : ('a list,'error) result =
-  let rec loop i = begin function
+  let rec loop i = function
     | tl when i <= 0 -> R.ok tl
     | _::tl -> loop (i-1) tl
     | [] -> R.error err
-    end
   in
   loop n lst;;
 
