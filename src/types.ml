@@ -33,6 +33,11 @@ let list_drop_e_n (err:'error) n lst : ('a list,'error) result =
   in
   loop n lst;;
 
+let list_take_leading f lst : ('a list * 'b list, 'error)result =
+  list_find_leading f lst
+  >>= fun left ->
+  Ok (left, list_drop_e_n `Guarded (List.length left) lst |> R.get_ok)
+
 module type Keytype = sig
   type t
 end

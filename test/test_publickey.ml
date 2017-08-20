@@ -1,7 +1,6 @@
 open QCheck
 open QCheck.Test
 open Rresult
-open OUnit2
 open Public_key_packet
 open Openpgp
 
@@ -22,8 +21,7 @@ let asciiz =
 let test_unpack_ascii_armor _ =
   check_exn @@ QCheck.Test.make ~count:1
     ~name:"unpack ascii armor"
-    (triple string string small_int)
-    @@ (fun (username, hostname, port) ->
+    (unit) @@ (fun () ->
       begin match Openpgp.decode_ascii_armor test_pkp_cstruct with
       | Ok x -> x = x
       | Error `Invalid -> failwith "invalid"
@@ -36,41 +34,44 @@ let test_unpack_ascii_armor _ =
 let test_self_check _ =
   print_newline () ;
   (Openpgp.decode_ascii_armor test_pkp_cstruct
-   >>= fun (ascii_packet_type , unasciied) ->
+   >>= fun (_, unasciied) ->
    Openpgp.next_packet unasciied
-   >>= fun (Some (packet_tag, pkt_body, next_packet)) ->
-   Ok (packet_tag, pkt_body, next_packet)
+   >>= begin function
+     | (Some (packet_tag, pkt_body, next_packet)) ->
+        Ok (packet_tag, pkt_body, next_packet)
+     | _ -> failwith "unable to parse unasciied"
+   end
   )|>
   begin function
     | Error (`Incomplete_packet) -> failwith "self_check need more bytes"
     | Error (`Invalid_packet) -> failwith "self_check: invalid packet"
   | Error _ -> failwith "self_check ascii armor"
   | Ok (tag, pkt_body, _) ->
-    (Openpgp.parse_packet tag pkt_body >>=
+    let _ = (Openpgp.parse_packet_body tag pkt_body >>=
     begin function
     | (Public_key_packet {algorithm_specific_data = Public_key_packet.DSA_pubkey_asf pub; _}) ->
       let()=Printf.printf "\nPkt len:%d - got a %d-bit DSA key: %s\n"
           Cstruct.(len pkt_body) Z.(numbits pub.p) Public_key_packet.(v4_key_id pkt_body) in
       R.ok ()
     | _ -> failwith "Invalid_packet"
-    end); ()
+    end) in ()
   end
 
 let test_verify_signature _ =
   begin match
       ( Openpgp.decode_ascii_armor test_pkp_cstruct
       |> R.reword_error (fun _ -> -1, `Invalid_packet)
-          >>= fun (ascii_packet_type, unasciied) ->
+          >>= fun (_, unasciied) ->
         Openpgp.parse_packets unasciied
   >>= fun pkt_lst ->
-  let pk_t, pk_cs =
+  let _ =
     begin match List.nth pkt_lst 0 with
       | Public_key_packet x , x_cs_tl -> x , x_cs_tl
       | _ -> failwith "x" end
   in
-  let sig_t , sig_cs =
+  let _ , sig_cs =
     begin match List.nth pkt_lst 2 with
-      | Signature_packet res, pkt ->
+      | Signature_type res, pkt ->
         res, pkt
       | _ -> failwith "verify what?" end
   in
@@ -114,10 +115,9 @@ let test_keys _ =
     in
     loop []
   in
-  files ;
-  ()
+  let _ = files in ()
 
-let suite = [
+let suite = OUnit2.[
   "unpack_ascii_armor" >:: test_unpack_ascii_armor;
   "self_check" >:: test_self_check;
   "verify_signature" >:: test_verify_signature;

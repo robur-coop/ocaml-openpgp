@@ -40,14 +40,14 @@ module Signature : sig
 end
 
 type packet_type =
-  | Signature_packet of Signature.t
+  | Signature_type of Signature.t
   | Public_key_packet of Public_key_packet.t
   | Public_key_subpacket of Public_key_packet.t
   | Uid_packet of Uid_packet.t
 
 val packet_tag_of_packet : packet_type -> packet_tag_type
 
-val parse_packet : packet_tag_type -> Cstruct.t ->
+val parse_packet_body : packet_tag_type -> Cstruct.t ->
   (packet_type
    ,
    [> `Incomplete_packet

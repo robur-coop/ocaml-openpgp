@@ -11,13 +11,13 @@ open Types
 *)
 
 type packet_type =
-  | Signature_packet of Signature_packet.t
+  | Signature_type of Signature_packet.t
   | Public_key_packet of Public_key_packet.t
   | Public_key_subpacket of Public_key_packet.t
   | Uid_packet of Uid_packet.t
 
 let packet_tag_of_packet = begin function
-  | Signature_packet _ -> Signature_tag
+  | Signature_type _ -> Signature_tag
   | Public_key_packet _ -> Public_key_tag
   | Public_key_subpacket _ -> Public_key_subpacket_tag
   | Uid_packet _ -> Uid_tag
@@ -118,7 +118,7 @@ let decode_ascii_armor (buf : Cstruct.t) =
   >>= fun () ->
   Ok (pkt_type, decoded)
 
-let parse_packet packet_tag pkt_body : (packet_type,'error) result =
+let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
   begin match packet_tag with
     | Public_key_tag ->
       Public_key_packet.parse_packet pkt_body
@@ -131,11 +131,15 @@ let parse_packet packet_tag pkt_body : (packet_type,'error) result =
       >>| fun pkt -> Uid_packet pkt
     | Signature_tag ->
       Signature_packet.parse_packet pkt_body
-      >>| fun pkt -> Signature_packet pkt
+      >>| fun pkt -> Signature_type pkt
     | Secret_key_tag
     | Secret_subkey_packet_tag
     | User_attribute_tag ->
       R.error (`Unimplemented_algorithm 'P') (*TODO should have it's own (`Unimplemented of [`Algorithm of char | `Tag of char | `Version of char])*)
+  end
+
+let hash_packet version hash_cb = begin function
+  | Uid_packet pkt -> Uid_packet.hash pkt hash_cb version
   end
 
 let next_packet (full_buf : Cs.t) :
@@ -160,8 +164,9 @@ let next_packet (full_buf : Cs.t) :
       Ok (Some (packet_tag , pkt_body, next_packet))
   end
 
-let parse_packet_bodies parser body_lst =
-  List.fold_left (fun acc -> fun (cs:Cs.t) ->
+let parse_packet_bodies (parser : 'a -> ('b,'c) result) (body_lst : 'a list) =
+  (* TODO perhaps this function should be called concat_result or similar *)
+  List.fold_left (fun acc -> fun cs ->
             acc >>= fun acc ->
             parser cs >>= fun parsed ->
             R.ok (parsed::acc)
@@ -174,7 +179,7 @@ let parse_packets cs : (('ok * Cs.t) list, int * 'error) result =
     |> R.reword_error (fun a -> cs_tl.Cstruct.off, a)
     >>= begin function
       | Some (packet_type , pkt_body, next_tl) ->
-        (parse_packet packet_type pkt_body
+        (parse_packet_body packet_type pkt_body
         |> R.reword_error (fun e -> List.length acc , e))
         >>= fun parsed ->
         loop ((parsed,pkt_body)::acc) next_tl
@@ -252,8 +257,7 @@ struct
                  end)
                ^" : "^ (string_of_int (Cs.len cs))
              )
-           |> String.concat "\n|  ")
-      )
+           |> String.concat "\n|  "))
   in
 
   let debug_if_any s = begin function
@@ -266,9 +270,8 @@ struct
   let () = debug_packets packets in
   (* RFC 4880: - One Public-Key packet: *)
   begin match packets with
-    | (Public_key_tag, pub_cs)::tl ->
-      R.ok (pub_cs, tl)
-    | _ -> R.error `Invalid_signature
+    | (Public_key_tag, pub_cs) :: tl -> R.ok (pub_cs, tl)
+    | _ -> R.error `Invalid_signature (* TODO more like `Unexpected_packet *)
   end
   >>= fun (root_pub_cs , packets) ->
 
@@ -281,7 +284,7 @@ struct
        Pick your poison.
     *)
     Public_key_packet.parse_packet root_pub_cs
-    |> R.reword_error (function _ -> `Invalid_signature)
+    |> R.reword_error (function _ -> `Invalid_packet)
     >>= fun root_pk ->
 
     (* TODO verify expiry date*)
@@ -290,8 +293,7 @@ struct
 
     let find_sig_pair (needle_one:packet_tag_type) (haystack:(packet_tag_type*Cs.t)list) =
     (* finds pairs (needle_one, needle_two) at the head of haystack
-       if needle_two is None, it ignored
-*)
+       if needle_two is None, it is ignored *)
       list_find_leading_pairs
         (fun (tag1,cs1) -> fun (tag2,cs2) ->
            if tag1 = needle_one && tag2 = Signature_tag
@@ -301,87 +303,99 @@ struct
     in
 
     let pair_must_be tag = function
-      | (t,cs) when t = tag -> Ok cs
+      | (t,cs) when t = tag -> Ok (t,cs)
       | _ -> Error `Invalid_packet
     in
-    let sig_is_type typ s =
-      if s.signature_type = typ
-      then R.ok s
-      else R.error `Invalid_packet
+
+    let take_signatures_of_types sig_types (packets:(packet_tag_type*Cs.t)list) =
+      packets |> list_take_leading
+        (fun (_,cs) ->
+           parse_packet cs >>= fun signature ->
+           if List.exists (fun t -> t = signature.signature_type) sig_types
+           then Ok signature
+           else Error `Invalid_packet
+        )
     in
 
-    list_find_leading (pair_must_be Signature_tag) packets
-    >>= parse_packet_bodies parse_packet
-    >>= list_find_leading (sig_is_type Key_revocation_signature)
-    >>= fun revocation_signatures ->
-    list_drop_e_n `Invalid_packet
-      (List.length revocation_signatures) packets
-    >>= fun packets ->
-  (* TODO RFC 4880: - Zero or more revocation signatures: *)
-  (* revocation keys are detailed here:
-     https://tools.ietf.org/html/rfc4880#section-5.2.3.15 *)
-  (* TODO check revocation signatures *)
+    (* RFC 4880: Zero or more revocation signatures: *)
+    take_signatures_of_types [Key_revocation_signature] packets
+    >>= fun (revocation_signatures , packets) ->
+    (* revocation keys are detailed here:
+       https://tools.ietf.org/html/rfc4880#section-5.2.3.15 *)
+    (* TODO check revocation signatures *)
 
     (* RFC 4880: - One or more User ID packets: *)
-  (*Immediately following each User ID packet, there are zero or more
+    (* Immediately following each User ID packet, there are zero or more
    Signature packets.  Each Signature packet is calculated on the
    immediately preceding User ID packet and the initial Public-Key
     packet.*)
     (* TODo (followed by zero or more signature packets) -- we fail if there are unsigned Uids - design feature? *)
-    find_sig_pair Uid_tag packets
-    >>= fun uids_and_sigs ->
-    debug_if_any "uids and sigs" uids_and_sigs;
-    let uids_count = List.length uids_and_sigs in
-    if uids_count = 0 || uids_count > 1000
-    then R.error `Invalid_packet
-    else R.ok packets
-    >>= list_drop_e_n `Invalid_packet (2*uids_count)
-    >>= fun packets ->
-    let rec check_uids_and_sigs acc =
-      begin function
-        | (uid_cs,sig_cs)::tl ->
-          Uid_packet.parse_packet uid_cs >>= fun uid ->
-          Signature_packet.parse_packet sig_cs >>= fun signature ->
-          (* check signature.signature_type: *)
-          begin match signature.signature_type with
-            | Generic_certification_of_user_id_and_public_key_packet
-            | Persona_certification_of_user_id_and_public_key_packet
-            | Casual_certification_of_user_id_and_public_key_packet
-            | Positive_certification_of_user_id_and_public_key_packet
-              -> R.ok()
-            |_ -> R.error `Invalid_signature
-          end
-          >>= fun () ->
-          (* set up hashing with this signature: *)
-          let (hash_cb, hash_final) =
-            Signature_packet.digest_callback signature.hash_algorithm
-
-          in
-          (* TODO handle version V3 *)
-          let () = Public_key_packet.(hash_cb |> (serialize V4 root_pk |> hash_public_key)) in
-          let () = Uid_packet.hash uid hash_cb V4 in
-          construct_to_be_hashed_cs signature
-          >>= fun tbh ->
-          let()= hash_cb tbh in
-          check_signature root_pk
-            signature.hash_algorithm hash_final signature
-          |> R.reword_error (function err ->
-              Logs.debug (fun m -> m "signature check failed on a uid sig"); err)
-          >>= fun _ ->
-          check_uids_and_sigs ({uid; certifications = [signature]}::acc) tl
-        | [] -> R.ok (List.rev acc)
-      end
+    let validate_uid_signature root_pk (uid:packet_type) signature =
+      (* set up hashing with this signature: *)
+      let (hash_cb, hash_final) =
+        Signature_packet.digest_callback signature.hash_algorithm
+      in
+      (* TODO handle version V3 *)
+      let () = Public_key_packet.hash_public_key
+                 (Public_key_packet.serialize V4 root_pk) hash_cb in
+      let () = hash_packet V4 hash_cb uid in
+      construct_to_be_hashed_cs signature
+      >>= fun tbh ->
+      let()= hash_cb tbh in
+      check_signature root_pk signature.hash_algorithm hash_final signature
+      |> R.reword_error (function err ->
+          Logs.debug (fun m -> m "signature check failed on a uid sig"); err)
     in
-    check_uids_and_sigs [] uids_and_sigs >>= fun verified_uids ->
+    let take_and_validate_certifications packet_tag (validation_callback : 'pubkey -> packet_type -> Signature_packet.t -> ('ok,'error) result) sig_types packets =
+       let rec inner_loop (acc : (packet_type * Signature_packet.t list) list) packets =
+       let (objects, (packets:(packet_tag_type*Cs.t)list)) =
+         list_take_leading (pair_must_be packet_tag) packets |> R.get_ok
+        in
+      if List.length objects = 0 then
+        (* Return from loop: *)
+        Ok (List.rev acc , packets)
+      else
+      (* Drop unsigned objects: *)
+      list_drop_e_n `Invalid_packet ((List.length objects)-1) objects
+      >>= fun [(object_type, object_cs)] ->
+      packets |> take_signatures_of_types sig_types
+      >>= fun (certifications, packets) ->
+      parse_packet_body object_type object_cs >>= fun obj ->
+      (* The certifications can be made by anyone, we are only concerned with the ones made by the root_pk *)
+      let valid_certifications =
+        certifications |> List.filter
+        (fun certification ->
+         match validation_callback root_pk obj certification with
+         | Ok `Good_signature -> true
+         | _ -> false
+        )
+      in
+      if List.length valid_certifications < 1 then
+         R.error `Invalid_signature
+      else
+         inner_loop ((obj, valid_certifications)::acc) packets
+      in inner_loop [] packets
+    in
+    packets |> take_and_validate_certifications Uid_tag (validate_uid_signature)
+        [ Generic_certification_of_user_id_and_public_key_packet
+        ; Persona_certification_of_user_id_and_public_key_packet
+        ; Casual_certification_of_user_id_and_public_key_packet
+        ; Positive_certification_of_user_id_and_public_key_packet]
+    >>= fun (verified_uids , packets) ->
+    if List.length verified_uids < 1
+    then R.error `Invalid_packet
+    else R.ok ()
+    >>= fun () ->
+    let verified_uids =
+      verified_uids |> List.map (fun (Uid_packet uid,certifications) -> {uid;certifications})
+    in
 
-    find_sig_pair User_attribute_tag packets
-    >>= fun user_attributes_and_sigs ->
-    list_drop_e_n `Invalid_packet (List.length user_attributes_and_sigs) packets
-    >>= fun packets ->
-
-    (* TODO check user_attributes *)
-
-    debug_if_any "user_attributes" user_attributes_and_sigs ;
+    (* Validate user attributes (basically, embedded image files) *)
+    let validate_user_attribute_signature _ _ _ (* root_pk obj signature*) =
+            R.error `Not_implemented
+    in
+    packets |> take_and_validate_certifications User_attribute_tag (validate_user_attribute_signature) []
+    >>= fun (verified_user_attributes, packets) ->
 
     (* TODO technically these (pk subpackets) can be followed by revocation signatures; we don't handle that *)
     find_sig_pair Public_key_subpacket_tag packets
