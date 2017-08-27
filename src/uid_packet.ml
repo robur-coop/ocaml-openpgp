@@ -10,12 +10,14 @@ open Rresult
    restrictions on its content.  The packet length in the header
        specifies the length of the User ID.*)
     (* TODO UTF-8 validation *)
-    R.ok (Cs.to_string buf)
+    let s = Cs.to_string buf in
+    let()=Logs.debug (fun m -> m "UID: '%S'" s) in
+    R.ok s
 
 let hash (t:string) hash_cb version =
   let cs = Cs.of_string t in
   begin match version with
-  | Types.V3 -> ()
+  | Types.V3 -> () (* TODO not implemented *)
   | Types.V4 ->
     hash_cb (Cs.of_string "\xB4") ;
     let len = Cstruct.create 4 in

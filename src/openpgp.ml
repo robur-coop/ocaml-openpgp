@@ -1,15 +1,6 @@
 open Rresult
 open Types
 
-(* TODO
-   BEGIN PGP
-       MESSAGE
-       PRIVATE KEY BLOCK
-       MESSAGE, PART X/Y
-       MESSAGE, PART X
-       SIGNATURE
-*)
-
 type packet_type =
   | Signature_type of Signature_packet.t
   | Public_key_packet of Public_key_packet.t
@@ -47,6 +38,8 @@ let decode_ascii_armor (buf : Cstruct.t) =
   begin match Cs.to_string begin_type with
       | "PUBLIC KEY BLOCK" -> Ok Ascii_public_key_block
       | "SIGNATURE" -> Ok Ascii_signature
+      | "MESSAGE" -> Ok Ascii_message
+      | "PRIVATE KEY BLOCK" -> Ok Ascii_private_key_block
       | _ -> Error `Invalid_key_type (*TODO better error*)
   end
   >>= fun pkt_type ->
@@ -109,8 +102,10 @@ let decode_ascii_armor (buf : Cstruct.t) =
     Cs.e_equal_string `Missing_end_block "-----END PGP PUBLIC KEY BLOCK-----" end_line
   | Ascii_signature ->
     Cs.e_equal_string `Missing_end_block "-----END PGP SIGNATURE-----" end_line
-  | Ascii_private_key_block
-  | Ascii_message
+  | Ascii_message ->
+    Cs.e_equal_string `Missing_end_block "-----END PGP MESSAGE-----" end_line
+  | Ascii_private_key_block ->
+    Cs.e_equal_string `Missing_end_block "-----END PGP PRIVATE KEY BLOCK-----" end_line
   | Ascii_message_part_x _
   | Ascii_message_part_x_of_y _ ->
      Error `Malformed (* TODO `Not_implemented *)
@@ -140,6 +135,9 @@ let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
 
 let hash_packet version hash_cb = begin function
   | Uid_packet pkt -> Uid_packet.hash pkt hash_cb version
+  | Public_key_packet pkt ->
+      Public_key_packet.hash_public_key
+        (Public_key_packet.serialize version pkt) hash_cb
   end
 
 let next_packet (full_buf : Cs.t) :
@@ -179,6 +177,7 @@ let parse_packets cs : (('ok * Cs.t) list, int * 'error) result =
     |> R.reword_error (fun a -> cs_tl.Cstruct.off, a)
     >>= begin function
       | Some (packet_type , pkt_body, next_tl) ->
+        let()= Logs.debug (fun m -> m "Will read a %s packet" (string_of_packet_tag_type packet_type)) in
         (parse_packet_body packet_type pkt_body
         |> R.reword_error (fun e -> List.length acc , e))
         >>= fun parsed ->
@@ -211,7 +210,7 @@ struct
     }
 
   type transferable_public_key =
-    {
+    { (* V4 public key. V3 is slightly different (see RFC 4880: 12.1)*)
     (* One Public-Key packet *)
       root_key : Public_key_packet.t
       (* Zero or more revocation signatures *)
@@ -223,6 +222,61 @@ struct
     (* Zero or more subkey packets *)
     ; subkeys : subkey list
     }
+
+  let check_signature_transferable pk hash_algorithm hash_final signature =
+    let pks = pk.root_key :: (pk.subkeys |> List.map (fun k -> k.key)) in (*TODO filter out non-signing-keys*)
+    check_signature pks hash_algorithm hash_final signature
+
+  let verify_detached_cb (pk:transferable_public_key) (signature:t) (cb:(unit -> (Cs.t option,'error) result)     )
+  : ('ok, 'error) result =
+    (* TODO check pk is valid *)
+    if signature.signature_type <> Signature_of_binary_document then
+      (* TODO not implemented: we don't handle the newline-normalized (->\r\n)
+              signature_type.Signature_of_canonical_text_document *)
+      Error `Invalid_signature
+    else
+    let (hash_cb, hash_final) =
+      Signature_packet.digest_callback signature.hash_algorithm
+    in
+    let rec hash_loop () =
+      cb () >>= function
+      | None -> Ok signature
+      | Some data -> hash_cb data ; hash_loop ()
+    in hash_loop ()
+    >>= construct_to_be_hashed_cs
+    >>= fun tbh -> let () = hash_cb tbh in
+    check_signature_transferable pk signature.hash_algorithm hash_final signature
+
+  let check_embedded_signature pk t subkey =
+    (* RFC 4880: 0x19: Primary Key Binding Signature
+       This signature is a statement by a signing subkey, indicating
+       that it is owned by the primary key and subkey.  This signature
+       is calculated the same way as a 0x18 signature: directly on the
+        primary key and subkey, and not on any User ID or other packets. *)
+    begin match t.signature_type <> Primary_key_binding_signature with
+      | true ->
+        let()= Logs.debug (fun m -> m "Rejecting embedded signature with invalid signature_type") in
+        R.error `Invalid_signature
+      | false -> R.ok ()
+    end >>= fun () ->
+
+    (* set up hashing with this signature: *)
+    let (hash_cb, hash_final) =
+      Signature_packet.digest_callback t.hash_algorithm
+    in
+    (* This signature is calculated directly on the
+       primary key and subkey, and not on any User ID or other packets.*)
+    hash_packet V4 hash_cb (Public_key_packet pk);
+    hash_packet V4 hash_cb (Public_key_packet subkey) ;
+    construct_to_be_hashed_cs t
+    >>= fun tbh -> let () = hash_cb tbh in
+    check_signature [subkey] t.hash_algorithm hash_final t
+    |> R.reword_error (fun err ->
+        let()= Logs.debug (fun m -> m "Rejecting invalid embedded signature") in
+        err)
+    >>= fun `Good_signature ->
+    let()= Logs.debug (fun m -> m "Accepting embedded signature") in
+    Ok `Good_signature
 
   let root_pk_of_packets (* TODO aka root_key_of_packets *)
     (packets : (packet_tag_type * Cs.t) list)
@@ -243,7 +297,6 @@ struct
   (* this function imports the output of gpg --export *)
 
   (* this would be a good place to wonder what kind of crack the spec people smoked while writing 5.2.4: Computing Signatures...*)
-
   let debug_packets packets =
     (* TODO learn how to make pretty printers *)
     Logs.debug (fun m ->
@@ -330,23 +383,22 @@ struct
    immediately preceding User ID packet and the initial Public-Key
     packet.*)
     (* TODo (followed by zero or more signature packets) -- we fail if there are unsigned Uids - design feature? *)
-    let validate_uid_signature root_pk (uid:packet_type) signature =
+    let validate_uid_signature (root_pk:Public_key_packet.t) (uid:packet_type) signature =
       (* set up hashing with this signature: *)
       let (hash_cb, hash_final) =
         Signature_packet.digest_callback signature.hash_algorithm
       in
       (* TODO handle version V3 *)
-      let () = Public_key_packet.hash_public_key
-                 (Public_key_packet.serialize V4 root_pk) hash_cb in
+      let () = hash_packet V4 hash_cb (Public_key_packet root_pk) in
       let () = hash_packet V4 hash_cb uid in
       construct_to_be_hashed_cs signature
       >>= fun tbh ->
       let()= hash_cb tbh in
-      check_signature root_pk signature.hash_algorithm hash_final signature
+      check_signature [root_pk] signature.hash_algorithm hash_final signature
       |> R.reword_error (function err ->
           Logs.debug (fun m -> m "signature check failed on a uid sig"); err)
     in
-    let take_and_validate_certifications packet_tag (validation_callback : 'pubkey -> packet_type -> Signature_packet.t -> ('ok,'error) result) sig_types packets =
+    let take_and_validate_certifications packet_tag (validation_callback : Public_key_packet.t -> packet_type -> Signature_packet.t -> ('ok,'error) result) sig_types packets =
        let rec inner_loop (acc : (packet_type * Signature_packet.t list) list) packets =
        let (objects, (packets:(packet_tag_type*Cs.t)list)) =
          list_take_leading (pair_must_be packet_tag) packets |> R.get_ok
@@ -441,23 +493,48 @@ struct
        contains a 0x19 signature made by the signing subkey on the
              primary key and subkey: *)
 
-          (* TODO implement checking of Embedded Signature subpackets.
-              for now we just reject: *)
           begin match subkey.Public_key_packet.algorithm_specific_data with
             | Public_key_packet.RSA_pubkey_encrypt_asf _
-            | Public_key_packet.Elgamal_pubkey_asf _ -> R.ok ()
+            | Public_key_packet.Elgamal_pubkey_asf _ ->
+              R.ok ()
             | Public_key_packet.RSA_pubkey_sign_asf _
             | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf _
             | Public_key_packet.DSA_pubkey_asf _ ->
-              Logs.debug (fun m -> m "TODO this signature binds a signing subkey. it must have an Embedded Signature subpacket that contains a 0x19 signature made by the signing subkey on the primary key and subkey to prevent a person from stealing other people's keys. this is not implemented, so for safety reasons we reject it. sorry.");
-              Error (`Unimplemented_algorithm
-                       (char_of_public_key_algorithm DSA))
+           (* 5.2.3.21.  Key Flags
+              The flags in this packet may appear in self-signatures or in
+              certification signatures.  They mean different things depending on
+              who is making the statement -- for example, a certification
+              signature that has the "sign data" flag is stating that the
+              certification is for that use. *)
+              if List.filter (function (Some (Key_usage_flags _),_,_)->true
+                                     |_->false) signature.subpacket_data
+                 |> List.for_all (function
+                  | ((Some (Key_usage_flags {usage_certify_keys = false;usage_sign_data = false})),_,_) -> true
+                  | _ -> false
+                   ) then
+                let()=Logs.debug (fun m -> m "Accepting subkey binding without embedded signature because the key flags have {usage_certify_keys=false;usage_sign_data=false}" ) in
+                R.ok ()
+              else
+              (* Subkeys that can be used for signing must accept inclusion by
+                 embedding a signature on the root key (made using the subkey)*)
+              let rec loop = function
+                | [] ->
+                  let()=Logs.debug (fun m -> m "no embedded signature subpacket in subkey binding signature [TODO: parse 'Key Flags' properly to preclude keys without the certification bit] ") in
+                  R.error `Invalid_packet
+                | (_, Embedded_signature, embedded_cs)::_ ->
+                  Signature_packet.parse_packet embedded_cs
+                  >>= fun embedded_sig ->
+                  check_embedded_signature root_pk embedded_sig subkey
+                | _::tl -> loop tl
+              in
+              loop signature.subpacket_data
+              >>= fun `Good_signature -> R.ok ()
           end
           >>= fun () ->
 
           construct_to_be_hashed_cs signature
           >>= fun tbh -> let () = hash_cb tbh in
-          check_signature root_pk signature.hash_algorithm
+          check_signature [root_pk] signature.hash_algorithm
             hash_final signature
           >>= fun _ -> check_subkeys_and_sigs
                        ({key = subkey; signature; revocation = None}::acc) tl

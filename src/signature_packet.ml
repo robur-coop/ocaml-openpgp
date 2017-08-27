@@ -12,12 +12,11 @@ type signature_asf =
 type t = {
   (* TODO consider some fancy gadt thing here*)
   signature_type : signature_type ;
-  (* note: pk algo type is inferred from asf variant *)
-  (* public_key_algorithm : public_key_algorithm ; *)
+  public_key_algorithm : public_key_algorithm ;
   hash_algorithm : hash_algorithm ;
   (* This implementation ignores "unhashed subpacket data",
      so we only store "hashed subpacket data": *)
-  subpacket_data : (signature_subpacket_tag * Cs.t) list ;
+  subpacket_data : (signature_subpacket option * signature_subpacket_tag * Cs.t) list ;
   algorithm_specific_data : signature_asf;
 }
 
@@ -37,18 +36,20 @@ let compute_digest hash_algo to_be_hashed =
 
 let serialize_signature_subpackets subpackets : Cs.t =
   subpackets |> List.map
-    (fun (_,subpkt) ->
+    (fun (parsed,tag,subpkt) ->
        Logs.debug (fun m -> m "serializing subpackets of len %d: %s"
                       (Cs.len subpkt) (Cs.to_hex subpkt));
 
        (* TODO need to implement the "critical bit" (leftmost bit=1) on subpacket tag types here if they are critical.*)
 
-       Cs.concat [serialize_packet_length subpkt; subpkt]
+       Cs.concat [serialize_packet_length_int (1 + Cs.len subpkt)
+                 (* ^-- 1 byte for the tag *)
+                 ; cs_of_signature_subpacket_tag tag; subpkt]
     )
   |> Cs.concat
 
 
-let check_signature (public_key:Public_key_packet.t)
+let check_signature (public_keys : Public_key_packet.t list)
     hash_algo
     digest_finalizer
     t  : ('ok, 'err) result =
@@ -62,19 +63,49 @@ let check_signature (public_key:Public_key_packet.t)
    evaluator SHOULD consider the signature to be in error.
   *)
   let digest = digest_finalizer () in
-  begin match public_key.Public_key_packet.algorithm_specific_data ,
-              t.algorithm_specific_data with
-  | Public_key_packet.DSA_pubkey_asf key, DSA_sig_asf {r;s;} ->
-    dsa_asf_are_valid_parameters ~p:key.Nocrypto.Dsa.p ~q:key.Nocrypto.Dsa.q ~hash_algo
-    >>= fun () ->
-    let cs_r = cs_of_mpi_no_header r in
-    let cs_s = cs_of_mpi_no_header s in
-    begin match Nocrypto.Dsa.verify ~key (cs_r,cs_s) digest with
+  let rec loop pks =
+    match pks with
+    | [] -> Error `Invalid_signature
+    | pk::remaining_keys ->
+    (* TODO should look for hints (signature subpacket data) to the id of the key being used instead of bruting our way through the keys *)
+    let res =
+    (begin match pk.Public_key_packet.algorithm_specific_data ,
+                t.algorithm_specific_data with
+    | Public_key_packet.DSA_pubkey_asf key, DSA_sig_asf {r;s;} ->
+      dsa_asf_are_valid_parameters ~p:key.Nocrypto.Dsa.p ~q:key.Nocrypto.Dsa.q ~hash_algo
+      >>= fun () ->
+      let()= Logs.debug (fun m -> m "Trying to verify a DSA signature") in
+      let cs_r = cs_of_mpi_no_header r in
+      let cs_s = cs_of_mpi_no_header s in
+      begin match Nocrypto.Dsa.verify ~key (cs_r,cs_s) digest with
+        | true -> R.ok `Good_signature
+        | false -> R.error `Invalid_signature
+      end
+      | ( Public_key_packet.RSA_pubkey_sign_asf pub
+      | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf pub), RSA_sig_asf {m_pow_d_mod_n} ->
+        (* TODO validate parameters? *)
+        let()= Logs.debug (fun m ->
+            m "Trying to verify computed digest\n%s\n against an RSA signature %s"
+              (Cs.to_hex digest)
+              (Cs.to_hex (cs_of_mpi_no_header m_pow_d_mod_n)))
+        in
+        let module PKCS : Nocrypto.Rsa.PKCS1.S =
+              (val (nocrypto_pkcs_module_of_hash_algorithm t.hash_algorithm)) in
+      begin match PKCS.verify_cs ~key:pub ~digest (cs_of_mpi_no_header m_pow_d_mod_n) with
       | true -> R.ok `Good_signature
-      | false -> R.error `Invalid_signature
-    end
-  | _ , _ -> R.error (`Unimplemented_algorithm '=')
-  end
+      | false ->
+        let()= Logs.debug (fun m -> m "RSA signature validation failed") in
+        R.error `Invalid_signature
+      end
+    | _ , _ -> Logs.debug (fun m -> m "Not implemented: Validating signatures with this pk type") ;
+               R.error (`Unimplemented_algorithm '=') (* TODO clarify error message *)
+    end)
+    in
+    if res = Error `Invalid_signature then begin
+      let() = Logs.debug (fun m -> m "Failed to verify signature, trying next key (if any)") in
+      loop remaining_keys
+    end else (Logs.debug (fun m -> m "Got a good signature!"); res)
+  in loop public_keys
 
 let construct_to_be_hashed_cs t : ('ok,'error) result =
   let buf = Buffer.create 10 in
@@ -92,14 +123,9 @@ let construct_to_be_hashed_cs t : ('ok,'error) result =
 
   char (char_of_signature_type t.signature_type) ;
 
-  char (char_of_public_key_algorithm
-          begin match t.algorithm_specific_data with
-            | RSA_sig_asf _ -> RSA_sign_only
-            (* TODO this is not correct;
-               TODO it doesn't allow for RSA_encrypt_or_sign*)
-            | DSA_sig_asf _ -> DSA
-          end
-       ) ;
+  char (char_of_public_key_algorithm t.public_key_algorithm) ;
+  (* Can't infer this from the algo-specific data type because
+     RSA_sign_only vs RSA_encrypt_or_sign generate different bytes here.*)
 
   char (char_of_hash_algorithm t.hash_algorithm) ;
 
@@ -135,7 +161,7 @@ let construct_to_be_hashed_cs t : ('ok,'error) result =
   in
   R.ok (Buffer.contents buf|>Cstruct.of_string)
 
-let parse_subpacket buf : (signature_subpacket_tag , [> `Invalid_packet]) result =
+let parse_subpacket buf : (signature_subpacket option * signature_subpacket_tag * Cs.t, [> `Invalid_packet]) result =
   (* TODO this function should return the parsed data also, but need to write more parsers and add a type for that *)
   Cs.e_split `Invalid_packet buf 1 >>= fun (tag, data) ->
   let tag_c, is_critical =
@@ -149,45 +175,55 @@ let parse_subpacket buf : (signature_subpacket_tag , [> `Invalid_packet]) result
    evaluator SHOULD consider the signature to be in error.
     *)
   in
+  let()=Logs.debug (fun m -> m "parse_subpacket: %C %s" tag_c (Cs.to_hex data)) in
   signature_subpacket_tag_of_char tag_c
-  |> R.reword_error (function
-      |`Invalid_length -> Logs.debug (fun m -> m "inval len"); `Invalid_packet
+    |> R.reword_error (function
+      |`Invalid_length -> `Invalid_packet
       | err -> err
     )
-  >>= begin function
-    | (Signature_creation_time
+    >>= begin function
+      | Key_flags when Cs.len data = 1 ->
+        let flags = key_usage_flags_of_char @@ Cstruct.get_char data 0 in
+        let()=Logs.debug (fun m -> m "Parsing key usage flags: %C"
+                             (char_of_key_usage_flags flags)
+                         ) in
+        R.ok (Some (Key_usage_flags flags), Key_flags, data)
+    | ( Signature_creation_time
       | Signature_expiration_time
       | Policy_URI
       | Preferred_symmetric_algorithms
       | Preferred_hash_algorithms
       | Preferred_compression_algorithms
       | Key_server_preferences
-      )as tag ->
-      let()= Logs.debug (fun m -> m "Got a whitelisted subpacket %d: %s"
+      | Embedded_signature
+      ) as tag ->
+        let()= Logs.debug (fun m -> m "Got a whitelisted subpacket %d: %s"
                             (Char.code @@ char_of_signature_subpacket_tag tag)
                             (Cs.to_hex data)
-                        )
-      in
-      R.ok tag
-    (* TODO:
+                          )
+        in
+        R.ok (None, tag,data)
     | tag when not is_critical ->
-      R.ok tag
-    *)
-    | tag (*TODO: when is_critical *) ->
-      let()=Logs.debug (fun m -> m "Unimplemented critical subpacket %d"
-                           (Char.code @@ char_of_signature_subpacket_tag tag))
+      let() =
+        Logs.debug (fun m ->
+            m "Uncritical unimplemented signature subpacket %C %s" tag_c
+              (Cs.to_hex data)) in
+      Ok (None, tag, data)
+    | tag ->
+      let()=Logs.debug (fun m -> m "Unimplemented critical subpacket %C %s"
+                         (char_of_signature_subpacket_tag tag) (Cs.to_hex data))
       in
-      R.error `Invalid_packet
+      R.error (`Unimplemented_algorithm tag_c)
   end
 
 let parse_subpacket_data buf
-  : ((signature_subpacket_tag *Cs.t)list,
+  : ((signature_subpacket option * signature_subpacket_tag *Cs.t)list,
      [>`Invalid_packet | `Unimplemented_algorithm of char ]) result =
-  let rec loop (packets:(signature_subpacket_tag*Cs.t)list) buf =
+  let rec loop (packets:(signature_subpacket option * signature_subpacket_tag*Cs.t)list) buf =
     consume_packet_length None buf
     >>= fun (pkt, extra) ->
-    parse_subpacket pkt >>= fun pkt_tag ->
-    let packets = ((pkt_tag, pkt)::packets) in
+    parse_subpacket pkt >>| (fun tuple -> tuple::packets)
+    >>= fun packets ->
     if Cs.len extra = 0 then
       R.ok (List.rev packets)
     else
@@ -202,7 +238,6 @@ let parse_subpacket_data buf
       :> 'a -> [>`Invalid_packet|`Unimplemented_algorithm of char]
      )
   )
-
 
 let parse_packet buf : (t, 'error) result =
   (* 0: 1: '\x04' *)
@@ -230,9 +265,6 @@ let parse_packet buf : (t, 'error) result =
 
   parse_subpacket_data hashed_subpacket_data
   >>= fun subpacket_data ->
-
-  Cs.e_sub `Incomplete_packet buf 0 (7+hashed_len)
-  >>= fun to_be_hashed ->
 
   (* 6+hashed_len: 2: length of unhashed subpacket data *)
   Cs.BE.e_get_uint16 `Incomplete_packet buf (6+hashed_len)
@@ -279,7 +311,8 @@ let parse_packet buf : (t, 'error) result =
   end else
     R.ok {
           signature_type ;
+          public_key_algorithm = pk_algo;
           hash_algorithm = hash_algo;
-          subpacket_data = subpacket_data ;
+          subpacket_data ;
           algorithm_specific_data
          }

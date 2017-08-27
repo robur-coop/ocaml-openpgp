@@ -53,8 +53,8 @@ let char_of_version = begin function
 
 type public_key_algorithm =
   | RSA_encrypt_or_sign
-  | RSA_sign_only
   | RSA_encrypt_only
+  | RSA_sign_only
   | Elgamal_encrypt_only
   | DSA
 
@@ -184,6 +184,42 @@ let signature_type_string_enum =
     ; "Third_party_confirmation", Third_party_confirmation_signature
   ]
 
+type key_usage_flags = (* RFC 4880: 5.2.3.21 Key Flags *)
+  { usage_certify_keys : bool
+  ; usage_sign_data : bool
+  ; usage_encrypt_communications : bool
+  ; usage_encrypt_storage : bool
+  ; usage_authentication : bool
+  ; usage_unimplemented : char
+  }
+
+let key_usage_flags_of_char needle =
+  let n = Char.code needle in
+  let bit place = 0 <> n land (1 lsl place) in
+  { usage_certify_keys = bit 0
+  ; usage_sign_data    = bit 1
+  ; usage_encrypt_communications = bit 2
+  ; usage_encrypt_storage = bit 3
+  (* ; whatever = bit 4 *)
+  ; usage_authentication = bit 5
+  ; usage_unimplemented = needle
+  }
+
+let char_of_key_usage_flags t =
+  let bit place = function
+    | false -> 0
+    | true -> 1 lsl place
+  in
+  [ Char.code t.usage_unimplemented
+  ; bit 0 t.usage_certify_keys
+  ; bit 1 t.usage_sign_data
+  ; bit 2 t.usage_encrypt_communications
+  ; bit 3 t.usage_encrypt_storage
+  (*; bit 4 some-other-thing-not-implemented *)
+  ; bit 5 t.usage_authentication
+  ] |> List.fold_left (lor) 0
+  |> Char.chr
+
 type signature_subpacket_tag =
   | Signature_creation_time
   | Signature_expiration_time
@@ -208,8 +244,13 @@ type signature_subpacket_tag =
   | Features
   | Signature_target
   | Embedded_signature
+  | Issuer_fingerprint
+  | Unimplemented_signature_subpacket_tag of char
 
-let signature_subpacket_tag_enum =
+type signature_subpacket =
+  | Key_usage_flags of key_usage_flags
+
+let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
   [ '\002', Signature_creation_time
   ; '\003', Signature_expiration_time
   ; '\004', Exportable_certification
@@ -233,6 +274,7 @@ let signature_subpacket_tag_enum =
   ; '\030', Features
   ; '\031', Signature_target
   ; '\032', Embedded_signature
+  ; '\033', Issuer_fingerprint (* This is not from RFC 4880*)
   ]
 
 type hash_algorithm =
@@ -253,6 +295,17 @@ let nocrypto_module_of_hash_algorithm : hash_algorithm -> (module Nocrypto.Hash.
     | SHA384 -> (module Nocrypto.Hash.SHA384)
     | SHA512 -> (module Nocrypto.Hash.SHA512)
     | SHA224 -> (module Nocrypto.Hash.SHA224)
+  end
+
+let nocrypto_pkcs_module_of_hash_algorithm : hash_algorithm -> (module Nocrypto.Rsa.PKCS1.S) =
+  let open Nocrypto.Rsa.PKCS1 in
+  begin function
+    | MD5 -> (module MD5)
+    | SHA1 -> (module SHA1)
+    | SHA224 -> (module SHA224)
+    | SHA256 -> (module SHA256)
+    | SHA384 -> (module SHA384)
+    | SHA512 -> (module SHA512)
   end
 
 let hash_algorithm_enum =
@@ -321,16 +374,18 @@ let signature_type_of_cs_offset cs offset =
   >>= fun signature_type_c ->
   signature_type_of_char signature_type_c
 
-let signature_subpacket_tag_of_char needle : ('ok',[> `Unimplemented_algorithm of char]) result =
-  find_enum_sumtype needle signature_subpacket_tag_enum
-  |> R.reword_error (function
-      | `Unmatched_enum_value ->
-        Logs.debug (fun m -> m "Unimplemented signature subpacket type 0x%02x"
+let signature_subpacket_tag_of_char needle : (signature_subpacket_tag,[>]) result =
+  begin match find_enum_sumtype needle signature_subpacket_tag_enum with
+  | Error `Unmatched_enum_value ->
+      Logs.debug (fun m -> m "Unimplemented signature subpacket type 0x%02x"
                        (Char.code needle));
-      `Unimplemented_algorithm needle) (*more specific info?*)
+      Ok (Unimplemented_signature_subpacket_tag needle)
+  | res -> res
+  end
 
-let char_of_signature_subpacket_tag needle =
-  find_enum_value needle signature_subpacket_tag_enum |> R.get_ok
+let char_of_signature_subpacket_tag = function
+  |  Unimplemented_signature_subpacket_tag c -> c
+  |  needle -> find_enum_value needle signature_subpacket_tag_enum |> R.get_ok
 
 let cs_of_signature_subpacket_tag needle =
   char_of_signature_subpacket_tag needle
@@ -495,17 +550,23 @@ let packet_length_type_of_size (size : Usane.Uint32.t) =
   | _ -> Four_octet
   end
 
+let serialize_packet_length_int32 len =
+  begin match packet_length_type_of_size len with
+    | One_octet -> Cs.make_uint8 (Int32.to_int len)
+    | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)
+    | Four_octet -> (*This is a V4 "five octet": *)
+      Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
+  end
+
+let serialize_packet_length_int i =
+  Int32.of_int i |> serialize_packet_length_int32
+
 let serialize_packet_length cs =
-  let len = Cs.len cs |> Int32.of_int in
+  Cs.len cs |> serialize_packet_length_int
   (* we don't use Usane.Uint32 above because
      a) we actually want to wrap values larger than 31 bits
      b) Cs.len returning an int is a shortcoming of the API
   *)
-  begin match packet_length_type_of_size len with
-    | One_octet -> Cs.make_uint8 (Int32.to_int len)
-    | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)
-    | Four_octet -> Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
-  end
 
 let int_of_packet_length_type needle =
   find_enum_value needle packet_length_type_enum

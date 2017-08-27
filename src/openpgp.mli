@@ -36,7 +36,20 @@ module Signature : sig
              | `Invalid_signature
              | `Invalid_mpi_parameters of (Types.mpi list)
              | `Unimplemented_algorithm of char ])
-           result
+      result
+
+val verify_detached_cb :
+           transferable_public_key ->
+           t ->
+           (unit ->
+            (Cs.t option,
+             [> `Invalid_mpi_parameters of Nocrypto.Numeric.Z.t list
+              | `Invalid_packet
+              | `Invalid_signature
+              | `Unimplemented_algorithm of char ]
+             as 'a)
+            Rresult.result) ->
+           ([> `Good_signature ], 'a) Rresult.result
 end
 
 type packet_type =

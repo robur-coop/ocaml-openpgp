@@ -4,6 +4,9 @@ B _build/src
 PKG cstruct rresult nocrypto usane hex logs
 PKG oUnit
 PKG topkg
+
 PKG cmdliner
+PKG fpath
+PKG bos
 
 FLG -w +A-4-18-41-42-44-48-58

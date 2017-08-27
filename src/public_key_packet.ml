@@ -89,8 +89,9 @@ let parse_elgamal_asf buf : (public_key_asf, 'error) result =
   let pk = {p ; g; y} in
   R.ok (Elgamal_pubkey_asf pk)
 
-let parse_rsa_asf buf
+let parse_rsa_asf
     (purpose:[`Sign|`Encrypt|`Encrypt_or_sign])
+    buf
   : (public_key_asf, 'error) result =
   consume_mpi buf >>= fun (n,buf) ->
   consume_mpi buf >>= fun (e,should_be_empty) ->
@@ -100,7 +101,7 @@ let parse_rsa_asf buf
     R.error `Invalid_packet
   end else
 
-  mpis_are_prime [n;e] >>= fun _ ->
+  mpis_are_prime [e] >>= fun _ ->
 
   let pk = Nocrypto.Rsa.{ n; e} in
   begin match purpose with
@@ -193,8 +194,12 @@ let parse_packet buf : ('a, [> `Incomplete_packet
   begin match pk_algo with
     | DSA -> R.ok parse_dsa_asf
     | Elgamal_encrypt_only -> R.ok parse_elgamal_asf
-    | _ -> R.error
-             (`Unimplemented_algorithm (char_of_public_key_algorithm pk_algo))
+    | RSA_encrypt_or_sign -> R.ok (parse_rsa_asf `Encrypt_or_sign)
+    | RSA_sign_only -> R.ok (parse_rsa_asf `Sign)
+    | _ ->
+       let()= Logs.debug (fun m -> m "Public key parser: Unimplemented PK algo") in
+       R.error (`Unimplemented_algorithm
+                 (char_of_public_key_algorithm pk_algo))
   end
   >>= fun parse_asf ->
   parse_asf pk_algo_specific
