@@ -1,31 +1,31 @@
 open Rresult
 open Usane
 
-let list_find_leading (f: 'a -> ('b,'c)result) (lst : 'a list)
-      : ('d list, 'error) result =
-      let rec loop acc = function
-        | m::tl ->
-          begin match f m with
-            | Ok value -> loop (value::acc) tl
-            | Error _ -> loop acc []
-          end
-        | [] -> R.ok (List.rev acc)
-      in
-      loop [] lst
+let list_find_leading (f : 'a -> ('b,'c) result) (lst : 'a list)
+  : ('d list, 'error) result =
+  let rec loop acc = function
+    | m::tl ->
+      begin match f m with
+        | Ok value -> loop (value::acc) tl
+        | Error _ -> loop acc []
+      end
+    | [] -> R.ok (List.rev acc)
+  in
+  loop [] lst
 
-let list_find_leading_pairs (f: 'a -> 'a -> ('c,'err) result)
-    (lst: 'a list) : ('c list, 'err) result =
-    let rec loop acc = function
-        | a::b::tl ->
-          begin match f a b with
-            | Ok x -> loop (x::acc) tl
-            | Error _ -> R.ok (List.rev acc)
-          end
-        | ([]|(_::_)) -> R.ok (List.rev acc)
-    in
-    loop [] lst
+let list_find_leading_pairs (f : 'a -> 'a -> ('c,'err) result) (lst : 'a list)
+  : ('c list, 'err) result =
+  let rec loop acc = function
+    | a::b::tl ->
+      begin match f a b with
+        | Ok x -> loop (x::acc) tl
+        | Error _ -> R.ok (List.rev acc)
+      end
+    | ([]|(_::_)) -> R.ok (List.rev acc)
+  in
+  loop [] lst
 
-let list_drop_e_n (err:'error) n lst : ('a list,'error) result =
+let list_drop_e_n (err : 'error) n lst : ('a list,'error) result =
   let rec loop i = function
     | tl when i <= 0 -> R.ok tl
     | _::tl -> loop (i-1) tl
@@ -33,9 +33,8 @@ let list_drop_e_n (err:'error) n lst : ('a list,'error) result =
   in
   loop n lst;;
 
-let list_take_leading f lst : ('a list * 'b list, 'error)result =
-  list_find_leading f lst
-  >>= fun left ->
+let list_take_leading f lst : ('a list * 'b list, 'error) result =
+  list_find_leading f lst >>= fun left ->
   Ok (left, list_drop_e_n `Guarded (List.length left) lst |> R.get_ok)
 
 module type Keytype = sig
@@ -46,10 +45,14 @@ type openpgp_version =
   | V3
   | V4
 
-let char_of_version = begin function
+let pp_version ppf v =
+  Fmt.string ppf @@ match v with
+  | V3 -> "V3"
+  | V4 -> "V4"
+
+let char_of_version = function
   | V3 -> '\003'
   | V4 -> '\004'
-  end
 
 type public_key_algorithm =
   | RSA_encrypt_or_sign
@@ -57,6 +60,14 @@ type public_key_algorithm =
   | RSA_sign_only
   | Elgamal_encrypt_only
   | DSA
+
+let pp_public_key_algorithm ppf a =
+  Fmt.string ppf @@ match a with
+  | RSA_encrypt_or_sign -> "RSA encrypt or sign"
+  | RSA_encrypt_only -> "RSA encrypt"
+  | RSA_sign_only -> "RSA sign"
+  | Elgamal_encrypt_only -> "ElGamal encrypt"
+  | DSA -> "DSA"
 
 let public_key_algorithm_enum =
   (* RFC 4880: 9.1 Public-Key Algorithms *)
@@ -77,36 +88,41 @@ type ascii_packet_type =
   | Ascii_message_part_x_of_y of {x:Uint16.t; y:Uint16.t}
   | Ascii_signature
 
-let string_of_ascii_packet_type =
-  begin function
-    | Ascii_public_key_block -> "PUBLIC"
-    | Ascii_private_key_block -> "PRIVATE"
-    | Ascii_message -> "MESSAGE"
-    | Ascii_message_part_x  n ->
-       "MESSAGE, PART " ^ (string_of_int n.x)
-    | Ascii_message_part_x_of_y  n ->
-       "MESSAGE, PART "^(string_of_int n.x)^"/"^(string_of_int n.y)
-    | Ascii_signature -> "SIGNATURE"
-  end
+let pp_ascii_packet_type ppf = function
+  | Ascii_public_key_block -> Fmt.pf ppf "ASCII public key block"
+  | Ascii_private_key_block -> Fmt.pf ppf "ASCII private key block"
+  | Ascii_message -> Fmt.pf ppf "ASCII message"
+  | Ascii_message_part_x n -> Fmt.pf ppf "ASCII message part %d" n.x
+  | Ascii_message_part_x_of_y n -> Fmt.pf ppf "ASCII message part %d/%d" n.x n.y
+  | Ascii_signature -> Fmt.pf ppf "ASCII signature"
+
+let string_of_ascii_packet_type = function
+  | Ascii_public_key_block -> "PUBLIC"
+  | Ascii_private_key_block -> "PRIVATE"
+  | Ascii_message -> "MESSAGE"
+  | Ascii_message_part_x n -> "MESSAGE, PART " ^ string_of_int n.x
+  | Ascii_message_part_x_of_y n ->
+    "MESSAGE, PART " ^ string_of_int n.x ^ "/" ^ string_of_int n.y
+  | Ascii_signature -> "SIGNATURE"
 
 type packet_tag_type =
   | Signature_tag
   | Secret_key_tag
   | Public_key_tag
-  | Secret_subkey_packet_tag
+  | Secret_subkey_tag
   | Uid_tag
-  | Public_key_subpacket_tag
+  | Public_subkey_tag
   | User_attribute_tag
 
-let packet_tag_string_enum =
-  [ "Signature", Signature_tag
-  ; "Secret_key", Secret_key_tag
-  ; "Public_key", Public_key_tag
-  ; "Secret_subkey", Secret_subkey_packet_tag
-  ; "UID", Uid_tag
-  ; "Public_key_subpacket", Public_key_subpacket_tag
-  ; "User_attribute", User_attribute_tag
-  ]
+let pp_packet_tag ppf v =
+  Fmt.string ppf @@ match v with
+  | Signature_tag -> "signature"
+  | Secret_key_tag -> "secret key"
+  | Public_key_tag -> "public key"
+  | Secret_subkey_tag -> "secret subkey"
+  | Uid_tag -> "uid"
+  | Public_subkey_tag -> "public subkey"
+  | User_attribute_tag -> "user attribute"
 
 (* see RFC 4880: 4.3 Packet Tags *)
 let packet_tag_enum =
@@ -117,14 +133,14 @@ let packet_tag_enum =
     (* '\004', One-Pass Signature Packet *)
   ; ('\005', Secret_key_tag)
   ; ('\006', Public_key_tag)
-  ; ('\007', Secret_subkey_packet_tag)
+  ; ('\007', Secret_subkey_tag)
     (* '\008', Compressed Data Packet *)
     (* '\009', Symmetrically Encrypted Data Packet *)
     (* '\010', Marker Packet *)
     (* '\011', Literal Data Packet *)
     (* '\012', Trust Packet *)
   ; ('\013', Uid_tag)
-  ; ('\014', Public_key_subpacket_tag)
+  ; ('\014', Public_subkey_tag)
   ; '\017', User_attribute_tag (*User Attribute Packet *)
     (* '\018', Symmetrically Encrypted and Integrity Protected Data Packet *)
     (* '\019', Modification Detection Code Packet *)
@@ -148,8 +164,30 @@ type signature_type =
   | Timestamp_signature
   | Third_party_confirmation_signature
 
+let pp_signature_type ppf v =
+  Fmt.string ppf @@ match v with
+  | Signature_of_binary_document -> "binary document"
+  | Signature_of_canonical_text_document -> "canonical text"
+  | Standalone_signature -> "standalone"
+  | Generic_certification_of_user_id_and_public_key_packet ->
+    "generic certification of uid and public key"
+  | Persona_certification_of_user_id_and_public_key_packet ->
+    "persona certification of uid and public key"
+  | Casual_certification_of_user_id_and_public_key_packet ->
+    "persona certification of uid and public key"
+  | Positive_certification_of_user_id_and_public_key_packet ->
+    "positive certification of uid and public key"
+  | Subkey_binding_signature -> "subkey binding"
+  | Primary_key_binding_signature -> "primary key"
+  | Signature_directly_on_key -> "signature directly on key"
+  | Key_revocation_signature -> "key revocation"
+  | Subkey_revocation_signature -> "subkey revocation"
+  | Certification_revocation_signature -> "certification revocation"
+  | Timestamp_signature -> "timestamp"
+  | Third_party_confirmation_signature -> "third party confirmation"
+
 let signature_type_enum =
-   [ '\x00', Signature_of_binary_document
+  [ '\x00', Signature_of_binary_document
   ; '\x01', Signature_of_canonical_text_document
   ; '\x02', Standalone_signature
   ; '\x10', Generic_certification_of_user_id_and_public_key_packet
@@ -162,26 +200,8 @@ let signature_type_enum =
   ; '\x20', Key_revocation_signature
   ; '\x28', Subkey_revocation_signature
   ; '\x30', Certification_revocation_signature
-    ; '\x40', Timestamp_signature
-    ; '\x50', Third_party_confirmation_signature
-  ]
-
-let signature_type_string_enum =
-   [ "Signature_of_binary_document", Signature_of_binary_document
-  ; "Canonical_text_document_sig", Signature_of_canonical_text_document
-  ; "Standalone_sig", Standalone_signature
-  ; "Uid_and_pubkey", Generic_certification_of_user_id_and_public_key_packet
-  ; "Uid_and_pubkey", Persona_certification_of_user_id_and_public_key_packet
-  ; "Uid_and_pubkey", Casual_certification_of_user_id_and_public_key_packet
-  ; "Uid_and_pubkey", Positive_certification_of_user_id_and_public_key_packet
-  ; "Subkey_binding", Subkey_binding_signature
-  ; "Primary_key_binding", Primary_key_binding_signature
-  ; "Signature_directly_on_key", Signature_directly_on_key
-  ; "Key_revocation", Key_revocation_signature
-  ; "Subkey_revocation", Subkey_revocation_signature
-  ; "Certification_revocation", Certification_revocation_signature
-    ; "Timestamp", Timestamp_signature
-    ; "Third_party_confirmation", Third_party_confirmation_signature
+  ; '\x40', Timestamp_signature
+  ; '\x50', Third_party_confirmation_signature
   ]
 
 type key_usage_flags = (* RFC 4880: 5.2.3.21 Key Flags *)
@@ -287,26 +307,34 @@ type hash_algorithm =
   | SHA224
   (* TODO RIPE-MD/160 *)
 
-let nocrypto_module_of_hash_algorithm : hash_algorithm -> (module Nocrypto.Hash.S) =
-  begin function
-    | MD5 -> (module Nocrypto.Hash.MD5)
-    | SHA1 -> (module Nocrypto.Hash.SHA1)
-    | SHA256 -> (module Nocrypto.Hash.SHA256)
-    | SHA384 -> (module Nocrypto.Hash.SHA384)
-    | SHA512 -> (module Nocrypto.Hash.SHA512)
-    | SHA224 -> (module Nocrypto.Hash.SHA224)
-  end
+let pp_hash_algorithm ppf v =
+  Fmt.string ppf @@ match v with
+  | MD5 -> "MD5"
+  | SHA1 -> "SHA1"
+  | SHA256 -> "SHA256"
+  | SHA384 -> "SHA384"
+  | SHA512 -> "SHA512"
+  | SHA224 -> "SHA224"
 
-let nocrypto_pkcs_module_of_hash_algorithm : hash_algorithm -> (module Nocrypto.Rsa.PKCS1.S) =
+let nocrypto_module_of_hash_algorithm : hash_algorithm ->
+  (module Nocrypto.Hash.S) = function
+  | MD5 -> (module Nocrypto.Hash.MD5)
+  | SHA1 -> (module Nocrypto.Hash.SHA1)
+  | SHA256 -> (module Nocrypto.Hash.SHA256)
+  | SHA384 -> (module Nocrypto.Hash.SHA384)
+  | SHA512 -> (module Nocrypto.Hash.SHA512)
+  | SHA224 -> (module Nocrypto.Hash.SHA224)
+
+let nocrypto_pkcs_module_of_hash_algorithm : hash_algorithm ->
+  (module Nocrypto.Rsa.PKCS1.S) =
   let open Nocrypto.Rsa.PKCS1 in
-  begin function
-    | MD5 -> (module MD5)
-    | SHA1 -> (module SHA1)
-    | SHA224 -> (module SHA224)
-    | SHA256 -> (module SHA256)
-    | SHA384 -> (module SHA384)
-    | SHA512 -> (module SHA512)
-  end
+  function
+  | MD5 -> (module MD5)
+  | SHA1 -> (module SHA1)
+  | SHA224 -> (module SHA224)
+  | SHA256 -> (module SHA256)
+  | SHA384 -> (module SHA384)
+  | SHA512 -> (module SHA512)
 
 let hash_algorithm_enum =
   [ '\001', MD5
@@ -323,44 +351,35 @@ type search_enum =
 
 (* TODO consider just failwith if not matched *)
 let rec find_enum_value needle = function
-| [] -> Error `Unmatched_enum_sumtype
-| (value, sumtype)::_ when sumtype = needle -> Ok value
-| _::tl -> find_enum_value needle tl
+  | [] -> Error `Unmatched_enum_sumtype
+  | (value, sumtype)::_ when sumtype = needle -> Ok value
+  | _::tl -> find_enum_value needle tl
 
 let rec find_enum_sumtype needle = function
-| [] -> Error `Unmatched_enum_value
-| (value, sumtype)::_ when value = needle -> Ok sumtype
-| _::tl -> find_enum_sumtype needle tl
-
-let string_of_packet_tag_type (needle:packet_tag_type) =
-  (find_enum_value needle packet_tag_string_enum) |> R.get_ok
+  | [] -> Error `Unmatched_enum_value
+  | (value, sumtype)::_ when value = needle -> Ok sumtype
+  | _::tl -> find_enum_sumtype needle tl
 
 let packet_tag_type_of_char needle =
   find_enum_sumtype needle packet_tag_enum
 
 let int_of_packet_tag_type (needle:packet_tag_type) =
-  (find_enum_value needle packet_tag_enum
-  >>= fun c -> Ok (int_of_char c)
-  ) |> R.get_ok
+  (find_enum_value needle packet_tag_enum >>= fun c ->
+   Ok (int_of_char c)) |> R.get_ok
 
 let public_key_algorithm_of_char needle =
   find_enum_sumtype needle public_key_algorithm_enum
   |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
 
 let public_key_algorithm_of_cs_offset cs offset =
-  Cs.e_get_char `Incomplete_packet cs offset
-  >>= fun pk_algo_c ->
+  Cs.e_get_char `Incomplete_packet cs offset >>= fun pk_algo_c ->
   public_key_algorithm_of_char pk_algo_c
 
 let char_of_public_key_algorithm needle =
-  find_enum_value needle public_key_algorithm_enum
-  |> R.get_ok
+  find_enum_value needle public_key_algorithm_enum |> R.get_ok
 
 let int_of_public_key_algorithm needle =
   char_of_public_key_algorithm needle |> int_of_char
-
-let string_of_signature_type needle =
-  find_enum_value needle signature_type_string_enum |> R.get_ok
 
 let char_of_signature_type needle =
   find_enum_value needle signature_type_enum |> R.get_ok
@@ -374,31 +393,28 @@ let signature_type_of_cs_offset cs offset =
   >>= fun signature_type_c ->
   signature_type_of_char signature_type_c
 
-let signature_subpacket_tag_of_char needle : (signature_subpacket_tag,[>]) result =
-  begin match find_enum_sumtype needle signature_subpacket_tag_enum with
+let signature_subpacket_tag_of_char needle :
+  (signature_subpacket_tag, [>]) result =
+  match find_enum_sumtype needle signature_subpacket_tag_enum with
   | Error `Unmatched_enum_value ->
-      Logs.debug (fun m -> m "Unimplemented signature subpacket type 0x%02x"
-                       (Char.code needle));
-      Ok (Unimplemented_signature_subpacket_tag needle)
+    Logs.debug (fun m -> m "Unimplemented signature subpacket type 0x%02x"
+                   (Char.code needle));
+    Ok (Unimplemented_signature_subpacket_tag needle)
   | res -> res
-  end
 
 let char_of_signature_subpacket_tag = function
-  |  Unimplemented_signature_subpacket_tag c -> c
-  |  needle -> find_enum_value needle signature_subpacket_tag_enum |> R.get_ok
+  | Unimplemented_signature_subpacket_tag c -> c
+  | needle -> find_enum_value needle signature_subpacket_tag_enum |> R.get_ok
 
 let cs_of_signature_subpacket_tag needle =
-  char_of_signature_subpacket_tag needle
-  |> String.make 1
-  |> Cs.of_string
+  char_of_signature_subpacket_tag needle |> String.make 1 |> Cs.of_string
 
 let hash_algorithm_of_char needle =
   find_enum_sumtype needle hash_algorithm_enum
   |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
 
 let hash_algorithm_of_cs_offset cs offset =
-  Cs.e_get_char `Incomplete_packet cs offset
-  >>= fun hash_algo_c ->
+  Cs.e_get_char `Incomplete_packet cs offset >>= fun hash_algo_c ->
   hash_algorithm_of_char hash_algo_c
 
 let char_of_hash_algorithm needle =
@@ -407,22 +423,18 @@ let char_of_hash_algorithm needle =
 let mpi_len buf : (Uint16.t, 'error) result =
   (* big-endian 16-bit integer len *)
   let rec search byte_offset =
-    if byte_offset = Cs.len buf then R.ok Uint16.(of_int 0)
+    if byte_offset = Cs.len buf then
+      R.ok Uint16.(of_int 0)
     else
-      Cs.(get_uint8_result buf byte_offset)
-      >>= fun c ->
-      let rec bits_not_set =
-        begin function
-        | i when 0 <> (c land (1 lsl i)) -> Some (7-i)
-        | 0 -> None
-        | i -> bits_not_set (pred i)
-        end
+      Cs.(get_uint8_result buf byte_offset) >>= fun c ->
+      let rec bits_not_set = function
+          | i when 0 <> (c land (1 lsl i)) -> Some (7-i)
+          | 0 -> None
+          | i -> bits_not_set (pred i)
       in
-      begin match bits_not_set 7 with
-        | None -> search (succ byte_offset)
-        | Some i -> Cs.(len buf)*8 - (byte_offset * 8) - i
-                    |> Uint16.of_int |> R.ok
-      end
+      match bits_not_set 7 with
+      | None -> search (succ byte_offset)
+      | Some i -> Cs.(len buf)*8 - (byte_offset * 8) - i |> Uint16.of_int |> R.ok
   in
   search 0
 
@@ -435,14 +447,14 @@ let cs_of_mpi_no_header mpi : Cs.t =
 
 
 let mpis_are_prime lst =
-  let non_primes = List.find_all
-      (fun mpi -> not @@ Nocrypto.Numeric.pseudoprime mpi) lst
+  let non_primes =
+    List.find_all (fun mpi -> not @@ Nocrypto.Numeric.pseudoprime mpi) lst
   in
-  if List.length non_primes <> 0
-  then begin
-    let pp p = Cs.to_hex (cs_of_mpi_no_header p) in
-    Logs.debug (fun m -> m "MPIs are not prime: %s"
-               (String.concat " ; " (List.map pp non_primes))) ;
+  if List.length non_primes <> 0 then begin
+    let pp p = cs_of_mpi_no_header p in
+    Logs.debug (fun m -> m "MPIs are not prime: %a"
+                   Fmt.(list ~sep:(unit " ; ") Cstruct.hexdump_pp)
+                   (List.map pp non_primes)) ;
     R.error (`Invalid_mpi_parameters non_primes)
   end else R.ok lst
 
@@ -450,19 +462,18 @@ let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
   mpi_len mpi_body >>= fun body_len ->
   let mpi_header = Cs.create 2 in
-  let ()= Logs.debug (fun m -> m "cs_of_mpi: %d: %s\n"
-                         body_len (Cs.to_hex mpi_body))
+  let ()= Logs.debug (fun m -> m "cs_of_mpi: %d: %a"
+                         body_len Cstruct.hexdump_pp mpi_body)
   in
-  Cs.BE.set_uint16 mpi_header 0 body_len
-  >>= fun mpi_header ->
+  Cs.BE.set_uint16 mpi_header 0 body_len >>= fun mpi_header ->
   R.ok (Cs.concat [mpi_header; mpi_body])
 
 let cs_of_mpi_list mpi_list =
   let rec loop acc = function
-    | hd::tl -> cs_of_mpi hd >>= fun cs ->
-      loop (cs::acc) tl
+    | hd::tl -> cs_of_mpi hd >>= fun cs -> loop (cs::acc) tl
     | [] -> R.ok (List.rev acc |> Cstruct.concat)
-  in loop [] mpi_list
+  in
+  loop [] mpi_list
 
 let consume_mpi buf : (mpi * Cs.t, 'error) result =
   (*
@@ -474,13 +485,11 @@ let consume_mpi buf : (mpi * Cs.t, 'error) result =
    of the MPI in bits followed by a string of octets that contain the
    actual integer.
   *)
-  Cs.BE.e_get_uint16 `Incomplete_packet buf 0
-  >>= fun bitlen ->
+  Cs.BE.e_get_uint16 `Incomplete_packet buf 0 >>= fun bitlen ->
   let bytelen = (bitlen + 7) / 8 in
-  Logs.debug (fun m -> m "going to read %d: %s" bytelen (Cs.to_hex buf)) ;
-  Cs.e_split ~start:2 `Incomplete_packet buf bytelen
-  >>= fun (this_mpi , buf_tl) ->
-  R.ok ((Z.of_bits (Cs.reverse this_mpi |> Cs.to_string)), buf_tl)
+  Logs.debug (fun m -> m "going to read %d: %a" bytelen Cstruct.hexdump_pp buf) ;
+  Cs.e_split ~start:2 `Incomplete_packet buf bytelen >>= fun (this_mpi, tl) ->
+  R.ok ((Z.of_bits (Cs.reverse this_mpi |> Cs.to_string)), tl)
 
 let crc24 (buf : Cs.t) : Cstruct.t =
 (* adopted from the C reference implementation in RFC 4880:
@@ -490,8 +499,8 @@ let crc24 (buf : Cs.t) : Cstruct.t =
   let (<<>) = shift_left in
   (*     while (len--) { *)
   let rec loop (len:int) (prev_crc:int32) =
-    if len = Cstruct.len buf
-    then prev_crc
+    if len = Cstruct.len buf then
+      prev_crc
     else
       (*        crc ^= ( *octets++) << 16; *)
       let c2 = Cstruct.get_char buf len
@@ -507,12 +516,11 @@ let crc24 (buf : Cs.t) : Cstruct.t =
           (*        crc <<= 1; *)
           let c4 = c3 <<> 1 in
           (*        if (crc & 0x1000000) *)
-          begin match 0_l <> logand c4 0x1_00_00_00_l with
+          if 0_l <> logand c4 0x1_00_00_00_l then
           (*            crc ^= CRC24_POLY; *)
-          | true -> let c5 = logxor c4 0x1_86_4c_fb_l in
-                    inner_loop c5 (i+1)
-          | false -> inner_loop c4 (i+1)
-          end
+            let c5 = logxor c4 0x1_86_4c_fb_l in inner_loop c5 (i+1)
+          else
+            inner_loop c4 (i+1)
       in
       let c6 = inner_loop c2 0 in
       loop (len+1) c6
@@ -527,8 +535,8 @@ let crc24 (buf : Cs.t) : Cstruct.t =
     |> to_int
     |> Char.chr
     |> Cstruct.set_char output i
-  done
-  ; output
+  done ;
+  output
 
 type packet_length_type =
   | One_octet
@@ -543,20 +551,17 @@ let packet_length_type_enum =
   ; (3 , Partial_length)
   ]
 
-let packet_length_type_of_size (size : Usane.Uint32.t) =
-  begin match size with
+let packet_length_type_of_size = function
   | s when -1 = Uint32.compare s 192l -> One_octet
   | s when -1 = Uint32.compare s 8384l -> Two_octet
   | _ -> Four_octet
-  end
 
 let serialize_packet_length_int32 len =
-  begin match packet_length_type_of_size len with
-    | One_octet -> Cs.make_uint8 (Int32.to_int len)
-    | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)
-    | Four_octet -> (*This is a V4 "five octet": *)
-      Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
-  end
+  match packet_length_type_of_size len with
+  | One_octet -> Cs.make_uint8 (Int32.to_int len)
+  | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)
+  | Four_octet -> (*This is a V4 "five octet": *)
+    Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
 
 let serialize_packet_length_int i =
   Int32.of_int i |> serialize_packet_length_int32
@@ -569,52 +574,47 @@ let serialize_packet_length cs =
   *)
 
 let int_of_packet_length_type needle =
-  find_enum_value needle packet_length_type_enum
-  |> R.get_ok
+  find_enum_value needle packet_length_type_enum |> R.get_ok
 
-let packet_length_type_of_int needle = find_enum_sumtype needle packet_length_type_enum
+let packet_length_type_of_int needle =
+  find_enum_sumtype needle packet_length_type_enum
 
-let consume_packet_length length_type buf : ((Cs.t * Cs.t), [>`Invalid_length | `Incomplete_packet | `Unimplemented_feature_partial_length]) result =
+let consume_packet_length length_type buf :
+  (Cs.t * Cs.t,
+   [>`Invalid_length | `Incomplete_packet | `Unimplemented_feature_partial_length])
+    result =
   (* see https://tools.ietf.org/html/rfc4880#section-4.2.2 *)
-  Cs.e_get_char `Incomplete_packet buf 0
-  >>= fun first_c ->
+  Cs.e_get_char `Incomplete_packet buf 0 >>= fun first_c ->
   let first = int_of_char first_c in
-  let consume_old_packet_length : packet_length_type -> (int *Uint32.t, [>`Invalid_length | `Incomplete_packet | `Unimplemented_feature_partial_length])result =
-    begin function
-      | One_octet -> R.ok (1, Uint32.of_int first)
-      | Two_octet ->
-        Cs.BE.e_get_uint16 `Incomplete_packet buf 0
-        >>= fun length -> R.ok (2, Uint32.of_int length)
-      | Four_octet ->
-        Cs.BE.e_get_uint32 `Incomplete_packet buf 0
-        >>= fun length -> R.ok (4, (length :> Uint32.t))
-      | Partial_length ->
-        R.error `Unimplemented_feature_partial_length
-    end
+  let consume_old_packet_length = function
+    | One_octet -> R.ok (1, Uint32.of_int first)
+    | Two_octet ->
+      Cs.BE.e_get_uint16 `Incomplete_packet buf 0 >>= fun length ->
+      R.ok (2, Uint32.of_int length)
+    | Four_octet ->
+      Cs.BE.e_get_uint32 `Incomplete_packet buf 0 >>= fun length ->
+      R.ok (4, (length :> Uint32.t))
+    | Partial_length -> R.error `Unimplemented_feature_partial_length
   in
-  let consume_new_packet_length : char -> ('ok, [>`Invalid_length | `Incomplete_packet]) result=
-  begin function
-  | ('\000'..'\191') ->
-     (* accomodate old+new format-style 1-octet lengths *)
-     Ok (1 , Uint32.of_int first)
-  | ('\192'..'\223') ->
+  let consume_new_packet_length = function
+    | ('\000'..'\191') ->
+      (* accomodate old+new format-style 1-octet lengths *)
+      Ok (1 , Uint32.of_int first)
+    | ('\192'..'\223') ->
       Cs.get_uint8_result buf 1
-      |> R.reword_error (function _ -> `Invalid_length)
-      >>= fun second ->
+      |> R.reword_error (function _ -> `Invalid_length) >>= fun second ->
       Ok (2 , Uint32.of_int @@ ((first - 192) lsl 8) + second + 192)
-  | ('\224'..'\254') ->
-     Error `Unimplemented_feature_partial_length
-  | '\255' ->
+    | ('\224'..'\254') ->
+      Error `Unimplemented_feature_partial_length
+    | '\255' ->
       Cs.BE.get_uint32 buf 1
-      |> R.reword_error (function _ -> `Invalid_length)
-      >>= fun length -> R.ok (5, length)
-  end
+      |> R.reword_error (function _ -> `Invalid_length) >>= fun length ->
+      R.ok (5, length)
   in
   begin match length_type with
     | None -> consume_new_packet_length first_c
     | Some typ -> consume_old_packet_length typ
-  end
-  >>= fun (start , length) ->
+  end >>= fun (start , length) ->
   match Uint32.to_int length with
   | Some length ->
     Cs.split_result ~start buf length
@@ -630,19 +630,19 @@ type packet_header =
 
 let char_of_packet_header ph : (char,'error) result =
   begin match ph with
-    | {new_format ; packet_tag; _} when new_format = true ->
+    | { new_format ; packet_tag ; _ } when new_format = true ->
       (1 lsl 6) lor (* 1 bit, new_format = true *)
       (int_of_packet_tag_type packet_tag) (* 6 bits*)
       |> R.ok
-    | {new_format; packet_tag; length_type = Some length_type;} when new_format = false ->
+    | { new_format ; packet_tag ; length_type = Some length_type } when new_format = false ->
       ((int_of_packet_length_type length_type) land 0x3) (* 2 bits *)
       lor (((int_of_packet_tag_type packet_tag) land 0xf) lsl 2) (* 4 bits *)
       |> R.ok
   | _ -> R.error `Invalid_packet_header
   end
   >>= fun pt ->
-    pt lor (1 lsl 7) (* always one, 1 bit *)
-    |> Char.chr |> R.ok
+  pt lor (1 lsl 7) (* always one, 1 bit *)
+  |> Char.chr |> R.ok
 
 let packet_header_of_char (c : char) : (packet_header,'error) result =
   let bit_7_set x = x land (1 lsl 7) <> 0 in
@@ -652,36 +652,35 @@ let packet_header_of_char (c : char) : (packet_header,'error) result =
   let bits_5_through_0 x = x land (64-1) in
   let c_int = int_of_char c in
   let new_format = bit_6_set c_int in
-  if not (bit_7_set c_int)
-  then Error `Invalid_packet_header
+  if not (bit_7_set c_int) then
+    Error `Invalid_packet_header
   else
-  begin match new_format with
-  | true ->
-      bits_5_through_0 c_int |> Char.chr
-      |> packet_tag_type_of_char
-      >>= fun pt -> R.ok (pt, None)
-  | false ->
-      packet_tag_type_of_char (Char.chr (bits_5_through_2 c_int))
-      >>= fun packet_tag ->
-      let length_type = bits_1_through_0 c_int
-                     |> packet_length_type_of_int
-                     |> R.get_ok
-      in R.ok (packet_tag, Some length_type)
-  end
-  >>= fun (packet_tag , length_type) ->
+    begin match new_format with
+      | true ->
+        bits_5_through_0 c_int |> Char.chr
+        |> packet_tag_type_of_char >>= fun pt ->
+        R.ok (pt, None)
+      | false ->
+        packet_tag_type_of_char (Char.chr (bits_5_through_2 c_int))
+        >>= fun packet_tag ->
+        let length_type =
+          bits_1_through_0 c_int
+          |> packet_length_type_of_int
+          |> R.get_ok
+        in
+        R.ok (packet_tag, Some length_type)
+    end >>= fun (packet_tag , length_type) ->
   Ok { length_type
      ; packet_tag
      ; new_format
-  }
+     }
 
-let consume_packet_header buf : ((packet_header * Cs.t), [`Invalid_packet_header | `Incomplete_packet]) result =
-  Cs.e_split `Incomplete_packet buf 1
-  >>= fun (header_buf , buf_tl) ->
-  Cs.e_get_char `Incomplete_packet header_buf 0
-  >>= fun c ->
+let consume_packet_header buf :
+  ((packet_header * Cs.t), [`Invalid_packet_header | `Incomplete_packet]) result =
+  Cs.e_split `Incomplete_packet buf 1 >>= fun (header_buf , buf_tl) ->
+  Cs.e_get_char `Incomplete_packet header_buf 0 >>= fun c ->
   packet_header_of_char c
-  |> R.reword_error (function _ -> `Invalid_packet_header)
-  >>= fun pkt_header ->
+  |> R.reword_error (function _ -> `Invalid_packet_header) >>= fun pkt_header ->
   Ok (pkt_header , buf_tl)
 
 (*
@@ -692,11 +691,8 @@ let generate_rsa size =
 *)
 
 let v4_verify_version (buf : Cs.t) :
-  (unit ,
-   [> `Unimplemented_version of char
-   | `Incomplete_packet]) result =
-  Cs.e_get_char `Incomplete_packet buf 0
-  >>= fun version ->
+  (unit, [> `Unimplemented_version of char | `Incomplete_packet]) result =
+  Cs.e_get_char `Incomplete_packet buf 0 >>= fun version ->
   if version <> '\x04' then
     R.error (`Unimplemented_version version)
   else
@@ -711,8 +707,7 @@ let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo =
   (*   2048-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
   (*   3072-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
   begin match Z.numbits p , Z.numbits q, hash_algo with
-    | 1024 , 160 ,(SHA1|SHA224|SHA256|SHA384|SHA512) ->
-        R.ok ()
+    | 1024 , 160 ,(SHA1|SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | 2048 , 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | (2048|3072), 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
     | _ , _ , _ -> R.error (`Invalid_mpi_parameters [p;q])

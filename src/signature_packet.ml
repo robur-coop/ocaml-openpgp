@@ -20,6 +20,12 @@ type t = {
   algorithm_specific_data : signature_asf;
 }
 
+let pp ppf t =
+  Fmt.pf ppf "signature %a public key %a hash %a"
+    pp_signature_type t.signature_type
+    pp_public_key_algorithm t.public_key_algorithm
+    pp_hash_algorithm t.hash_algorithm
+
 let digest_callback hash_algo: digest_feeder =
   let module H = (val (nocrypto_module_of_hash_algorithm hash_algo)) in
   let t = H.init () in

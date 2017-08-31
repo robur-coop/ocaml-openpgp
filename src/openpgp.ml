@@ -10,7 +10,7 @@ type packet_type =
 let packet_tag_of_packet = begin function
   | Signature_type _ -> Signature_tag
   | Public_key_packet _ -> Public_key_tag
-  | Public_key_subpacket _ -> Public_key_subpacket_tag
+  | Public_key_subpacket _ -> Public_subkey_tag
   | Uid_packet _ -> Uid_tag
   end
 
@@ -53,10 +53,11 @@ let decode_ascii_armor (buf : Cstruct.t) =
     >>= fun (header,buf_tl) ->
     if Cs.len header = 0 then
       R.ok buf_tl
-    else
+    else begin
       (* skip to next*)
-      let()= Logs.debug (fun m -> m "Skipping header: %S" (Cs.to_string header)) in
+      Logs.debug (fun m -> m "Skipping header: %S" (Cs.to_string header));
       skip_headers buf_tl
+    end
   in
   skip_headers buf
   >>= fun body ->
@@ -75,7 +76,7 @@ let decode_ascii_armor (buf : Cstruct.t) =
         if Cs.len must_be_empty <> 0 then Error `Invalid
         else
         b64_decode b64 >>= fun target_crc ->
-        let()= Logs.debug (fun m -> m "target crc: %s" (Cs.to_hex target_crc))in
+        Logs.debug (fun m -> m "target crc: %s" (Cs.to_hex target_crc));
         begin match List.rev acc |> Cs.concat with
           | decoded when Cs.equal target_crc (crc24 decoded) ->
             Ok (decoded, tl)
@@ -118,7 +119,7 @@ let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
     | Public_key_tag ->
       Public_key_packet.parse_packet pkt_body
       >>| fun pkt -> Public_key_packet pkt
-    | Public_key_subpacket_tag ->
+    | Public_subkey_tag ->
       Public_key_packet.parse_packet pkt_body
       >>| fun pkt -> Public_key_subpacket pkt
     | Uid_tag ->
@@ -128,7 +129,7 @@ let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
       Signature_packet.parse_packet pkt_body
       >>| fun pkt -> Signature_type pkt
     | Secret_key_tag
-    | Secret_subkey_packet_tag
+    | Secret_subkey_tag
     | User_attribute_tag ->
       R.error (`Unimplemented_algorithm 'P') (*TODO should have it's own (`Unimplemented of [`Algorithm of char | `Tag of char | `Version of char])*)
   end
@@ -177,7 +178,7 @@ let parse_packets cs : (('ok * Cs.t) list, int * 'error) result =
     |> R.reword_error (fun a -> cs_tl.Cstruct.off, a)
     >>= begin function
       | Some (packet_type , pkt_body, next_tl) ->
-        let()= Logs.debug (fun m -> m "Will read a %s packet" (string_of_packet_tag_type packet_type)) in
+        Logs.debug (fun m -> m "Will read a %a packet" pp_packet_tag packet_type);
         (parse_packet_body packet_type pkt_body
         |> R.reword_error (fun e -> List.length acc , e))
         >>= fun parsed ->
@@ -255,7 +256,7 @@ struct
         primary key and subkey, and not on any User ID or other packets. *)
     begin match t.signature_type <> Primary_key_binding_signature with
       | true ->
-        let()= Logs.debug (fun m -> m "Rejecting embedded signature with invalid signature_type") in
+        Logs.debug (fun m -> m "Rejecting embedded signature with invalid signature_type");
         R.error `Invalid_signature
       | false -> R.ok ()
     end >>= fun () ->
@@ -272,10 +273,10 @@ struct
     >>= fun tbh -> let () = hash_cb tbh in
     check_signature [subkey] t.hash_algorithm hash_final t
     |> R.reword_error (fun err ->
-        let()= Logs.debug (fun m -> m "Rejecting invalid embedded signature") in
+        Logs.debug (fun m -> m "Rejecting invalid embedded signature");
         err)
     >>= fun `Good_signature ->
-    let()= Logs.debug (fun m -> m "Accepting embedded signature") in
+    Logs.debug (fun m -> m "Accepting embedded signature");
     Ok `Good_signature
 
   let root_pk_of_packets (* TODO aka root_key_of_packets *)
@@ -299,18 +300,21 @@ struct
   (* this would be a good place to wonder what kind of crack the spec people smoked while writing 5.2.4: Computing Signatures...*)
   let debug_packets packets =
     (* TODO learn how to make pretty printers *)
-    Logs.debug (fun m ->
-        m "Amount of packets: %d\n|  %s\n"
-          (List.length packets)
-          (packets|>List.map (fun (tag,cs)->
-               (string_of_packet_tag_type tag) ^" "
-               ^ (begin match Signature_packet.parse_packet cs with
-                   | Error _ -> ""
-                   | Ok s -> string_of_signature_type s.signature_type
-                 end)
-               ^" : "^ (string_of_int (Cs.len cs))
-             )
-           |> String.concat "\n|  "))
+    let pp_error ppf = function
+      | `Incomplete_packet -> Fmt.pf ppf "incomplete packet"
+      | `Invalid_packet -> Fmt.pf ppf "invalid packet"
+      | `Unimplemented_algorithm c -> Fmt.pf ppf "unimplemented algorithm %c" c
+      | `Unimplemented_version c -> Fmt.pf ppf "unimplemented version %c" c
+    in
+    Logs.debug (fun m -> m "Number of packets: %d@.|  %a"
+                   (List.length packets)
+                   Fmt.(list ~sep:(unit "@.|  ")
+                          (pair ~sep:(unit " ") pp_packet_tag
+                             (pair ~sep:(unit " : ")
+                                (result ~ok:Signature_packet.pp ~error:pp_error) int)))
+                   (List.map (fun (tag, cs) ->
+                        tag, (Signature_packet.parse_packet cs, Cs.len cs))
+                       packets))
   in
 
   let debug_if_any s = begin function
@@ -393,7 +397,7 @@ struct
       let () = hash_packet V4 hash_cb uid in
       construct_to_be_hashed_cs signature
       >>= fun tbh ->
-      let()= hash_cb tbh in
+      hash_cb tbh;
       check_signature [root_pk] signature.hash_algorithm hash_final signature
       |> R.reword_error (function err ->
           Logs.debug (fun m -> m "signature check failed on a uid sig"); err)
@@ -450,7 +454,7 @@ struct
     >>= fun (verified_user_attributes, packets) ->
 
     (* TODO technically these (pk subpackets) can be followed by revocation signatures; we don't handle that *)
-    find_sig_pair Public_key_subpacket_tag packets
+    find_sig_pair Public_subkey_tag packets
     >>= fun subkeys_and_sigs ->
     let subkeys_and_sigs_length = List.length subkeys_and_sigs in
     if subkeys_and_sigs_length > 1000 then
@@ -506,29 +510,29 @@ struct
               who is making the statement -- for example, a certification
               signature that has the "sign data" flag is stating that the
               certification is for that use. *)
-              if List.filter (function (Some (Key_usage_flags _),_,_)->true
-                                     |_->false) signature.subpacket_data
+              if List.filter (function (Some (Key_usage_flags _),_,_) -> true
+                                     |_ -> false) signature.subpacket_data
                  |> List.for_all (function
-                  | ((Some (Key_usage_flags {usage_certify_keys = false;usage_sign_data = false})),_,_) -> true
-                  | _ -> false
-                   ) then
-                let()=Logs.debug (fun m -> m "Accepting subkey binding without embedded signature because the key flags have {usage_certify_keys=false;usage_sign_data=false}" ) in
+                     | ((Some (Key_usage_flags {usage_certify_keys = false;usage_sign_data = false})),_,_) -> true
+                     | _ -> false
+                   ) then begin
+                Logs.debug (fun m -> m "Accepting subkey binding without embedded signature because the key flags have {usage_certify_keys=false;usage_sign_data=false}");
                 R.ok ()
-              else
+              end else
               (* Subkeys that can be used for signing must accept inclusion by
                  embedding a signature on the root key (made using the subkey)*)
-              let rec loop = function
-                | [] ->
-                  let()=Logs.debug (fun m -> m "no embedded signature subpacket in subkey binding signature [TODO: parse 'Key Flags' properly to preclude keys without the certification bit] ") in
-                  R.error `Invalid_packet
-                | (_, Embedded_signature, embedded_cs)::_ ->
-                  Signature_packet.parse_packet embedded_cs
-                  >>= fun embedded_sig ->
-                  check_embedded_signature root_pk embedded_sig subkey
-                | _::tl -> loop tl
-              in
-              loop signature.subpacket_data
-              >>= fun `Good_signature -> R.ok ()
+                let rec loop = function
+                  | [] ->
+                    Logs.debug (fun m -> m "no embedded signature subpacket in subkey binding signature [TODO: parse 'Key Flags' properly to preclude keys without the certification bit] ");
+                    R.error `Invalid_packet
+                  | (_, Embedded_signature, embedded_cs)::_ ->
+                    Signature_packet.parse_packet embedded_cs
+                    >>= fun embedded_sig ->
+                    check_embedded_signature root_pk embedded_sig subkey
+                  | _::tl -> loop tl
+                in
+                loop signature.subpacket_data
+                >>= fun `Good_signature -> R.ok ()
           end
           >>= fun () ->
 
