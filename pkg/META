@@ -1,6 +1,6 @@
 description = "OpenPGP (RFC 4880) library"
 version = "%%VERSION_NUM%%"
-requires = "rresult hex cstruct nocrypto logs usane"
+requires = "rresult hex cstruct nocrypto logs usane fmt"
 archive(byte) = "openpgp.cma"
 plugin(byte) = "openpgp.cma"
 archive(native) = "openpgp.cmxa"

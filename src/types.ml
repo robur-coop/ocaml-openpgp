@@ -45,6 +45,11 @@ type openpgp_version =
   | V3
   | V4
 
+let pp_version ppf v =
+  Fmt.string ppf @@ match v with
+  | V3 -> "V3"
+  | V4 -> "V4"
+
 let char_of_version = function
   | V3 -> '\003'
   | V4 -> '\004'
@@ -55,6 +60,14 @@ type public_key_algorithm =
   | RSA_sign_only
   | Elgamal_encrypt_only
   | DSA
+
+let pp_public_key_algorithm ppf a =
+  Fmt.string ppf @@ match a with
+  | RSA_encrypt_or_sign -> "RSA encrypt or sign"
+  | RSA_encrypt_only -> "RSA encrypt"
+  | RSA_sign_only -> "RSA sign"
+  | Elgamal_encrypt_only -> "ElGamal encrypt"
+  | DSA -> "DSA"
 
 let public_key_algorithm_enum =
   (* RFC 4880: 9.1 Public-Key Algorithms *)
@@ -75,6 +88,14 @@ type ascii_packet_type =
   | Ascii_message_part_x_of_y of {x:Uint16.t; y:Uint16.t}
   | Ascii_signature
 
+let pp_ascii_packet_type ppf = function
+  | Ascii_public_key_block -> Fmt.pf ppf "ASCII public key block"
+  | Ascii_private_key_block -> Fmt.pf ppf "ASCII private key block"
+  | Ascii_message -> Fmt.pf ppf "ASCII message"
+  | Ascii_message_part_x n -> Fmt.pf ppf "ASCII message part %d" n.x
+  | Ascii_message_part_x_of_y n -> Fmt.pf ppf "ASCII message part %d/%d" n.x n.y
+  | Ascii_signature -> Fmt.pf ppf "ASCII signature"
+
 let string_of_ascii_packet_type = function
   | Ascii_public_key_block -> "PUBLIC"
   | Ascii_private_key_block -> "PRIVATE"
@@ -88,20 +109,20 @@ type packet_tag_type =
   | Signature_tag
   | Secret_key_tag
   | Public_key_tag
-  | Secret_subkey_packet_tag
+  | Secret_subkey_tag
   | Uid_tag
-  | Public_key_subpacket_tag
+  | Public_subkey_tag
   | User_attribute_tag
 
-let packet_tag_string_enum =
-  [ "Signature", Signature_tag
-  ; "Secret_key", Secret_key_tag
-  ; "Public_key", Public_key_tag
-  ; "Secret_subkey", Secret_subkey_packet_tag
-  ; "UID", Uid_tag
-  ; "Public_key_subpacket", Public_key_subpacket_tag
-  ; "User_attribute", User_attribute_tag
-  ]
+let pp_packet_tag ppf v =
+  Fmt.string ppf @@ match v with
+  | Signature_tag -> "signature"
+  | Secret_key_tag -> "secret key"
+  | Public_key_tag -> "public key"
+  | Secret_subkey_tag -> "secret subkey"
+  | Uid_tag -> "uid"
+  | Public_subkey_tag -> "public subkey"
+  | User_attribute_tag -> "user attribute"
 
 (* see RFC 4880: 4.3 Packet Tags *)
 let packet_tag_enum =
@@ -112,14 +133,14 @@ let packet_tag_enum =
     (* '\004', One-Pass Signature Packet *)
   ; ('\005', Secret_key_tag)
   ; ('\006', Public_key_tag)
-  ; ('\007', Secret_subkey_packet_tag)
+  ; ('\007', Secret_subkey_tag)
     (* '\008', Compressed Data Packet *)
     (* '\009', Symmetrically Encrypted Data Packet *)
     (* '\010', Marker Packet *)
     (* '\011', Literal Data Packet *)
     (* '\012', Trust Packet *)
   ; ('\013', Uid_tag)
-  ; ('\014', Public_key_subpacket_tag)
+  ; ('\014', Public_subkey_tag)
   ; '\017', User_attribute_tag (*User Attribute Packet *)
     (* '\018', Symmetrically Encrypted and Integrity Protected Data Packet *)
     (* '\019', Modification Detection Code Packet *)
@@ -143,6 +164,28 @@ type signature_type =
   | Timestamp_signature
   | Third_party_confirmation_signature
 
+let pp_signature_type ppf v =
+  Fmt.string ppf @@ match v with
+  | Signature_of_binary_document -> "binary document"
+  | Signature_of_canonical_text_document -> "canonical text"
+  | Standalone_signature -> "standalone"
+  | Generic_certification_of_user_id_and_public_key_packet ->
+    "generic certification of uid and public key"
+  | Persona_certification_of_user_id_and_public_key_packet ->
+    "persona certification of uid and public key"
+  | Casual_certification_of_user_id_and_public_key_packet ->
+    "persona certification of uid and public key"
+  | Positive_certification_of_user_id_and_public_key_packet ->
+    "positive certification of uid and public key"
+  | Subkey_binding_signature -> "subkey binding"
+  | Primary_key_binding_signature -> "primary key"
+  | Signature_directly_on_key -> "signature directly on key"
+  | Key_revocation_signature -> "key revocation"
+  | Subkey_revocation_signature -> "subkey revocation"
+  | Certification_revocation_signature -> "certification revocation"
+  | Timestamp_signature -> "timestamp"
+  | Third_party_confirmation_signature -> "third party confirmation"
+
 let signature_type_enum =
   [ '\x00', Signature_of_binary_document
   ; '\x01', Signature_of_canonical_text_document
@@ -159,24 +202,6 @@ let signature_type_enum =
   ; '\x30', Certification_revocation_signature
   ; '\x40', Timestamp_signature
   ; '\x50', Third_party_confirmation_signature
-  ]
-
-let signature_type_string_enum =
-  [ "Signature_of_binary_document", Signature_of_binary_document
-  ; "Canonical_text_document_sig", Signature_of_canonical_text_document
-  ; "Standalone_sig", Standalone_signature
-  ; "Uid_and_pubkey", Generic_certification_of_user_id_and_public_key_packet
-  ; "Uid_and_pubkey", Persona_certification_of_user_id_and_public_key_packet
-  ; "Uid_and_pubkey", Casual_certification_of_user_id_and_public_key_packet
-  ; "Uid_and_pubkey", Positive_certification_of_user_id_and_public_key_packet
-  ; "Subkey_binding", Subkey_binding_signature
-  ; "Primary_key_binding", Primary_key_binding_signature
-  ; "Signature_directly_on_key", Signature_directly_on_key
-  ; "Key_revocation", Key_revocation_signature
-  ; "Subkey_revocation", Subkey_revocation_signature
-  ; "Certification_revocation", Certification_revocation_signature
-  ; "Timestamp", Timestamp_signature
-  ; "Third_party_confirmation", Third_party_confirmation_signature
   ]
 
 type key_usage_flags = (* RFC 4880: 5.2.3.21 Key Flags *)
@@ -282,6 +307,15 @@ type hash_algorithm =
   | SHA224
   (* TODO RIPE-MD/160 *)
 
+let pp_hash_algorithm ppf v =
+  Fmt.string ppf @@ match v with
+  | MD5 -> "MD5"
+  | SHA1 -> "SHA1"
+  | SHA256 -> "SHA256"
+  | SHA384 -> "SHA384"
+  | SHA512 -> "SHA512"
+  | SHA224 -> "SHA224"
+
 let nocrypto_module_of_hash_algorithm : hash_algorithm ->
   (module Nocrypto.Hash.S) = function
   | MD5 -> (module Nocrypto.Hash.MD5)
@@ -326,9 +360,6 @@ let rec find_enum_sumtype needle = function
   | (value, sumtype)::_ when value = needle -> Ok sumtype
   | _::tl -> find_enum_sumtype needle tl
 
-let string_of_packet_tag_type (needle:packet_tag_type) =
-  (find_enum_value needle packet_tag_string_enum) |> R.get_ok
-
 let packet_tag_type_of_char needle =
   find_enum_sumtype needle packet_tag_enum
 
@@ -349,9 +380,6 @@ let char_of_public_key_algorithm needle =
 
 let int_of_public_key_algorithm needle =
   char_of_public_key_algorithm needle |> int_of_char
-
-let string_of_signature_type needle =
-  find_enum_value needle signature_type_string_enum |> R.get_ok
 
 let char_of_signature_type needle =
   find_enum_value needle signature_type_enum |> R.get_ok
