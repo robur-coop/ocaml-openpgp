@@ -5,7 +5,7 @@ true: package(rresult nocrypto usane logs hex fmt)
 
 <src/cs.ml>: package(cstruct)
 
-<app/*.*>: package(cmdliner bos fpath)
+<app/*.*>: package(cmdliner bos fpath logs.cli logs.fmt fmt.tty fmt.cli)
 
 #  <*/*_lwt.*>: package(lwt), package(lwt.ppx)
 

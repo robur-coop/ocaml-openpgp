@@ -1,9 +1,6 @@
 open Rresult
 
-type output_verbosity = Loglevel_normal | Loglevel_quiet | Loglevel_verbose | Loglevel_debug
-
-let do_verify pk_file detached_file target_file : (unit, [ `Msg of string ]) Result.result =
-  Logs.set_level (Some Logs.Debug) ;
+let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) Result.result =
   let res =
   let file_cb filename =
     let content = ref (Some (Bos.OS.File.read
@@ -54,6 +51,11 @@ let do_verify pk_file detached_file target_file : (unit, [ `Msg of string ]) Res
   end
   in res |> R.reword_error (fun _ -> `Msg "fuck")
 
+let setup_log style_renderer level =
+  Fmt_tty.setup_std_outputs ?style_renderer ();
+  Logs.set_level level;
+  Logs.set_reporter (Logs_fmt.reporter ~dst:Format.std_formatter ())
+
 open Cmdliner
 
 let docs = Manpage.s_common_options
@@ -79,20 +81,8 @@ let help_secs = [
   `P "Please report bugs on the issue tracker at <https://github.com/cfcs/ocaml-openpgp/issues>"
 ]
 
-let verbosity_opt =
-  let debug =
-    let doc = "Output full debugging information" in
-    Loglevel_debug, Arg.info ["debug"] ~docs ~doc
-  in
-  let quiet =
-    let doc = "Suppress output" in
-    Loglevel_quiet, Arg.info ["q";"quiet"] ~docs ~doc
-  in
-  let verbose =
-    let doc = "Output verbose informational messages" in
-    Loglevel_verbose, Arg.info ["v"; "verbose"] ~docs ~doc
-  in
-  Arg.(last & vflag_all [Loglevel_normal] [debug; quiet; verbose])
+let setup_log =
+  Term.(const setup_log $ Fmt_cli.style_renderer () $ Logs_cli.level ())
 
 let verify_cmd =
   let doc = "TODO verify cmd doc" in
@@ -104,7 +94,7 @@ let verify_cmd =
     `P "$(tname) --pk PUBLIC_KEY.ASC FILE_WITH_INLINE_SIGNATURE" ;
     `Blocks help_secs ]
   in
-  Term.(term_result (const do_verify $ pk $ signature $ target)),
+  Term.(term_result (const do_verify $ setup_log $ pk $ signature $ target)),
   Term.info "verify" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
 
 (*in
@@ -114,6 +104,4 @@ let verify_cmd =
 
 let cmds = [verify_cmd]
 
-let () =
-  Logs.set_level (Some Logs.Debug);
-  Term.(exit @@ eval_choice verify_cmd cmds)
+let () = Term.(exit @@ eval_choice verify_cmd cmds)
