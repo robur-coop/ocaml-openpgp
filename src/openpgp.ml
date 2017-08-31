@@ -244,8 +244,7 @@ struct
       | None -> Ok signature
       | Some data -> hash_cb data ; hash_loop ()
     in hash_loop ()
-    >>= construct_to_be_hashed_cs
-    >>= fun tbh -> let () = hash_cb tbh in
+    >>= construct_to_be_hashed_cs >>| hash_cb >>= fun () ->
     check_signature_transferable pk signature.hash_algorithm hash_final signature
 
   let check_embedded_signature pk t subkey =
@@ -269,8 +268,7 @@ struct
        primary key and subkey, and not on any User ID or other packets.*)
     hash_packet V4 hash_cb (Public_key_packet pk);
     hash_packet V4 hash_cb (Public_key_packet subkey) ;
-    construct_to_be_hashed_cs t
-    >>= fun tbh -> let () = hash_cb tbh in
+    construct_to_be_hashed_cs t >>| hash_cb >>= fun () ->
     check_signature [subkey] t.hash_algorithm hash_final t
     |> R.reword_error (fun err ->
         Logs.debug (fun m -> m "Rejecting invalid embedded signature");
@@ -395,9 +393,7 @@ struct
       (* TODO handle version V3 *)
       let () = hash_packet V4 hash_cb (Public_key_packet root_pk) in
       let () = hash_packet V4 hash_cb uid in
-      construct_to_be_hashed_cs signature
-      >>= fun tbh ->
-      hash_cb tbh;
+      construct_to_be_hashed_cs signature >>| hash_cb >>= fun () ->
       check_signature [root_pk] signature.hash_algorithm hash_final signature
       |> R.reword_error (function err ->
           Logs.debug (fun m -> m "signature check failed on a uid sig"); err)
@@ -513,7 +509,10 @@ struct
               if List.filter (function (Some (Key_usage_flags _),_,_) -> true
                                      |_ -> false) signature.subpacket_data
                  |> List.for_all (function
-                     | ((Some (Key_usage_flags {usage_certify_keys = false;usage_sign_data = false})),_,_) -> true
+                         | ((Some (Key_usage_flags {
+                               usage_certify_keys = false;
+                               usage_sign_data = false; _ }
+                           )),_,_) -> true
                      | _ -> false
                    ) then begin
                 Logs.debug (fun m -> m "Accepting subkey binding without embedded signature because the key flags have {usage_certify_keys=false;usage_sign_data=false}");
@@ -536,8 +535,7 @@ struct
           end
           >>= fun () ->
 
-          construct_to_be_hashed_cs signature
-          >>= fun tbh -> let () = hash_cb tbh in
+          construct_to_be_hashed_cs signature >>| hash_cb >>= fun () ->
           check_signature [root_pk] signature.hash_algorithm
             hash_final signature
           >>= fun _ -> check_subkeys_and_sigs

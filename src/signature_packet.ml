@@ -43,8 +43,8 @@ let compute_digest hash_algo to_be_hashed =
 let serialize_signature_subpackets subpackets : Cs.t =
   subpackets |> List.map
     (fun (parsed,tag,subpkt) ->
-       Logs.debug (fun m -> m "serializing subpackets of len %d: %s"
-                      (Cs.len subpkt) (Cs.to_hex subpkt));
+       Logs.debug (fun m -> m "serializing subpackets of len %d:\n%a"
+                      (Cs.len subpkt) Cstruct.hexdump_pp subpkt);
 
        (* TODO need to implement the "critical bit" (leftmost bit=1) on subpacket tag types here if they are critical.*)
 
@@ -80,7 +80,7 @@ let check_signature (public_keys : Public_key_packet.t list)
     | Public_key_packet.DSA_pubkey_asf key, DSA_sig_asf {r;s;} ->
       dsa_asf_are_valid_parameters ~p:key.Nocrypto.Dsa.p ~q:key.Nocrypto.Dsa.q ~hash_algo
       >>= fun () ->
-      let()= Logs.debug (fun m -> m "Trying to verify a DSA signature") in
+      Logs.debug (fun m -> m "Trying to verify a DSA signature") ;
       let cs_r = cs_of_mpi_no_header r in
       let cs_s = cs_of_mpi_no_header s in
       begin match Nocrypto.Dsa.verify ~key (cs_r,cs_s) digest with
@@ -100,11 +100,12 @@ let check_signature (public_keys : Public_key_packet.t list)
       begin match PKCS.verify_cs ~key:pub ~digest (cs_of_mpi_no_header m_pow_d_mod_n) with
       | true -> R.ok `Good_signature
       | false ->
-        let()= Logs.debug (fun m -> m "RSA signature validation failed") in
+        Logs.debug (fun m -> m "RSA signature validation failed") ;
         R.error `Invalid_signature
       end
-    | _ , _ -> Logs.debug (fun m -> m "Not implemented: Validating signatures with this pk type") ;
-               R.error (`Unimplemented_algorithm '=') (* TODO clarify error message *)
+    | _ , _ ->
+      Logs.debug (fun m -> m "Not implemented: Validating signatures with this pk type") ;
+      R.error (`Unimplemented_algorithm '=') (* TODO clarify error message *)
     end)
     in
     if res = Error `Invalid_signature then begin
@@ -140,7 +141,10 @@ let construct_to_be_hashed_cs t : ('ok,'error) result =
                             |> Cs.to_string in
 
   if String.length serialized_subpackets > 0xffff then begin
-    Logs.debug (fun m -> m "TODO better error, but failing because subpackets are longer than it's possible to sign (0xFF_FF)");
+    Logs.debug (fun m ->
+      m "TODO better error, but failing because subpackets are longer than it's possible to sign (0xFF_FF < %d)"
+      (String.length serialized_subpackets)
+    ) ;
     R.error `Invalid_packet
   end else R.ok ()
   >>= fun () ->

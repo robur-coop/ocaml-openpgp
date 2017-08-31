@@ -487,7 +487,7 @@ let consume_mpi buf : (mpi * Cs.t, 'error) result =
   *)
   Cs.BE.e_get_uint16 `Incomplete_packet buf 0 >>= fun bitlen ->
   let bytelen = (bitlen + 7) / 8 in
-  Logs.debug (fun m -> m "going to read %d: %a" bytelen Cstruct.hexdump_pp buf) ;
+  Logs.debug (fun m -> m "going to read %d:\n%a" bytelen Cstruct.hexdump_pp buf) ;
   Cs.e_split ~start:2 `Incomplete_packet buf bytelen >>= fun (this_mpi, tl) ->
   R.ok ((Z.of_bits (Cs.reverse this_mpi |> Cs.to_string)), tl)
 
