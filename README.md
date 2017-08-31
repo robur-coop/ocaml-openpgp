@@ -22,7 +22,7 @@ I could be persuaded to add these if someone can point me to maintained librarie
 
 ```bash
 opam pin nocrypto 'https://github.com/cfcs/nocrypto#fix_pkcs1'
-opam install rresult nocrypto cstruct hex usane logs cmdliner bos fpath oUnit qcheck
+opam install topkg-care rresult nocrypto cstruct hex usane logs cmdliner bos fpath oUnit qcheck
 topkg bu
 ```
 
