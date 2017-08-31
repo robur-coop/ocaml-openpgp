@@ -1,3 +1,0 @@
-description = "OpenPGP (RFC 4880) command-line utilities"
-requires = "openpgp cmdliner bos fpath"
-version = "%%VERSION_NUM%%"

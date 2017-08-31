@@ -1,3 +1,5 @@
 *.ml~
 .*.swp
 \#*.*\#
+_build
+openpgp.install
