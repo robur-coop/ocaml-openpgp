@@ -148,11 +148,12 @@ let test_detached _ =
 in ()
 
 let test_keys _ =
+  let dir = "test/keys/" in
   let files =
-    let dh = Unix.opendir "test/keys/" in
+    let dh = Unix.opendir dir in
     let rec loop acc =
       begin match Unix.readdir dh with
-        | f when Unix.((stat f).st_kind) <> Unix.S_REG ->
+        | f when Unix.((stat (dir ^ f)).st_kind) <> Unix.S_REG ->
           loop acc
         | ".." | "." |"" -> loop acc
         | f  ->

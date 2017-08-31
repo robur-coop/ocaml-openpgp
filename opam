@@ -6,27 +6,15 @@ homepage: "https://github.com/cfcs/ocaml-openpgp"
 dev-repo: "https://github.com/cfcs/ocaml-openpgp.git"
 bug-reports: "https://github.com/cfcs/ocaml-openpgp/issues"
 
-available: [ ocaml-version >= "4.04.0"
-| os != "windows"
-]
+available: [ ocaml-version >= "4.04.0" & os != "windows" ]
 
-remove: [
-  ["ocamlfind" "remove" "%{name}"]
-]
-install: [
-  ["ocamlfind" "install" "%{name}"]
-]
 build: [
-  ["ocaml" "pkg/pkg.ml" "build" "--tests" "false"
-     "--pkg-name"
-       "%{name}"
-  ]
+  [ "ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "false"
+    "--with-cli" "%{cmdliner+bos+fpath:installed}%" ]
 ]
 build-test: [
-  ["ocaml" "pkg/pkg.ml" "build" "--tests" "true"
-   "--pkg-name"
-     "%{name}"
-  ]
+  [ "ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "true"
+    "--with-cli" "%{cmdliner+bos+fpath:installed}%" ]
   ["ocaml" "pkg/pkg.ml" "test" ]
 ]
 
@@ -41,12 +29,11 @@ depends: [
   "usane"
   "hex"
   "nocrypto"
-  "cmdliner" (* { name = "openpgp-cli" } *)
+  "rresult"
 ]
-
-flags: [ light-uninstall ]
 
 depopts: [
-]
-conflicts: [
+  "cmdliner"
+  "bos"
+  "fpath"
 ]

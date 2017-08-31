@@ -1,13 +1,13 @@
 true: color(always), bin_annot, safe_string, principal
 true: warn(+A-4-18-41-42-44-48-58)
 "src": include
+true: package(rresult nocrypto usane logs hex)
 
-<*/*.*>: package(rresult nocrypto usane logs hex)
-<src/cs.ml>: package(cstruct hex)
+<src/cs.ml>: package(cstruct)
 
-<app/*.*>: package(cmdliner bos fpath logs)
+<app/*.*>: package(cmdliner bos fpath)
 
 #  <*/*_lwt.*>: package(lwt), package(lwt.ppx)
 
-<test/*>: package(oUnit qcheck logs logs.fmt)
+<test/*>: package(oUnit qcheck logs.fmt)
 
