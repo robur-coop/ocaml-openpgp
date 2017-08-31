@@ -2,8 +2,9 @@ open Rresult
 
 type output_verbosity = Loglevel_normal | Loglevel_quiet | Loglevel_verbose | Loglevel_debug
 
-let do_verify pk_file detached_file target_file =
+let do_verify pk_file detached_file target_file : (unit, [ `Msg of string ]) Result.result =
   Logs.set_level (Some Logs.Debug) ;
+  let res =
   let file_cb filename =
     let content = ref (Some (Bos.OS.File.read
                                (Fpath.of_string filename|>R.get_ok) |> R.get_ok |> Cs.of_string)
@@ -46,11 +47,12 @@ let do_verify pk_file detached_file target_file =
   begin match Openpgp.Signature.verify_detached_cb root_pk detached_sig (file_cb target_file) with
     | Ok `Good_signature ->
       Logs.app (fun m -> m "Good signature!") ; Printf.printf "IT WORKS\n"; Ok ()
-    | Error _ ->
+    | (Error _ as err) ->
       Logs.err (fun m -> m "BAD signature!") ;
       Printf.eprintf "pk:\n%s\nsig:\n%s\n\n%!" (Cs.to_string pk_content) (Cs.to_string detached_content);
-      failwith "Invalid_signature TODO figure out how to get cmdliner to error on Rresult.Error"
+      err
   end
+  in res |> R.reword_error (fun _ -> `Msg "fuck")
 
 open Cmdliner
 
@@ -102,7 +104,7 @@ let verify_cmd =
     `P "$(tname) --pk PUBLIC_KEY.ASC FILE_WITH_INLINE_SIGNATURE" ;
     `Blocks help_secs ]
   in
-  Term.(const do_verify $ pk $ signature $ target),
+  Term.(term_result (const do_verify $ pk $ signature $ target)),
   Term.info "verify" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
 
 (*in
