@@ -16,6 +16,9 @@ type t = {
   timestamp : Cstruct.uint32 ;
   algorithm_specific_data : public_key_asf
 }
+
+val pp : Format.formatter -> t -> unit
+
 val hash_public_key : Cs.t -> (Cs.t -> unit) -> unit
 
 val parse_packet :

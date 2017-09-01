@@ -22,6 +22,9 @@ type t =
   ; algorithm_specific_data : public_key_asf
   }
 
+let pp ppf t =
+  Fmt.string ppf "[public key packet TODO]"
+
 let hash_public_key pk_body (hash_cb : Cs.t -> unit) : unit =
   let to_be_hashed =
   let buffer = Buffer.create 100 in

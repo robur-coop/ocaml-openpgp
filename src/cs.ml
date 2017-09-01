@@ -70,6 +70,14 @@ module BE = struct
   let create_uint32 (int32 : Usane.Uint32.t) =
     let buf = Cstruct.create 4 in
     Cstruct.BE.set_uint32 buf 0 int32 ; buf
+
+  let e_get_ptime32 (e:'e) buf offset : (Ptime.t, 'e) result =
+    (** [e_get_ptime32 e buf offset] is the big-endian UNIX timestamp contained in [buf] at [offset], or [Error e] *)
+    e_get_uint32 e buf offset
+    >>| Int32.to_int >>| Ptime.Span.of_int_s >>| Ptime.of_span
+    >>= function
+    | Some time -> Ok time
+    | None -> Error e
 end
 
 let of_hex str =

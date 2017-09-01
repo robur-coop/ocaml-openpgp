@@ -134,6 +134,13 @@ let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
       R.error (`Unimplemented_algorithm 'P') (*TODO should have it's own (`Unimplemented of [`Algorithm of char | `Tag of char | `Version of char])*)
   end
 
+let pp_packet ppf = begin function
+  | Public_key_packet pkt -> Public_key_packet.pp ppf pkt
+  | Public_key_subpacket pkt -> Public_key_packet.pp ppf pkt
+  | Uid_packet pkt -> Uid_packet.pp ppf pkt
+  | Signature_type pkt -> Signature_packet.pp ppf pkt
+  end
+
 let hash_packet version hash_cb = begin function
   | Uid_packet pkt -> Uid_packet.hash pkt hash_cb version
   | Public_key_packet pkt ->
@@ -303,16 +310,17 @@ struct
       | `Invalid_packet -> Fmt.pf ppf "invalid packet"
       | `Unimplemented_algorithm c -> Fmt.pf ppf "unimplemented algorithm %c" c
       | `Unimplemented_version c -> Fmt.pf ppf "unimplemented version %c" c
+      | _ -> Fmt.pf ppf "TODO unimplemented error pp"
     in
     Logs.debug (fun m -> m "Number of packets: %d@.|  %a"
-                   (List.length packets)
-                   Fmt.(list ~sep:(unit "@.|  ")
-                          (pair ~sep:(unit " ") pp_packet_tag
-                             (pair ~sep:(unit " : ")
-                                (result ~ok:Signature_packet.pp ~error:pp_error) int)))
-                   (List.map (fun (tag, cs) ->
-                        tag, (Signature_packet.parse_packet cs, Cs.len cs))
-                       packets))
+      (List.length packets)
+      (Fmt.(list ~sep:(unit "@.|  ") @@ Fmt.vbox ~indent:10 (*TODO figure out how to use Fmt.vbox properly *)
+        (pair ~sep:(unit " ") pp_packet_tag
+          (pair ~sep:(unit " : ")
+             (result ~ok:pp_packet ~error:pp_error) int))))
+      (List.map (fun (tag, cs) ->
+         tag, (parse_packet_body tag cs, Cs.len cs))
+         packets))
   in
 
   let debug_if_any s = begin function

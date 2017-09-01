@@ -267,8 +267,37 @@ type signature_subpacket_tag =
   | Issuer_fingerprint
   | Unimplemented_signature_subpacket_tag of char
 
-type signature_subpacket =
-  | Key_usage_flags of key_usage_flags
+let pp_signature_subpacket_tag ppf = function
+  | Unimplemented_signature_subpacket_tag c ->
+      Fmt.pf ppf "Unimplemented signature subpacket tag %02x" (Char.code c)
+  | v -> Fmt.string ppf @@
+    begin match v with
+    | Signature_creation_time -> "Signature_creation_time"
+    | Signature_expiration_time -> "Signature_expiration_time"
+    | Exportable_certification -> "Exportable_certification"
+    | Trust_signature -> "Trust_signature"
+    | Regular_expression -> "Regular_expression"
+    | Revocable -> "Revocable"
+    | Key_expiration_time -> "Key expiration time"
+    | Preferred_symmetric_algorithms -> "Preferred_symmetric_algorithms"
+    | Revocation_key -> "Revocation_key"
+    | Issuer -> "Issuer"
+    | Notation_data -> "Notation_data"
+    | Preferred_hash_algorithms -> "Preferred_hash_algorithms"
+    | Preferred_compression_algorithms -> "Preferred_compression_algorithms"
+    | Key_server_preferences -> "Key_server_preferences"
+    | Preferred_key_server -> "Preferred_key_server"
+    | Primary_user_id -> "Primary_user_id"
+    | Policy_URI -> "Policy_URI"
+    | Key_flags -> "Key_flags"
+    | Signers_user_id -> "Signers_user_id"
+    | Reason_for_revocation -> "Reason_for_revocation"
+    | Features -> "Features"
+    | Signature_target -> "Signature_target"
+    | Embedded_signature -> "Embedded_signature"
+    | Issuer_fingerprint -> "Issuer_fingerprint"
+    | Unimplemented_signature_subpacket_tag _ -> "Unimplemented_signature_subpacket_tag"
+    end
 
 let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
   [ '\002', Signature_creation_time
@@ -296,6 +325,46 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
   ; '\032', Embedded_signature
   ; '\033', Issuer_fingerprint (* This is not from RFC 4880*)
   ]
+
+type signature_subpacket =
+  | Signature_creation_time of Ptime.t
+  | Signature_expiration_time of Ptime.t
+  | Key_expiration_time of Ptime.t
+  | Key_usage_flags of key_usage_flags
+
+let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
+  match packet with
+  | Signature_creation_time _ -> Signature_creation_time
+  | Signature_expiration_time _ -> Signature_expiration_time
+  | Key_expiration_time _ -> Key_expiration_time
+  | Key_usage_flags _ -> Key_flags
+
+let pp_signature_subpacket ppf = function
+  | ( Signature_creation_time time
+    | Signature_expiration_time time
+    | Key_expiration_time time
+    ) as tag ->
+    Fmt.pf ppf "[%a (UTC): %a]"
+      pp_signature_subpacket_tag (signature_subpacket_tag_of_signature_subpacket tag)
+      Ptime.pp time
+  | Key_usage_flags (* TODO also prettyprint unimplemented flags *)
+    { usage_certify_keys = certs
+    ; usage_sign_data = sign_data
+    ; usage_encrypt_communications = enc_comm
+    ; usage_encrypt_storage = enc_store
+    ; usage_authentication = auth}
+    -> Fmt.pf ppf "Key usage flags:@,{certify: %b ; @,sign data: %b ; @,encrypt communications: %b ; @,encrypt storage: %b ; @,authentication: %b}" certs sign_data enc_comm enc_store auth
+
+(* TODO implement pp of ((signature_subpacket option, signature_subpacket_tag, Cs.t) list)
+let pp_signature_subpacket_opt ppf = function
+  | (None, tag, data) -> Fmt.of_to_string @@ Fmt.pf "[Unimplemented subpacket type %a: %s]" pp_signature_subpacket_tag tag (Cs.to_string data)
+  | (Some parsed_subpkt, _, _) -> pp_signature_subpacket ppf parsed_subpkt
+
+let pp_signature_subpacket_list ppf lst =
+  Fmt.pf ppf "[sig subpacket list %a]"
+  Fmt.(list ~sep:(unit " ; ") pp_signature_subpacket_opt)
+  lst
+*)
 
 type hash_algorithm =
   (* RFC 4880: 9.4 Hash Algorithms *)
@@ -393,14 +462,13 @@ let signature_type_of_cs_offset cs offset =
   >>= fun signature_type_c ->
   signature_type_of_char signature_type_c
 
-let signature_subpacket_tag_of_char needle :
-  (signature_subpacket_tag, [>]) result =
-  match find_enum_sumtype needle signature_subpacket_tag_enum with
-  | Error `Unmatched_enum_value ->
-    Logs.debug (fun m -> m "Unimplemented signature subpacket type 0x%02x"
-                   (Char.code needle));
-    Ok (Unimplemented_signature_subpacket_tag needle)
-  | res -> res
+let signature_subpacket_tag_of_char needle : signature_subpacket_tag =
+  find_enum_sumtype needle signature_subpacket_tag_enum
+  |> R.ignore_error ~use:(fun `Unmatched_enum_value ->
+         Logs.debug (fun m -> m "Unimplemented signature subpacket type 0x%02x"
+               (Char.code needle));
+         Unimplemented_signature_subpacket_tag needle
+     )
 
 let char_of_signature_subpacket_tag = function
   | Unimplemented_signature_subpacket_tag c -> c
@@ -451,10 +519,9 @@ let mpis_are_prime lst =
     List.find_all (fun mpi -> not @@ Nocrypto.Numeric.pseudoprime mpi) lst
   in
   if List.length non_primes <> 0 then begin
-    let pp p = cs_of_mpi_no_header p in
     Logs.debug (fun m -> m "MPIs are not prime: %a"
                    Fmt.(list ~sep:(unit " ; ") Cstruct.hexdump_pp)
-                   (List.map pp non_primes)) ;
+                   (List.map cs_of_mpi_no_header non_primes)) ;
     R.error (`Invalid_mpi_parameters non_primes)
   end else R.ok lst
 
@@ -487,7 +554,7 @@ let consume_mpi buf : (mpi * Cs.t, 'error) result =
   *)
   Cs.BE.e_get_uint16 `Incomplete_packet buf 0 >>= fun bitlen ->
   let bytelen = (bitlen + 7) / 8 in
-  Logs.debug (fun m -> m "going to read %d:\n%a" bytelen Cstruct.hexdump_pp buf) ;
+  Logs.debug (fun m -> m "going to read %d:@.%a" bytelen Cstruct.hexdump_pp buf) ;
   Cs.e_split ~start:2 `Incomplete_packet buf bytelen >>= fun (this_mpi, tl) ->
   R.ok ((Z.of_bits (Cs.reverse this_mpi |> Cs.to_string)), tl)
 

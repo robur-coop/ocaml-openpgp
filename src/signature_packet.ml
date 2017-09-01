@@ -21,7 +21,7 @@ type t = {
 }
 
 let pp ppf t =
-  Fmt.pf ppf "signature %a public key %a hash %a"
+  Fmt.pf ppf "{signature type: [%a] @, public key algorithm: [%a] @, hash algorithm: [%a] @, TODO: pp subpackets with pp_signature_subpacket}"
     pp_signature_type t.signature_type
     pp_public_key_algorithm t.public_key_algorithm
     pp_hash_algorithm t.hash_algorithm
@@ -43,7 +43,7 @@ let compute_digest hash_algo to_be_hashed =
 let serialize_signature_subpackets subpackets : Cs.t =
   subpackets |> List.map
     (fun (parsed,tag,subpkt) ->
-       Logs.debug (fun m -> m "serializing subpackets of len %d:\n%a"
+       Logs.debug (fun m -> m "serializing subpackets of len %d:@.%a"
                       (Cs.len subpkt) Cstruct.hexdump_pp subpkt);
 
        (* TODO need to implement the "critical bit" (leftmost bit=1) on subpacket tag types here if they are critical.*)
@@ -78,9 +78,9 @@ let check_signature (public_keys : Public_key_packet.t list)
     (begin match pk.Public_key_packet.algorithm_specific_data ,
                 t.algorithm_specific_data with
     | Public_key_packet.DSA_pubkey_asf key, DSA_sig_asf {r;s;} ->
+      Logs.debug (fun m -> m "Trying to verify a DSA signature") ;
       dsa_asf_are_valid_parameters ~p:key.Nocrypto.Dsa.p ~q:key.Nocrypto.Dsa.q ~hash_algo
       >>= fun () ->
-      Logs.debug (fun m -> m "Trying to verify a DSA signature") ;
       let cs_r = cs_of_mpi_no_header r in
       let cs_s = cs_of_mpi_no_header s in
       begin match Nocrypto.Dsa.verify ~key (cs_r,cs_s) digest with
@@ -178,53 +178,53 @@ let parse_subpacket buf : (signature_subpacket option * signature_subpacket_tag 
     let tag_i = Cstruct.get_uint8 tag 0 in
     Char.chr (tag_i land 0x7f), (tag_i land 0x80 = 0x80)
     (* RFC 4880: 5.2.3.1.  Signature Subpacket Specification
-   Bit 7 of the subpacket type is the "critical" bit.  If set, it
-   denotes that the subpacket is one that is critical for the evaluator
-   of the signature to recognize.  If a subpacket is encountered that is
-   marked critical but is unknown to the evaluating software, the
-   evaluator SHOULD consider the signature to be in error.
+       Bit 7 of the subpacket type is the "critical" bit.  If set, it
+       denotes that the subpacket is one that is critical for the evaluator
+       of the signature to recognize.  If a subpacket is encountered that is
+       marked critical but is unknown to the evaluating software, the
+       evaluator SHOULD consider the signature to be in error.
     *)
   in
-  let()=Logs.debug (fun m -> m "parse_subpacket: %C %s" tag_c (Cs.to_hex data)) in
-  signature_subpacket_tag_of_char tag_c
-    |> R.reword_error (function
-      |`Invalid_length -> `Invalid_packet
-      | err -> err
-    )
-    >>= begin function
-      | Key_flags when Cs.len data = 1 ->
-        let flags = key_usage_flags_of_char @@ Cstruct.get_char data 0 in
-        let()=Logs.debug (fun m -> m "Parsing key usage flags: %C"
-                             (char_of_key_usage_flags flags)
-                         ) in
-        R.ok (Some (Key_usage_flags flags), Key_flags, data)
-    | ( Signature_creation_time
-      | Signature_expiration_time
-      | Policy_URI
-      | Preferred_symmetric_algorithms
-      | Preferred_hash_algorithms
-      | Preferred_compression_algorithms
-      | Key_server_preferences
-      | Embedded_signature
-      ) as tag ->
-        let()= Logs.debug (fun m -> m "Got a whitelisted subpacket %d: %s"
-                            (Char.code @@ char_of_signature_subpacket_tag tag)
-                            (Cs.to_hex data)
-                          )
-        in
-        R.ok (None, tag,data)
-    | tag when not is_critical ->
-      let() =
-        Logs.debug (fun m ->
-            m "Uncritical unimplemented signature subpacket %C %s" tag_c
-              (Cs.to_hex data)) in
-      Ok (None, tag, data)
-    | tag ->
-      let()=Logs.debug (fun m -> m "Unimplemented critical subpacket %C %s"
-                         (char_of_signature_subpacket_tag tag) (Cs.to_hex data))
-      in
+  let tag = signature_subpacket_tag_of_char tag_c in
+  Logs.debug (fun m -> m "parse_subpacket: going to parse: [%a] %s"
+    pp_signature_subpacket_tag tag
+    (Cs.to_hex data)
+  ) ;
+  begin match tag with
+  | Key_flags when Cs.len data = 1 ->
+      Ok ( Some (
+        Key_usage_flags (key_usage_flags_of_char @@ Cstruct.get_char data 0)))
+  (* Parse timestamps. Note that 03c26700 (1972-01-01 00:00:00 +00:00)
+   * seems to mean "no expiry" for Key_expiration_time - TODO consider using
+   * a (Key_expiration_time of Ptime.t option) type to handle this *)
+  | ( Signature_creation_time
+    | Signature_expiration_time
+    | Key_expiration_time
+    ) ->
+      Cs.BE.e_get_ptime32 `Invalid_packet data 0 >>= fun ptime ->
+      Ok (Some (begin match tag with
+                | Signature_creation_time -> Signature_creation_time ptime
+                | Signature_expiration_time -> Signature_expiration_time ptime
+                | Key_expiration_time -> Key_expiration_time ptime
+                end ))
+  | tag when not is_critical -> Ok None
+  | tag ->
+      Logs.err (fun m -> m "Unimplemented critical subpacket: [%a] %s"
+        pp_signature_subpacket_tag tag
+        (Cs.to_hex data)
+      ) ;
       R.error (`Unimplemented_algorithm tag_c)
   end
+  >>| function
+      | Some parsed_opt ->
+          Logs.debug (fun m -> m "Parsed subpacket: %a"
+            pp_signature_subpacket parsed_opt ) ;
+          (Some parsed_opt, tag, data)
+      | None ->
+          Logs.debug (fun m -> m "Uncritical unimplemented subpacket: %a: %s"
+            pp_signature_subpacket_tag tag
+            (Cs.to_hex data) ) ;
+          (None, tag, data)
 
 let parse_subpacket_data buf
   : ((signature_subpacket option * signature_subpacket_tag *Cs.t)list,

@@ -2,6 +2,8 @@
 #require "nocrypto"
 #require "rresult"
 open Rresult;;
+#require "ptime"
+#require "ptime.clock.os"
 #require "hex"
 #require "logs"
 #mod_use "src/cs.ml"
