@@ -14,7 +14,8 @@ type public_key_asf =
 
 type t = {
   timestamp : Ptime.t ; (** Key creation timestamp *)
-  algorithm_specific_data : public_key_asf
+  algorithm_specific_data : public_key_asf ;
+  v4_fingerprint : Cs.t (** SHA1 hash of the public key *)
 }
 
 val pp : Format.formatter -> t -> unit

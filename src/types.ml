@@ -54,6 +54,11 @@ let char_of_version = function
   | V3 -> '\003'
   | V4 -> '\004'
 
+let e_version_of_char e = function
+  | '\003' -> Ok V3
+  | '\004' -> Ok V4
+  | _ -> Error e
+
 type public_key_algorithm =
   | RSA_encrypt_or_sign
   | RSA_encrypt_only
@@ -258,7 +263,7 @@ type signature_subpacket_tag =
   | Preferred_key_server
   | Primary_user_id
   | Policy_URI
-  | Key_flags
+  | Key_flags (* TODO should be renamed Key_usage_flags *)
   | Signers_user_id
   | Reason_for_revocation
   | Features
@@ -309,7 +314,7 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
   ; '\009', Key_expiration_time
   ; '\011', Preferred_symmetric_algorithms
   ; '\012', Revocation_key
-  ; '\016', Issuer
+  ; '\016', Issuer (* TODO I think this is the 64-bit keyid of the PK *)
   ; '\020', Notation_data
   ; '\021', Preferred_hash_algorithms
   ; '\022', Preferred_compression_algorithms
@@ -323,7 +328,8 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
   ; '\030', Features
   ; '\031', Signature_target
   ; '\032', Embedded_signature
-  ; '\033', Issuer_fingerprint (* This is not from RFC 4880*)
+  ; '\033', Issuer_fingerprint (* This is not from RFC 4880, but it consists
+                                * of a version char (04) and a SHA1 of the pk *)
   ]
 
 type signature_subpacket =
@@ -331,6 +337,7 @@ type signature_subpacket =
   | Signature_expiration_time of Ptime.Span.t
   | Key_expiration_time of Ptime.Span.t
   | Key_usage_flags of key_usage_flags
+  | Issuer_fingerprint of openpgp_version * Cs.t
 
 let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
   match packet with
@@ -338,6 +345,7 @@ let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_
   | Signature_expiration_time _ -> Signature_expiration_time
   | Key_expiration_time _ -> Key_expiration_time
   | Key_usage_flags _ -> Key_flags
+  | Issuer_fingerprint _ -> Issuer_fingerprint
 
 let pp_signature_subpacket ppf = function
   | Signature_creation_time time ->
@@ -355,6 +363,11 @@ let pp_signature_subpacket ppf = function
     ; usage_encrypt_storage = enc_store
     ; usage_authentication = auth}
     -> Fmt.pf ppf "Key usage flags:@,{certify: %b ; @,sign data: %b ; @,encrypt communications: %b ; @,encrypt storage: %b ; @,authentication: %b}" certs sign_data enc_comm enc_store auth
+  | Issuer_fingerprint (v,fp) -> begin match v with
+      | V3 (*TODO*)
+      | V4 -> Fmt.pf ppf "[%a SHA1: %s]"
+                pp_signature_subpacket_tag Issuer_fingerprint (Cs.to_hex fp)
+    end
 
 (* TODO implement pp of ((signature_subpacket option, signature_subpacket_tag, Cs.t) list)
 let pp_signature_subpacket_opt ppf = function

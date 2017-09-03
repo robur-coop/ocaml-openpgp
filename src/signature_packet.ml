@@ -91,9 +91,6 @@ let public_key_not_expired (current_time : Ptime.t)
     Error `Invalid_signature
 
 let signature_expiration_date_is_valid (current_time : Ptime.t) (t : t) =
-  (* TODO handle key expiry for certifications
-   * (need to pull the creation date from the pk)
-   *)
     (* must have a Signature_creation_time to be valid: *)
     match filter_subpacket_tag Signature_creation_time t.subpacket_data with
     | [] ->
@@ -127,7 +124,11 @@ let check_signature (current_time : Ptime.t)
     digest_finalizer
     t
   : ('ok, 'err) result =
-  (* TODO handle expiry date *)
+  (* Note that this function does not deal with key expiry.
+   * if you are checking the signature of a subkey,
+   * you must take care to verify that expiry date is within current_time
+   * using the function called "public_key_not_expired".
+  *)
   (* TODO check backsig, see g10/sig-check.c:signature_check2 *)
   (* TODO
    Bit 7 of the subpacket type is the "critical" bit.  If set, it
@@ -137,11 +138,17 @@ let check_signature (current_time : Ptime.t)
    evaluator SHOULD consider the signature to be in error.
   *)
   let digest = digest_finalizer () in
-  let rec loop pks =
+  let rec loop (pks : Public_key_packet.t list) =
     match pks with
     | [] -> Error `Invalid_signature
+    | pk::remaining_keys when t.subpacket_data |> List.exists (function
+        (* Skip pk that has fp <> SHA1 from t.Issuer_fingerprint *)
+        | Some (Issuer_fingerprint (V4,fp)), _, _ when
+            not @@ Cs.equal fp pk.Public_key_packet.v4_fingerprint -> true
+        (* | Some (Issuer keyid), _, _ when TODO check for 64-bit keyid also? *)
+        | _ -> false
+      ) -> loop remaining_keys
     | pk::remaining_keys ->
-    (* TODO should look for hints (signature subpacket data) to the id of the key being used instead of bruting our way through the keys *)
     let res =
     signature_expiration_date_is_valid current_time t
     >>= fun () ->
@@ -278,6 +285,15 @@ let parse_subpacket buf : (signature_subpacket option * signature_subpacket_tag 
   | Key_expiration_time ->
       Cs.BE.e_get_ptimespan32 `Invalid_packet data 0 >>= fun pspan ->
       Some (Key_expiration_time pspan) |> R.ok
+  | Issuer_fingerprint ->
+      Cs.e_get_char `Invalid_packet data 0 >>= e_version_of_char `Invalid_packet
+      >>= begin function
+        | V4 when Cs.len data = 1 + Nocrypto.Hash.SHA1.digest_size ->
+          Ok (Some (Issuer_fingerprint (V4,
+                      Cs.(sub data 1 Nocrypto.Hash.SHA1.digest_size))))
+        | V3 (*TODO don't think Issuer_fingerprint was a thing in V3? *)
+        | V4 -> Error `Invalid_packet
+      end
   | tag when not is_critical -> Ok None
   | tag ->
       Logs.err (fun m -> m "Unimplemented critical subpacket: [%a] %s"

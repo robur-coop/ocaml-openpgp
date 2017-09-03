@@ -437,40 +437,49 @@ struct
          | _ -> false
         )
       in
-      if List.length valid_certifications < 1 then
+      if List.length valid_certifications < 1 then begin
+        Logs.debug (fun m -> m "Skipping %a due to lack of valid certifications"
+                       pp_packet obj
+         ) ;
          R.error `Invalid_signature
-      else
+      end else
          inner_loop ((obj, valid_certifications)::acc) packets
       in inner_loop [] packets
     in
     packets |> take_and_validate_certifications Uid_tag (validate_uid_signature)
+        (* We treat these four completely equally: *)
         [ Generic_certification_of_user_id_and_public_key_packet
         ; Persona_certification_of_user_id_and_public_key_packet
         ; Casual_certification_of_user_id_and_public_key_packet
         ; Positive_certification_of_user_id_and_public_key_packet]
     >>= fun (verified_uids , packets) ->
     if List.length verified_uids < 1
-    then R.error `Invalid_packet
-    else R.ok ()
+    then begin
+      Logs.err (fun m -> m "Unable to find at least one verifiable UID.") ;
+      R.error `Invalid_packet
+    end else R.ok ()
     >>= fun () ->
     let verified_uids =
-      verified_uids |> List.map (fun (Uid_packet uid,certifications) -> {uid;certifications})
+      verified_uids |> List.map
+        (fun (Uid_packet uid,certifications) -> {uid;certifications})
     in
 
     (* Validate user attributes (basically, embedded image files) *)
     let validate_user_attribute_signature _ _ _ (* root_pk obj signature*) =
             R.error `Not_implemented
     in
-    packets |> take_and_validate_certifications User_attribute_tag (validate_user_attribute_signature) []
+    packets |> take_and_validate_certifications User_attribute_tag
+      (validate_user_attribute_signature) []
     >>= fun (verified_user_attributes, packets) ->
 
     (* TODO technically these (pk subpackets) can be followed by revocation signatures; we don't handle that *)
     find_sig_pair Public_subkey_tag packets
     >>= fun subkeys_and_sigs ->
     let subkeys_and_sigs_length = List.length subkeys_and_sigs in
-    if subkeys_and_sigs_length > 1000 then
+    if subkeys_and_sigs_length > 1000 then begin
+      Logs.err (fun m -> m "Encountered more than 1000 subkeys/signatures; this is probably not a legitimate public key") ;
       R.error `Invalid_packet
-    else
+    end else
     list_drop_e_n `Invalid_packet (subkeys_and_sigs_length*2) packets >>= fun packets ->
 
     debug_if_any "subkeys_and_sigs" subkeys_and_sigs ;
@@ -486,6 +495,10 @@ struct
             | Subkey_binding_signature ->
               R.ok ()
             | _ ->
+              Logs.err (fun m -> m "Subkey signature type expected to be %a, actual type is %a"
+                           pp_signature_type Subkey_binding_signature
+                           pp_signature_type signature.signature_type
+                       );
               R.error `Invalid_packet
           end >>= fun () ->
 

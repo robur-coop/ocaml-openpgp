@@ -30,12 +30,15 @@ let pp_pk_asf ppf asf=
 type t =
   { timestamp: Ptime.t
   ; algorithm_specific_data : public_key_asf
+  ; v4_fingerprint : Cs.t
   }
 
 let pp ppf t =
-  Fmt.pf ppf "[public key packet: created: %a;@, %a]"
+  (* TODO vbox / hbox *)
+  Fmt.pf ppf "[public key packet: created: %a@,; %a@,; SHA1 fingerprint: %s@,]"
     Ptime.pp t.timestamp
     pp_pk_asf t.algorithm_specific_data
+    (Cs.to_hex t.v4_fingerprint)
 
 let hash_public_key pk_body (hash_cb : Cs.t -> unit) : unit =
   let to_be_hashed =
@@ -218,4 +221,5 @@ let parse_packet buf : ('a, [> `Incomplete_packet
   >>= fun parse_asf ->
   parse_asf pk_algo_specific
   >>= fun algorithm_specific_data ->
-  R.ok { timestamp ; algorithm_specific_data }
+  R.ok { timestamp ; algorithm_specific_data ;
+         v4_fingerprint = v4_fingerprint ~pk_body:buf}
