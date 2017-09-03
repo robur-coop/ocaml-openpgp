@@ -21,9 +21,10 @@ I could be persuaded to add these if someone can point me to maintained librarie
 ### Building
 
 ```bash
-opam pin nocrypto 'https://github.com/cfcs/nocrypto#fix_pkcs1'
+opam pin add -n nocrypto 'https://github.com/cfcs/nocrypto.git#fix_pkcs1'
+opam pin add -n usane 'https://github.com/hannesm/usane.git'
 opam install topkg-care rresult nocrypto cstruct hex usane logs cmdliner bos fpath oUnit qcheck
-topkg bu
+topkg build
 ```
 
 ### Cmdline usage
