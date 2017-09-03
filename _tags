@@ -5,9 +5,9 @@ true: package(rresult nocrypto usane logs hex fmt ptime)
 
 <src/cs.ml>: package(cstruct)
 
-<app/*.*>: package(cmdliner bos fpath logs.cli logs.fmt fmt.tty fmt.cli)
+<app/*.*>: package(cmdliner bos fpath logs.cli logs.fmt fmt.tty fmt.cli ptime.clock.os)
 
 #  <*/*_lwt.*>: package(lwt), package(lwt.ppx)
 
-<test/*>: package(oUnit qcheck logs.fmt)
+<test/*>: package(oUnit qcheck logs.fmt ptime.clock.os)
 

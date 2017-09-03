@@ -328,8 +328,8 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
 
 type signature_subpacket =
   | Signature_creation_time of Ptime.t
-  | Signature_expiration_time of Ptime.t
-  | Key_expiration_time of Ptime.t
+  | Signature_expiration_time of Ptime.Span.t
+  | Key_expiration_time of Ptime.Span.t
   | Key_usage_flags of key_usage_flags
 
 let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
@@ -340,13 +340,14 @@ let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_
   | Key_usage_flags _ -> Key_flags
 
 let pp_signature_subpacket ppf = function
-  | ( Signature_creation_time time
-    | Signature_expiration_time time
-    | Key_expiration_time time
-    ) as tag ->
-    Fmt.pf ppf "[%a (UTC): %a]"
-      pp_signature_subpacket_tag (signature_subpacket_tag_of_signature_subpacket tag)
+  | Signature_creation_time time ->
+    Fmt.pf ppf "[%a UTC: %a]" pp_signature_subpacket_tag Signature_creation_time
       Ptime.pp time
+  | ( Signature_expiration_time time
+    | Key_expiration_time time) as tag ->
+      Fmt.pf ppf "[%a: %a]"
+      pp_signature_subpacket_tag (signature_subpacket_tag_of_signature_subpacket tag)
+      Ptime.Span.pp time
   | Key_usage_flags (* TODO also prettyprint unimplemented flags *)
     { usage_certify_keys = certs
     ; usage_sign_data = sign_data
@@ -365,6 +366,11 @@ let pp_signature_subpacket_list ppf lst =
   Fmt.(list ~sep:(unit " ; ") pp_signature_subpacket_opt)
   lst
 *)
+
+let e_compare_ptime_plus_span e (base,span) current_time =
+  match Ptime.add_span base span with
+    | None -> Error e (* TODO fix error *)
+    | Some ptime -> Ok (Ptime.compare ptime current_time)
 
 type hash_algorithm =
   (* RFC 4880: 9.4 Hash Algorithms *)
@@ -512,7 +518,6 @@ let cs_of_mpi_no_header mpi : Cs.t =
   (* TODO |> strip trailing section of nullbytes *)
   |> Cs.reverse
   |> fun buf -> Cs.strip_leading_char buf '\x00'
-
 
 let mpis_are_prime lst =
   let non_primes =

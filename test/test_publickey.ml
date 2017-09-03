@@ -73,6 +73,7 @@ let test_self_check _ =
   end
 
 let test_verify_signature _ =
+  let current_time = Ptime_clock.now () in
   begin match
       ( Openpgp.decode_ascii_armor test_pkp_cstruct
       |> R.reword_error (fun _ -> -1, `Invalid_packet)
@@ -97,7 +98,7 @@ let test_verify_signature _ =
     List.combine p cs
   in
   let()=Printf.printf "going to verify everything before %d (%d bytes)\n" sig_cs.off (List.hd first_pkts |> Cs.len)in
-  Openpgp.Signature.root_pk_of_packets packet_tags
+  Openpgp.Signature.root_pk_of_packets ~current_time packet_tags
   |> R.reword_error (fun a -> 31337,a)
  ) with
   | Error (_,`Invalid_signature) ->
@@ -120,11 +121,12 @@ let fix_parse_packets pkt_lst =
   List.combine (List.map Openpgp.packet_tag_of_packet p) cs
 
 let test_detached _ =
+  let current_time = Ptime_clock.now () in
   let _ =
     Openpgp.decode_ascii_armor test_dsadetached_pkp_cstruct |> R.reword_error (fun a -> -1,a)
   >>| snd
   >>= Openpgp.parse_packets >>| fix_parse_packets
-  >>= (fun x -> Openpgp.Signature.root_pk_of_packets x |> R.reword_error (fun a -> -1,a))
+  >>= (fun x -> Openpgp.Signature.root_pk_of_packets ~current_time x |> R.reword_error (fun a -> -1,a))
   >>= fun (root_pk , _) ->
   let()= Logs.debug (fun m -> m "Got a root pk for detached") in
   Openpgp.decode_ascii_armor test_dsadetached_cstruct |> R.reword_error (fun a -> -1,a)
@@ -141,7 +143,7 @@ let test_detached _ =
   let cb () =
     match !data with (Some _) as x -> data:=None; Ok x | non -> Ok non
   in
-  begin match Openpgp.Signature.verify_detached_cb root_pk detached_sign cb with
+  begin match Openpgp.Signature.verify_detached_cb ~current_time root_pk detached_sign cb with
     | Ok _ -> Ok ()
     | Error _ -> failwith "detached sig failed"
   end

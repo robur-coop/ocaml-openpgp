@@ -36,12 +36,13 @@ let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) R
   Openpgp.parse_packets pk_cs |> R.reword_error (snd)
   >>| List.map (fun (a,b) -> Openpgp.packet_tag_of_packet a , b)
   >>= fun pk_packets ->
-  Openpgp.Signature.root_pk_of_packets pk_packets >>= fun (root_pk,_) ->
+  let current_time = Ptime_clock.now () in
+  Openpgp.Signature.root_pk_of_packets ~current_time pk_packets >>= fun (root_pk,_) ->
 
   Openpgp.decode_ascii_armor detached_content >>= fun (Types.Ascii_signature, sig_cs) ->
   Openpgp.parse_packets sig_cs |> R.reword_error (snd)
   >>= fun ((Openpgp.Signature_type detached_sig , _)::_) ->
-  begin match Openpgp.Signature.verify_detached_cb root_pk detached_sig (file_cb target_file) with
+  begin match Openpgp.Signature.verify_detached_cb ~current_time root_pk detached_sig (file_cb target_file) with
     | Ok `Good_signature ->
       Logs.app (fun m -> m "Good signature!") ; Printf.printf "IT WORKS\n"; Ok ()
     | (Error _ as err) ->

@@ -6,6 +6,7 @@ open Rresult;;
 #require "ptime.clock.os"
 #require "hex"
 #require "logs"
+#require "fmt"
 #mod_use "src/cs.ml"
 #mod_use "src/types.ml"
 #mod_use "src/uid_packet.ml"

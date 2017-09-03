@@ -24,7 +24,7 @@ module Signature : sig
     (** Zero or more subkey packets *)
     ; subkeys : subkey list
     }
-  val root_pk_of_packets : (packet_tag_type * Cs.t) list ->
+  val root_pk_of_packets : current_time : Ptime.t -> (packet_tag_type * Cs.t) list ->
     (transferable_public_key * (packet_tag_type * Cs.t) list
      ,
      [> `Extraneous_packets_after_signature
@@ -38,7 +38,8 @@ module Signature : sig
              | `Unimplemented_algorithm of char ])
       result
 
-val verify_detached_cb :
+  val verify_detached_cb :
+           current_time : Ptime.t ->
            transferable_public_key ->
            t ->
            (unit ->

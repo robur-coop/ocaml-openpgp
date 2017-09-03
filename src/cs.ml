@@ -71,13 +71,27 @@ module BE = struct
     let buf = Cstruct.create 4 in
     Cstruct.BE.set_uint32 buf 0 int32 ; buf
 
-  let e_get_ptime32 (e:'e) buf offset : (Ptime.t, 'e) result =
+  let e_get_ptimespan32 (e:'e) buf offset : (Ptime.span, 'e) result =
     (** [e_get_ptime32 e buf offset] is the big-endian UNIX timestamp contained in [buf] at [offset], or [Error e] *)
     e_get_uint32 e buf offset
-    >>| Int32.to_int >>| Ptime.Span.of_int_s >>| Ptime.of_span
-    >>= function
-    | Some time -> Ok time
+    >>| Int32.to_int >>| Ptime.Span.of_int_s
+    >>= fun time -> Ok time
+
+  let e_get_ptime32 (e:'e) buf offset : (Ptime.t, 'e) result =
+    e_get_ptimespan32 e buf offset >>= fun span ->
+    match Ptime.of_span span with
     | None -> Error e
+    | Some ptime -> Ok ptime
+
+  let e_set_ptimespan32 (e:'e) buf offset ptimespan : (t,'e) result =
+    match ptimespan |> Ptime.Span.to_int_s with
+    | None -> Error e
+    | Some secs -> (* TODO fix negative/positive ints so Ptime_clock
+                      won't return stuff >31bit*)
+      e_set_uint32 e buf offset (Int32.of_int secs)
+
+  let e_set_ptime32 (e:'e) buf offset ptime : (t,'e) result =
+    e_set_ptimespan32 e buf offset (Ptime.to_span ptime)
 end
 
 let of_hex str =

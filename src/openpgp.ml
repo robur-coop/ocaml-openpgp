@@ -231,11 +231,13 @@ struct
     ; subkeys : subkey list
     }
 
-  let check_signature_transferable pk hash_algorithm hash_final signature =
-    let pks = pk.root_key :: (pk.subkeys |> List.map (fun k -> k.key)) in (*TODO filter out non-signing-keys*)
-    check_signature pks hash_algorithm hash_final signature
+  let check_signature_transferable current_time pk hash_final signature =
+    let pks = pk.root_key :: (pk.subkeys |> List.map (fun k -> k.key)) in
+    (* ^-- TODO filter out non-signing-keys*)
+    check_signature current_time pks hash_final signature
 
-  let verify_detached_cb (pk:transferable_public_key) (signature:t) (cb:(unit -> (Cs.t option,'error) result)     )
+  let verify_detached_cb ~current_time (pk:transferable_public_key)
+      (signature:t) (cb:(unit -> (Cs.t option,'error) result))
   : ('ok, 'error) result =
     (* TODO check pk is valid *)
     if signature.signature_type <> Signature_of_binary_document then
@@ -252,9 +254,9 @@ struct
       | Some data -> hash_cb data ; hash_loop ()
     in hash_loop ()
     >>= construct_to_be_hashed_cs >>| hash_cb >>= fun () ->
-    check_signature_transferable pk signature.hash_algorithm hash_final signature
+    check_signature_transferable current_time pk hash_final signature
 
-  let check_embedded_signature pk t subkey =
+  let check_embedded_signature current_time pk t subkey =
     (* RFC 4880: 0x19: Primary Key Binding Signature
        This signature is a statement by a signing subkey, indicating
        that it is owned by the primary key and subkey.  This signature
@@ -276,7 +278,7 @@ struct
     hash_packet V4 hash_cb (Public_key_packet pk);
     hash_packet V4 hash_cb (Public_key_packet subkey) ;
     construct_to_be_hashed_cs t >>| hash_cb >>= fun () ->
-    check_signature [subkey] t.hash_algorithm hash_final t
+    check_signature current_time [subkey] hash_final t
     |> R.reword_error (fun err ->
         Logs.debug (fun m -> m "Rejecting invalid embedded signature");
         err)
@@ -285,6 +287,7 @@ struct
     Ok `Good_signature
 
   let root_pk_of_packets (* TODO aka root_key_of_packets *)
+    ~current_time
     (packets : (packet_tag_type * Cs.t) list)
   : (transferable_public_key * (packet_tag_type * Cs.t) list,
    [> `Extraneous_packets_after_signature
@@ -402,7 +405,11 @@ struct
       let () = hash_packet V4 hash_cb (Public_key_packet root_pk) in
       let () = hash_packet V4 hash_cb uid in
       construct_to_be_hashed_cs signature >>| hash_cb >>= fun () ->
-      check_signature [root_pk] signature.hash_algorithm hash_final signature
+
+      (* Check that the root key has not expired with this UID *)
+      public_key_not_expired current_time root_pk signature >>= fun () ->
+
+      check_signature current_time [root_pk] hash_final signature
       |> R.reword_error (function err ->
           Logs.debug (fun m -> m "signature check failed on a uid sig"); err)
     in
@@ -482,6 +489,9 @@ struct
               R.error `Invalid_packet
           end >>= fun () ->
 
+          (* Check that the key has not expired *)
+          public_key_not_expired current_time subkey signature >>= fun () ->
+
           (* RFC 4880: 0x18: Subkey Binding Signature
        This signature is a statement by the top-level signing key that
              indicates that it owns the subkey.*)
@@ -514,8 +524,7 @@ struct
               who is making the statement -- for example, a certification
               signature that has the "sign data" flag is stating that the
               certification is for that use. *)
-              if List.filter (function (Some (Key_usage_flags _),_,_) -> true
-                                     |_ -> false) signature.subpacket_data
+              if filter_subpacket_tag Key_flags signature.subpacket_data
                  |> List.for_all (function
                          | ((Some (Key_usage_flags {
                                usage_certify_keys = false;
@@ -530,12 +539,12 @@ struct
                  embedding a signature on the root key (made using the subkey)*)
                 let rec loop = function
                   | [] ->
-                    Logs.debug (fun m -> m "no embedded signature subpacket in subkey binding signature [TODO: parse 'Key Flags' properly to preclude keys without the certification bit] ");
+                    Logs.err (fun m -> m "no embedded signature subpacket in subkey binding signature [TODO: parse 'Key Flags' properly to preclude keys without the certification bit] ");
                     R.error `Invalid_packet
                   | (_, Embedded_signature, embedded_cs)::_ ->
                     Signature_packet.parse_packet embedded_cs
                     >>= fun embedded_sig ->
-                    check_embedded_signature root_pk embedded_sig subkey
+                    check_embedded_signature current_time root_pk embedded_sig subkey
                   | _::tl -> loop tl
                 in
                 loop signature.subpacket_data
@@ -544,10 +553,10 @@ struct
           >>= fun () ->
 
           construct_to_be_hashed_cs signature >>| hash_cb >>= fun () ->
-          check_signature [root_pk] signature.hash_algorithm
-            hash_final signature
-          >>= fun _ -> check_subkeys_and_sigs
-                       ({key = subkey; signature; revocation = None}::acc) tl
+          check_signature current_time [root_pk] hash_final signature
+          >>= fun `Good_signature ->
+          check_subkeys_and_sigs ({key = subkey; signature;
+                                   revocation = None}::acc) tl
         | [] -> R.ok (List.rev acc)
       end
     in
@@ -584,3 +593,5 @@ When a signature is made over a key, the hash data starts with the
   (* TODO RFC 4880: - Zero or more User Attribute packets: *)
   (* RFC 4880: Zero or more Subkey packets *)
 end
+
+let ()= Signature.( () ) (* TODO otherwise emacs complains about unused module*)

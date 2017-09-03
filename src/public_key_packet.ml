@@ -17,13 +17,25 @@ type public_key_asf =
   | RSA_pubkey_encrypt_asf of rsa_pubkey_asf
   | RSA_pubkey_encrypt_or_sign_asf of rsa_pubkey_asf
 
+let pp_pk_asf ppf asf=
+  let pp_rsa ppf (pk:rsa_pubkey_asf) = Fmt.pf ppf "%d-bit (e: %a) RSA"
+      (Z.numbits pk.Nocrypto.Rsa.n) Z.pp_print pk.Nocrypto.Rsa.e in
+  match asf with
+  | DSA_pubkey_asf pk -> Fmt.pf ppf "%d-bit DSA key" (Z.numbits pk.Nocrypto.Dsa.p)
+  | Elgamal_pubkey_asf _ -> Fmt.string ppf "El-Gamal key TODO unimplemented"
+  | RSA_pubkey_sign_asf pk -> Fmt.pf ppf "%a signing key" pp_rsa pk
+  | RSA_pubkey_encrypt_asf pk -> Fmt.pf ppf "%a encryptionsigning key" pp_rsa pk
+  | RSA_pubkey_encrypt_or_sign_asf pk -> Fmt.pf ppf "%a encryption & signing key" pp_rsa pk
+
 type t =
-  { timestamp: Cstruct.uint32
+  { timestamp: Ptime.t
   ; algorithm_specific_data : public_key_asf
   }
 
 let pp ppf t =
-  Fmt.string ppf "[public key packet TODO]"
+  Fmt.pf ppf "[public key packet: created: %a;@, %a]"
+    Ptime.pp t.timestamp
+    pp_pk_asf t.algorithm_specific_data
 
 let hash_public_key pk_body (hash_cb : Cs.t -> unit) : unit =
   let to_be_hashed =
@@ -155,9 +167,8 @@ let serialize version {timestamp;algorithm_specific_data} =
   (Buffer.add_char buf (char_of_version version) ;
 
    (* timestamp: *)
-   (let c = Cs.create 4 in
-    Cs.BE.set_uint32 c 0 timestamp |> R.get_ok
-    |>Cs.to_string
+   (Cs.BE.e_set_ptime32 `Null (Cs.create 4) 0 timestamp |> R.get_ok
+   |>Cs.to_string
    )|> Buffer.add_string buf ;
 
    (* public key algorithm: *)
@@ -184,7 +195,7 @@ let parse_packet buf : ('a, [> `Incomplete_packet
   v4_verify_version buf >>= fun()->
 
   (* 4: key generation time *)
-  Cs.BE.e_get_uint32 `Incomplete_packet buf 1
+  Cs.BE.e_get_ptime32 `Incomplete_packet buf 1
   >>= fun timestamp ->
 
   (* 1: public key algorithm *)

@@ -13,7 +13,7 @@ type public_key_asf =
   | RSA_pubkey_encrypt_or_sign_asf of rsa_pubkey_asf
 
 type t = {
-  timestamp : Cstruct.uint32 ;
+  timestamp : Ptime.t ; (** Key creation timestamp *)
   algorithm_specific_data : public_key_asf
 }
 

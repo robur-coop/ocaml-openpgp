@@ -21,10 +21,12 @@ type t = {
 }
 
 let pp ppf t =
-  Fmt.pf ppf "{signature type: [%a] @, public key algorithm: [%a] @, hash algorithm: [%a] @, TODO: pp subpackets with pp_signature_subpacket}"
+  Fmt.pf ppf "{signature type: [%a] @, public key algorithm: [%a] @, hash algorithm: [%a] @, subpackets: [@,%a@,]"
     pp_signature_type t.signature_type
     pp_public_key_algorithm t.public_key_algorithm
     pp_hash_algorithm t.hash_algorithm
+    Fmt.(list ~sep:(unit "@,;  ") pp_signature_subpacket_tag)
+    (List.map (fun (_,tag,_) -> tag) t.subpacket_data)
 
 let digest_callback hash_algo: digest_feeder =
   let module H = (val (nocrypto_module_of_hash_algorithm hash_algo)) in
@@ -54,11 +56,77 @@ let serialize_signature_subpackets subpackets : Cs.t =
     )
   |> Cs.concat
 
+let filter_subpacket_tag (tag:signature_subpacket_tag) =
+  List.filter
+    (function
+     | Some _, htag, _ -> tag = htag (* TODO verify the Some matches tag ?*)
+     | _, _, _ -> false)
 
-let check_signature (public_keys : Public_key_packet.t list)
-    hash_algo
+let public_key_not_expired (current_time : Ptime.t)
+    {Public_key_packet.timestamp;_} (t:t) =
+  (* Verify that the creation timestamp of
+     [pk] plus the [t].Key_expiration_time is ahead of [current_time] *)
+  match filter_subpacket_tag Key_expiration_time t.subpacket_data with
+  | [(Some (Key_expiration_time expiry)), Key_expiration_time, _] ->
+    e_compare_ptime_plus_span `Invalid_signature (*TODO better error msg *)
+      (timestamp,expiry) current_time
+    >>= begin function
+      | 1 ->
+        Logs.debug (fun m -> m "public_key_not_expired: Good: %a < %a from %a"
+                       Ptime.pp current_time
+                       Ptime.Span.pp expiry Ptime.pp timestamp
+                   ) ;
+        Ok ()
+      | _ ->
+        Logs.err (fun m -> m "public_key_not_expired: EXPIRED: %a > %a from %a"
+                     Ptime.pp current_time
+                     Ptime.Span.pp expiry Ptime.pp timestamp
+        ) ;
+        Error `Invalid_signature
+    end
+  | [] ->
+    Logs.debug (fun m -> m "public_key_not_expired: No expiration timestamp") ;
+    Ok ()
+  | _ -> Logs.err (fun m -> m "Multiple expiration timestamps found in sig TODO") ;
+    Error `Invalid_signature
+
+let signature_expiration_date_is_valid (current_time : Ptime.t) (t : t) =
+  (* TODO handle key expiry for certifications
+   * (need to pull the creation date from the pk)
+   *)
+    (* must have a Signature_creation_time to be valid: *)
+    match filter_subpacket_tag Signature_creation_time t.subpacket_data with
+    | [] ->
+      Logs.err (fun m -> m "Missing signature creation time") ;
+      Error `Invalid_signature
+    | [(Some (Signature_creation_time base)),_,_] ->
+        begin match filter_subpacket_tag Signature_expiration_time t.subpacket_data with
+        | [] -> Ok ()
+        | [(Some (Signature_expiration_time expiry)),_,_] ->
+          begin match e_compare_ptime_plus_span `Invalid_signature
+                        (base,expiry) current_time with
+            | Ok 1 ->
+              Logs.debug (fun m -> m "Good time: %a < %a + %a"
+                    Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base ) ;
+              Ok ()
+            | _ -> (* If it's expired, or base+expiry is not valid *)
+              Logs.err (fun m -> m "Bad time: %a > %a + %a"
+                    Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base ) ;
+              Error `Invalid_signature
+            end
+        | _ ->
+          Logs.err (fun m -> m "Multiple signature expiration times") ;
+          Error `Invalid_signature (* TODO shouldn't have to check for this *)
+        end
+    | _ ->
+      Logs.err (fun m -> m "Multiple signature creation times") ;
+      Error `Invalid_signature
+
+let check_signature (current_time : Ptime.t)
+    (public_keys : Public_key_packet.t list)
     digest_finalizer
-    t  : ('ok, 'err) result =
+    t
+  : ('ok, 'err) result =
   (* TODO handle expiry date *)
   (* TODO check backsig, see g10/sig-check.c:signature_check2 *)
   (* TODO
@@ -75,11 +143,15 @@ let check_signature (public_keys : Public_key_packet.t list)
     | pk::remaining_keys ->
     (* TODO should look for hints (signature subpacket data) to the id of the key being used instead of bruting our way through the keys *)
     let res =
+    signature_expiration_date_is_valid current_time t
+    >>= fun () ->
     (begin match pk.Public_key_packet.algorithm_specific_data ,
                 t.algorithm_specific_data with
     | Public_key_packet.DSA_pubkey_asf key, DSA_sig_asf {r;s;} ->
       Logs.debug (fun m -> m "Trying to verify a DSA signature") ;
-      dsa_asf_are_valid_parameters ~p:key.Nocrypto.Dsa.p ~q:key.Nocrypto.Dsa.q ~hash_algo
+      dsa_asf_are_valid_parameters ~p:key.Nocrypto.Dsa.p
+                                   ~q:key.Nocrypto.Dsa.q
+                                   ~hash_algo:t.hash_algorithm
       >>= fun () ->
       let cs_r = cs_of_mpi_no_header r in
       let cs_s = cs_of_mpi_no_header s in
@@ -112,7 +184,8 @@ let check_signature (public_keys : Public_key_packet.t list)
       let() = Logs.debug (fun m -> m "Failed to verify signature, trying next key (if any)") in
       loop remaining_keys
     end else (Logs.debug (fun m -> m "Got a good signature!"); res)
-  in loop public_keys
+  in
+  loop public_keys
 
 let construct_to_be_hashed_cs t : ('ok,'error) result =
   let buf = Buffer.create 10 in
@@ -194,19 +267,17 @@ let parse_subpacket buf : (signature_subpacket option * signature_subpacket_tag 
   | Key_flags when Cs.len data = 1 ->
       Ok ( Some (
         Key_usage_flags (key_usage_flags_of_char @@ Cstruct.get_char data 0)))
-  (* Parse timestamps. Note that 03c26700 (1972-01-01 00:00:00 +00:00)
-   * seems to mean "no expiry" for Key_expiration_time - TODO consider using
-   * a (Key_expiration_time of Ptime.t option) type to handle this *)
-  | ( Signature_creation_time
-    | Signature_expiration_time
-    | Key_expiration_time
-    ) ->
+  (* Parse timestamps. Note that OpenPGP stores the expiration as an offset from
+   * the creation time. *)
+  | Signature_creation_time ->
       Cs.BE.e_get_ptime32 `Invalid_packet data 0 >>= fun ptime ->
-      Ok (Some (begin match tag with
-                | Signature_creation_time -> Signature_creation_time ptime
-                | Signature_expiration_time -> Signature_expiration_time ptime
-                | Key_expiration_time -> Key_expiration_time ptime
-                end ))
+      Some (Signature_creation_time ptime) |> R.ok
+  | Signature_expiration_time ->
+      Cs.BE.e_get_ptimespan32 `Invalid_packet data 0 >>= fun pspan ->
+      Some (Signature_expiration_time pspan) |> R.ok
+  | Key_expiration_time ->
+      Cs.BE.e_get_ptimespan32 `Invalid_packet data 0 >>= fun pspan ->
+      Some (Key_expiration_time pspan) |> R.ok
   | tag when not is_critical -> Ok None
   | tag ->
       Logs.err (fun m -> m "Unimplemented critical subpacket: [%a] %s"
@@ -287,11 +358,12 @@ let parse_packet buf : (t, 'error) result =
   Logs.debug (fun m -> m "Signature contains unhashed subpacket data (not handled in this implementation: %s" (Cs.to_hex unhashed_subpacket_data));
 
   (* 6+hashed_len+2+unhashed_len: 2: leftmost 16 bits of the signed hash value (what the fuck) *)
+  (* TODO currently ignored:
   Cs.e_sub `Incomplete_packet buf (6+hashed_len+2+unhashed_len) 2
-  >>= fun two_byte_checksum -> (* TODO currently ignored*)
+  >>= fun two_byte_checksum ->
+  *)
   let asf_offset = 6+hashed_len +2 + unhashed_len + 2 in
-  Cs.e_sub `Incomplete_packet buf asf_offset
-    ((Cs.len buf) -asf_offset)
+  Cs.e_sub `Incomplete_packet buf asf_offset ((Cs.len buf) -asf_offset)
   >>= fun asf_cs ->
 
   (* public-key algorithm-specific data (ASF):
