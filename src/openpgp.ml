@@ -170,14 +170,6 @@ let next_packet (full_buf : Cs.t) :
       Ok (Some (packet_tag , pkt_body, next_packet))
   end
 
-let parse_packet_bodies (parser : 'a -> ('b,'c) result) (body_lst : 'a list) =
-  (* TODO perhaps this function should be called concat_result or similar *)
-  List.fold_left (fun acc -> fun cs ->
-            acc >>= fun acc ->
-            parser cs >>= fun parsed ->
-            R.ok (parsed::acc)
-    ) (Ok []) body_lst
-
 let parse_packets cs : (('ok * Cs.t) list, int * 'error) result =
   (* TODO: 11.1.  Transferable Public Keys *)
   let rec loop acc cs_tl =

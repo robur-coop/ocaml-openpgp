@@ -37,6 +37,15 @@ let list_take_leading f lst : ('a list * 'b list, 'error) result =
   list_find_leading f lst >>= fun left ->
   Ok (left, list_drop_e_n `Guarded (List.length left) lst |> R.get_ok)
 
+
+let result_ok_list_or_error (parser : 'a -> ('b,'c) result) (body_lst : 'a list) =
+  (* TODO perhaps this function should be called concat_result or similar *)
+  List.fold_left (fun acc -> fun cs ->
+            acc >>= fun acc ->
+            parser cs >>= fun parsed ->
+            R.ok (parsed::acc)
+    ) (Ok []) body_lst
+
 module type Keytype = sig
   type t
 end
@@ -58,6 +67,25 @@ let e_version_of_char e = function
   | '\003' -> Ok V3
   | '\004' -> Ok V4
   | _ -> Error e
+
+type hash_algorithm =
+  (* RFC 4880: 9.4 Hash Algorithms *)
+  | MD5
+  | SHA1
+  | SHA256
+  | SHA384
+  | SHA512
+  | SHA224
+  (* TODO RIPE-MD/160 *)
+
+let pp_hash_algorithm ppf v =
+  Fmt.string ppf @@ match v with
+  | MD5 -> "MD5"
+  | SHA1 -> "SHA1"
+  | SHA256 -> "SHA256"
+  | SHA384 -> "SHA384"
+  | SHA512 -> "SHA512"
+  | SHA224 -> "SHA224"
 
 type public_key_algorithm =
   | RSA_encrypt_or_sign
@@ -338,6 +366,7 @@ type signature_subpacket =
   | Key_expiration_time of Ptime.Span.t
   | Key_usage_flags of key_usage_flags
   | Issuer_fingerprint of openpgp_version * Cs.t
+  | Preferred_hash_algorithms of hash_algorithm list
 
 let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
   match packet with
@@ -346,6 +375,7 @@ let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_
   | Key_expiration_time _ -> Key_expiration_time
   | Key_usage_flags _ -> Key_flags
   | Issuer_fingerprint _ -> Issuer_fingerprint
+  | Preferred_hash_algorithms _ -> Preferred_symmetric_algorithms
 
 let pp_signature_subpacket ppf = function
   | Signature_creation_time time ->
@@ -368,41 +398,15 @@ let pp_signature_subpacket ppf = function
       | V4 -> Fmt.pf ppf "[%a SHA1: %s]"
                 pp_signature_subpacket_tag Issuer_fingerprint (Cs.to_hex fp)
     end
-
-(* TODO implement pp of ((signature_subpacket option, signature_subpacket_tag, Cs.t) list)
-let pp_signature_subpacket_opt ppf = function
-  | (None, tag, data) -> Fmt.of_to_string @@ Fmt.pf "[Unimplemented subpacket type %a: %s]" pp_signature_subpacket_tag tag (Cs.to_string data)
-  | (Some parsed_subpkt, _, _) -> pp_signature_subpacket ppf parsed_subpkt
-
-let pp_signature_subpacket_list ppf lst =
-  Fmt.pf ppf "[sig subpacket list %a]"
-  Fmt.(list ~sep:(unit " ; ") pp_signature_subpacket_opt)
-  lst
-*)
+  | Preferred_hash_algorithms algos ->
+    Fmt.pf ppf "Pref. hash algorithms: %a"
+      Fmt.(brackets @@ hvbox ~indent:2 @@ list ~sep:(unit "; ") pp_hash_algorithm)
+      algos
 
 let e_compare_ptime_plus_span e (base,span) current_time =
   match Ptime.add_span base span with
     | None -> Error e (* TODO fix error *)
     | Some ptime -> Ok (Ptime.compare ptime current_time)
-
-type hash_algorithm =
-  (* RFC 4880: 9.4 Hash Algorithms *)
-  | MD5
-  | SHA1
-  | SHA256
-  | SHA384
-  | SHA512
-  | SHA224
-  (* TODO RIPE-MD/160 *)
-
-let pp_hash_algorithm ppf v =
-  Fmt.string ppf @@ match v with
-  | MD5 -> "MD5"
-  | SHA1 -> "SHA1"
-  | SHA256 -> "SHA256"
-  | SHA384 -> "SHA384"
-  | SHA512 -> "SHA512"
-  | SHA224 -> "SHA224"
 
 let nocrypto_module_of_hash_algorithm : hash_algorithm ->
   (module Nocrypto.Hash.S) = function
@@ -627,13 +631,13 @@ type packet_length_type =
   | One_octet
   | Two_octet
   | Four_octet
-  | Partial_length (*TODO currently have a lot of functions that will throw exceptions when a Partial_length is passed. Consider removing it.*)
+  (* | Partial_length - TODO: Not clear to me if this is ever used in practice. seems a bit uselesss, and tricky to implement due to the extended state machine required. *)
 
 let packet_length_type_enum =
   [ (0 , One_octet)
   ; (1 , Two_octet)
   ; (2 , Four_octet)
-  ; (3 , Partial_length)
+(*; (3 , Partial_length)*)
   ]
 
 let packet_length_type_of_size = function
@@ -679,7 +683,7 @@ let consume_packet_length length_type buf :
     | Four_octet ->
       Cs.BE.e_get_uint32 `Incomplete_packet buf 0 >>= fun length ->
       R.ok (4, (length :> Uint32.t))
-    | Partial_length -> R.error `Unimplemented_feature_partial_length
+  (*| Partial_length -> R.error `Unimplemented_feature_partial_length *)
   in
   let consume_new_packet_length = function
     | ('\000'..'\191') ->

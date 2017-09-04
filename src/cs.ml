@@ -113,6 +113,13 @@ let blit = Cstruct.blit
 let concat = Cstruct.concat (*TODO wrap exceptions *)
 let set_uint8 = Cstruct.set_uint8
 
+let to_list buf =
+  let s = to_string buf in
+  let rec loop acc = function
+    | -1 -> List.rev acc
+    | i -> loop (s.[i]::acc) (pred i)
+  in loop [] (String.length s -1)
+
 let make_uint8 int8 =
   let buf = create 1 in
   set_uint8 buf 0 int8 ; buf

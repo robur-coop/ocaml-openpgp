@@ -21,12 +21,21 @@ type t = {
 }
 
 let pp ppf t =
-  Fmt.pf ppf "{signature type: [%a] @, public key algorithm: [%a] @, hash algorithm: [%a] @, subpackets: [@,%a@,]"
+  let resultify : 'a -> (signature_subpacket,signature_subpacket_tag)result
+    = function
+    | Some a,_,_ -> Ok a
+    | _, b, _ -> Error b
+  in
+  Fmt.pf ppf "{ signature type: [%a]@,; public key algorithm: [%a]@,; hash algorithm: [%a]@,; subpackets: @,%a"
     pp_signature_type t.signature_type
     pp_public_key_algorithm t.public_key_algorithm
     pp_hash_algorithm t.hash_algorithm
-    Fmt.(list ~sep:(unit "@,;  ") pp_signature_subpacket_tag)
-    (List.map (fun (_,tag,_) -> tag) t.subpacket_data)
+    Fmt.(brackets @@ hvbox ~indent:2 @@
+         list ~sep:(unit "")
+           (prefix cut @@ hvbox ~indent:2 @@
+            result ~ok:pp_signature_subpacket
+                   ~error:pp_signature_subpacket_tag))
+    (List.map resultify t.subpacket_data)
 
 let digest_callback hash_algo: digest_feeder =
   let module H = (val (nocrypto_module_of_hash_algorithm hash_algo)) in
@@ -294,6 +303,9 @@ let parse_subpacket buf : (signature_subpacket option * signature_subpacket_tag 
         | V3 (*TODO don't think Issuer_fingerprint was a thing in V3? *)
         | V4 -> Error `Invalid_packet
       end
+  | Preferred_hash_algorithms ->
+    Cs.to_list data |> result_ok_list_or_error hash_algorithm_of_char
+      >>= fun lst -> Ok (Some (Preferred_hash_algorithms lst))
   | tag when not is_critical -> Ok None
   | tag ->
       Logs.err (fun m -> m "Unimplemented critical subpacket: [%a] %s"
