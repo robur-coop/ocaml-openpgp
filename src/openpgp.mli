@@ -1,5 +1,7 @@
 open Types
 
+val encode_ascii_armor : ascii_packet_type -> Cs.t -> Cs.t
+
 val decode_ascii_armor : Cstruct.t -> (ascii_packet_type * Cstruct.t,
 [> `Invalid
 | `Invalid_crc24

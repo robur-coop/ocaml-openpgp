@@ -14,6 +14,37 @@ let packet_tag_of_packet = begin function
   | Uid_packet _ -> Uid_tag
   end
 
+let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cstruct.t) =
+  let newline = Cs.of_string "\r\n" in
+  let rec base64_encoded acc buf_tl =
+    (* 54 / 3 * 4 = 72; output chunks of 72 chars.
+     * The last line will not be newline-terminated. *)
+    let (chunk,next_tl) = Cstruct.split buf_tl (min (Cs.len buf_tl) 54) in
+    if Cs.len chunk <> 0 then
+      base64_encoded ((Nocrypto.Base64.encode chunk) :: acc) next_tl
+    else
+      match acc with
+      | [] -> Cs.create 0 (* if input was empty, return empty output *)
+      | acc_hd::acc_tl ->
+      let end_lines = List.map (fun line -> Cs.concat [line;newline]) acc_tl in
+      Cs.concat @@ List.rev (acc_hd::end_lines)
+  in
+  let cs_armor_magic = string_of_ascii_packet_type armor_type |> Cs.of_string in
+    Cs.concat
+    [ Cs.of_string "-----BEGIN PGP " ; cs_armor_magic ; Cs.of_string "-----\r\n"
+      (*; TODO headers*)
+    ; newline (* <-- end of headers*)
+
+    ; base64_encoded [] buf
+    ; newline
+
+    (* CRC24 checksum: *)
+    ; Cs.of_string "="; Nocrypto.Base64.encode (crc24 buf) ; newline
+
+    (* END / footer: *)
+    ; Cs.of_string "-----END PGP " ; cs_armor_magic ; Cs.of_string "-----\r\n"
+    ]
+
 let decode_ascii_armor (buf : Cstruct.t) =
   (* see https://tools.ietf.org/html/rfc4880#section-6.2 *)
   let max_length = 73 in (*maximum line length *)
@@ -345,8 +376,6 @@ struct
     |> R.reword_error (function _ -> `Invalid_packet)
     >>= fun root_pk ->
 
-    (* TODO verify expiry date*)
-
     (* TODO extract version from the root_pk and make sure the remaining packets use the same version *)
 
     let find_sig_pair (needle_one:packet_tag_type) (haystack:(packet_tag_type*Cs.t)list) =
@@ -579,11 +608,6 @@ struct
        ; user_attributes = [] (* TODO *)
        ; subkeys = verified_subkeys
        }, packets)
-    (* one byte version
-       | V3 -> 4 bytes timestamp
-       | V4 -> pk algo, hash algo, two bytes len of sig->hashed, version, 0xff, len of all this data hashed
-    *)
-  (* TODO should implement signature target subpacket parsing*)
   (* RFC 4880 5.2.4: Computing Signatures:
 When a signature is made over a key, the hash data starts with the
    octet 0x99, followed by a two-octet length of the key, and then body
@@ -593,10 +617,6 @@ When a signature is made over a key, the hash data starts with the
    the subkey using the same format as the main key (also using 0x99 as
    the first octet).  Key revocation signatures (types 0x20 and 0x28)
        hash only the key being revoked. *)
-
-
-  (* TODO RFC 4880: - Zero or more User Attribute packets: *)
-  (* RFC 4880: Zero or more Subkey packets *)
 end
 
 let ()= Signature.( () ) (* TODO otherwise emacs complains about unused module*)
