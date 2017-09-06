@@ -91,13 +91,13 @@ let test_verify_signature _ =
         res, pkt
       | _ -> failwith "verify what?" end
   in
-  let first_pkts = [Cstruct.of_bigarray ~len:(sig_cs.off) sig_cs.buffer ] in
+  let first_pkts = [Cstruct.of_bigarray ~len:(sig_cs.Cstruct.off) sig_cs.Cstruct.buffer ] in
   let packet_tags =
     let (p,cs) = List.split pkt_lst in
     let p = List.map Openpgp.packet_tag_of_packet p in
     List.combine p cs
   in
-  let()=Printf.printf "going to verify everything before %d (%d bytes)\n" sig_cs.off (List.hd first_pkts |> Cs.len)in
+  let()=Printf.printf "going to verify everything before %d (%d bytes)\n" sig_cs.Cstruct.off (List.hd first_pkts |> Cs.len)in
   Openpgp.Signature.root_pk_of_packets ~current_time packet_tags
   |> R.reword_error (fun a -> 31337,a)
  ) with
@@ -133,12 +133,13 @@ let test_detached _ =
   >>= fun (_, cs) ->
   (* TODO match on Ascii_message *)
   let()= Logs.debug (fun m -> m "Decoded ascii armored detached signature") in
-  Ok cs >>= Openpgp.parse_packets >>| fix_parse_packets >>= fun what ->
+  Ok cs >>= Openpgp.parse_packets >>| fix_parse_packets
+  >>= (function [] -> Error (0,`Malformed) | (x::_) -> Ok x) >>= fun (a,b) ->
   let()= Logs.debug (fun m -> m "Got a detached sig") in
-  Ok what
-  >>= fun ((a,b)::_) ->
   Openpgp.parse_packet_body a b |> R.reword_error (fun a -> -1,a)
-  >>= fun (Signature_type detached_sign) ->
+  >>= (function
+      | (Signature_type detached_sign) -> Ok detached_sign
+      | _ -> Error (123,`Malformed)) >>= fun detached_sign ->
   let data = ref (Some (Cstruct.of_string "acab\n")) in
   let cb () =
     match !data with (Some _) as x -> data:=None; Ok x | non -> Ok non

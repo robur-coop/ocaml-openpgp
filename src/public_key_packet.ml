@@ -27,10 +27,19 @@ let pp_pk_asf ppf asf=
   | RSA_pubkey_encrypt_asf pk -> Fmt.pf ppf "%a encryptionsigning key" pp_rsa pk
   | RSA_pubkey_encrypt_or_sign_asf pk -> Fmt.pf ppf "%a encryption & signing key" pp_rsa pk
 
+type private_key_asf =
+  | DSA_privkey_asf of Nocrypto.Dsa.priv
+  | RSA_privkey_asf of Nocrypto.Rsa.priv
+
 type t =
   { timestamp: Ptime.t
   ; algorithm_specific_data : public_key_asf
   ; v4_fingerprint : Cs.t
+  }
+
+type private_key =
+  { public : t
+  ; priv_asf : private_key_asf
   }
 
 let pp ppf t =
@@ -163,7 +172,7 @@ let cs_of_public_key_asf asf =
   end
   |> cs_of_mpi_list |> R.get_ok
 
-let serialize version {timestamp;algorithm_specific_data} =
+let serialize version {timestamp;algorithm_specific_data;_} =
   let buf = Buffer.create 200 in
 
   (* version *)
@@ -223,3 +232,32 @@ let parse_packet buf : ('a, [> `Incomplete_packet
   >>= fun algorithm_specific_data ->
   R.ok { timestamp ; algorithm_specific_data ;
          v4_fingerprint = v4_fingerprint ~pk_body:buf}
+
+let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
+  begin match key_type with
+  | DSA ->
+    let priv = Nocrypto.Dsa.generate ~g `Fips2048 in
+    let pub  = Nocrypto.Dsa.pub_of_priv priv in
+    Ok (DSA_privkey_asf priv, DSA_pubkey_asf pub)
+  | RSA_sign_only ->
+    let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
+    Ok (RSA_privkey_asf priv, RSA_pubkey_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
+  | RSA_encrypt_or_sign ->
+    let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
+    Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_asf (Nocrypto.Rsa.pub_of_priv priv))
+  | RSA_encrypt_only ->
+    let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
+    Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_or_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
+  | Elgamal_encrypt_only ->
+    Logs.err (fun m -> m "Elgamal key generation not supported") ;
+    Error `Invalid_packet
+  end
+  >>= fun (priv_asf,pub) ->
+  let temp = {timestamp = current_time
+             ; algorithm_specific_data = pub
+             ; v4_fingerprint = Cs.create 0}
+  in
+  Ok {public = {temp with
+                v4_fingerprint = v4_fingerprint ~pk_body:(serialize V4 temp)
+               }
+     ; priv_asf}

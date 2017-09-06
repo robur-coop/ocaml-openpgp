@@ -9,5 +9,6 @@ PKG cmdliner
 PKG fpath
 PKG bos
 PKG ptime
+PKG ptime.clock
 
 FLG -w +A-4-18-41-42-44-48-58

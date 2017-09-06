@@ -50,6 +50,13 @@ module type Keytype = sig
   type t
 end
 
+let pp_error ppf = function
+  | `Incomplete_packet -> Fmt.pf ppf "incomplete packet"
+  | `Invalid_packet -> Fmt.pf ppf "invalid packet"
+  | `Unimplemented_algorithm c -> Fmt.pf ppf "unimplemented algorithm %c" c
+  | `Unimplemented_version c -> Fmt.pf ppf "unimplemented version %c" c
+  | _ -> Fmt.pf ppf "TODO unimplemented error pp"
+
 type openpgp_version =
   | V3
   | V4
@@ -130,8 +137,8 @@ let pp_ascii_packet_type ppf = function
   | Ascii_signature -> Fmt.pf ppf "ASCII signature"
 
 let string_of_ascii_packet_type = function
-  | Ascii_public_key_block -> "PUBLIC"
-  | Ascii_private_key_block -> "PRIVATE"
+  | Ascii_public_key_block -> "PUBLIC KEY BLOCK"
+  | Ascii_private_key_block -> "PRIVATE KEY BLOCK"
   | Ascii_message -> "MESSAGE"
   | Ascii_message_part_x n -> "MESSAGE, PART " ^ string_of_int n.x
   | Ascii_message_part_x_of_y n ->
@@ -391,8 +398,9 @@ let pp_signature_subpacket ppf = function
     ; usage_sign_data = sign_data
     ; usage_encrypt_communications = enc_comm
     ; usage_encrypt_storage = enc_store
-    ; usage_authentication = auth}
-    -> Fmt.pf ppf "Key usage flags:@,{certify: %b ; @,sign data: %b ; @,encrypt communications: %b ; @,encrypt storage: %b ; @,authentication: %b}" certs sign_data enc_comm enc_store auth
+    ; usage_authentication = auth
+    ; usage_unimplemented = unimpl_char }
+    -> Fmt.pf ppf "Key usage flags:@,{certify: %b ; @,sign data: %b ; @,encrypt communications: %b ; @,encrypt storage: %b ; @,authentication: %b ; @,raw decimal char: %C}" certs sign_data enc_comm enc_store auth unimpl_char
   | Issuer_fingerprint (v,fp) -> begin match v with
       | V3 (*TODO*)
       | V4 -> Fmt.pf ppf "[%a SHA1: %s]"

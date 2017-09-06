@@ -54,8 +54,10 @@ let compute_digest hash_algo to_be_hashed =
 let serialize_signature_subpackets subpackets : Cs.t =
   subpackets |> List.map
     (fun (parsed,tag,subpkt) ->
-       Logs.debug (fun m -> m "serializing subpackets of len %d:@.%a"
-                      (Cs.len subpkt) Cstruct.hexdump_pp subpkt);
+       Logs.debug (fun m -> m "serializing subpacket of len %d:@,%a @,%a"
+                      (Cs.len subpkt) Fmt.(option pp_signature_subpacket) parsed
+                      Cstruct.hexdump_pp subpkt
+       ) ;
 
        (* TODO need to implement the "critical bit" (leftmost bit=1) on subpacket tag types here if they are critical.*)
 
@@ -306,7 +308,7 @@ let parse_subpacket buf : (signature_subpacket option * signature_subpacket_tag 
   | Preferred_hash_algorithms ->
     Cs.to_list data |> result_ok_list_or_error hash_algorithm_of_char
       >>= fun lst -> Ok (Some (Preferred_hash_algorithms lst))
-  | tag when not is_critical -> Ok None
+  | _ when not is_critical -> Ok None
   | tag ->
       Logs.err (fun m -> m "Unimplemented critical subpacket: [%a] %s"
         pp_signature_subpacket_tag tag

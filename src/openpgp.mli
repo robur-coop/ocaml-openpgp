@@ -15,16 +15,16 @@ module Signature : sig
   type subkey = { key : Public_key_packet.t ; signature : Signature_packet.t ; revocation : Signature_packet.t option }
   type transferable_public_key =
     {
-    (** One Public-Key packet *)
       root_key : Public_key_packet.t
+      (** One Public-Key packet *)
+    ; revocations : Signature_packet.t list
       (** Zero or more revocation signatures *)
-      ; revocations : Signature_packet.t list
-    (** One or more User ID packets *)
     ; uids : uid list
-    (** Zero or more User Attribute packets *)
+      (** One or more User ID packets *)
     ; user_attributes : user_attribute list
-    (** Zero or more subkey packets *)
+      (** Zero or more User Attribute packets *)
     ; subkeys : subkey list
+      (** Zero or more subkey packets *)
     }
   val root_pk_of_packets : current_time : Ptime.t -> (packet_tag_type * Cs.t) list ->
     (transferable_public_key * (packet_tag_type * Cs.t) list

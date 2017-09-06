@@ -212,6 +212,7 @@ let parse_packets cs : (('ok * Cs.t) list, int * 'error) result =
         (parse_packet_body packet_type pkt_body
         |> R.reword_error (fun e -> List.length acc , e))
         >>= fun parsed ->
+        Logs.debug (fun m -> m "Packet: %a" pp_packet parsed) ;
         loop ((parsed,pkt_body)::acc) next_tl
       | None ->
         R.ok (List.rev acc)
@@ -331,21 +332,14 @@ struct
   (* this would be a good place to wonder what kind of crack the spec people smoked while writing 5.2.4: Computing Signatures...*)
   let debug_packets packets =
     (* TODO learn how to make pretty printers *)
-    let pp_error ppf = function
-      | `Incomplete_packet -> Fmt.pf ppf "incomplete packet"
-      | `Invalid_packet -> Fmt.pf ppf "invalid packet"
-      | `Unimplemented_algorithm c -> Fmt.pf ppf "unimplemented algorithm %c" c
-      | `Unimplemented_version c -> Fmt.pf ppf "unimplemented version %c" c
-      | _ -> Fmt.pf ppf "TODO unimplemented error pp"
-    in
     Logs.debug (fun m -> m "Number of packets: %d@.|  %a"
       (List.length packets)
       (Fmt.(list ~sep:(unit "@.|  ") @@ Fmt.vbox ~indent:10 (*TODO figure out how to use Fmt.vbox properly *)
         (pair ~sep:(unit " ") pp_packet_tag
           (pair ~sep:(unit " : ")
-             (result ~ok:pp_packet ~error:pp_error) int))))
-      (List.map (fun (tag, cs) ->
-         tag, (parse_packet_body tag cs, Cs.len cs))
+             (result ~ok:pp_packet ~error:Types.pp_error) int))))
+      (List.map (fun (tag, ((parse_result,cs):(packet_type, [>])result * Cs.t) ) ->
+         tag, (parse_result, Cs.len cs))
          packets))
   in
 
@@ -356,7 +350,6 @@ struct
   end
   in
 
-  let () = debug_packets packets in
   (* RFC 4880: - One Public-Key packet: *)
   begin match packets with
     | (Public_key_tag, pub_cs) :: tl -> R.ok (pub_cs, tl)
@@ -396,11 +389,13 @@ struct
 
     let take_signatures_of_types sig_types (packets:(packet_tag_type*Cs.t)list) =
       packets |> list_take_leading
-        (fun (_,cs) ->
+        (function
+          | (Signature_tag, cs) ->
            parse_packet cs >>= fun signature ->
            if List.exists (fun t -> t = signature.signature_type) sig_types
            then Ok signature
            else Error `Invalid_packet
+          | _ -> Error `Invalid_packet
         )
     in
 
@@ -444,11 +439,12 @@ struct
         Ok (List.rev acc , packets)
       else
       (* Drop unsigned objects: *)
-      list_drop_e_n `Invalid_packet ((List.length objects)-1) objects
-      >>= fun [(object_type, object_cs)] ->
+        list_drop_e_n `Invalid_packet ((List.length objects)-1) objects
+      >>= (function [tuple] -> Ok tuple | _ -> Error `Invalid_packet)
+      >>= fun (object_type, object_cs) ->
+      parse_packet_body object_type object_cs >>= fun obj ->
       packets |> take_signatures_of_types sig_types
       >>= fun (certifications, packets) ->
-      parse_packet_body object_type object_cs >>= fun obj ->
       (* The certifications can be made by anyone, we are only concerned with the ones made by the root_pk *)
       let valid_certifications =
         certifications |> List.filter
