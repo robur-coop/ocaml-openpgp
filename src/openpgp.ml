@@ -310,6 +310,81 @@ struct
     Logs.debug (fun m -> m "Accepting embedded signature");
     Ok `Good_signature
 
+  let sign ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t) signature_type
+      (sk : Public_key_packet.private_key)
+      signature_subpackets
+      hash_algorithm (hash_cb,digest_finalizer) (* TODO def cb type with algo *)
+    =
+    (* TODO validate subpackets *)
+    let public_key_algorithm =
+      (Public_key_packet.public_key_algorithm_of_asf
+         (Public_key_packet.public_of_private sk).Public_key_packet.algorithm_specific_data) (* TODO *)
+    in
+    (* TODO add/replace Signature_creation_time with [current_time] in subpkts*)
+    Signature_packet.construct_to_be_hashed_cs_manual V4
+    signature_type
+    public_key_algorithm
+    hash_algorithm signature_subpackets >>| hash_cb >>= fun () ->
+
+    let digest = digest_finalizer () in
+    begin match sk.Public_key_packet.priv_asf with
+    | Public_key_packet.DSA_privkey_asf key ->
+      let (r,s) = Nocrypto.Dsa.sign ~mask:(`Yes_with g) ~key digest in
+      Ok (DSA_sig_asf {r = Types.mpi_of_cs_no_header r
+                      ; s = mpi_of_cs_no_header s})
+    | Public_key_packet.RSA_privkey_asf key ->
+      let module PKCS : Nocrypto.Rsa.PKCS1.S =
+        (val (nocrypto_pkcs_module_of_hash_algorithm hash_algorithm)) in
+      Ok (RSA_sig_asf { m_pow_d_mod_n =
+                          PKCS.sign_cs ~mask:(`Yes_with g) ~key ~digest
+                          |> mpi_of_cs_no_header
+                      })
+    end
+    >>= fun algorithm_specific_data ->
+    Ok { signature_type ; public_key_algorithm ; hash_algorithm
+       ; algorithm_specific_data ; subpacket_data = signature_subpackets}
+
+  let certify_uid
+      ~(g : Nocrypto.Rng.g)
+      ~(current_time : Ptime.t)
+      (priv_key : Public_key_packet.private_key) uid
+    : (Signature_packet.t, [>]) result =
+    (* TODO handle V3 *)
+    (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
+    let hash_algo = SHA256 in
+    let subpackets = [] in
+    let (hash_cb, _) as hash_tuple =
+      Signature_packet.digest_callback hash_algo in
+    let () =
+      let pk = Public_key_packet.public_of_private priv_key in
+      hash_packet V4 hash_cb (Public_key_packet pk) in
+    let () = hash_packet V4 hash_cb (Uid_packet uid) in
+    sign ~g ~current_time
+      Positive_certification_of_user_id_and_public_key_packet
+      priv_key subpackets
+      hash_algo hash_tuple
+
+  let certify_subkey ~g ~current_time priv_key subkey
+    : (Signature_packet.t, [>]) result =
+    (* TODO handle V3 *)
+    (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
+    let hash_algo = SHA256 in
+    let subpackets = [] in
+    let (hash_cb, _) as hash_tuple =
+      Signature_packet.digest_callback hash_algo in
+    let () =
+      let pk = Public_key_packet.public_of_private priv_key in
+      hash_packet V4 hash_cb (Public_key_packet pk) in
+    let () =
+      (* TODO add Embedded_signature if the key can be used for signing
+              or certifying other keys *)
+      let subkey = Public_key_packet.public_of_private subkey in
+      hash_packet V4 hash_cb (Public_key_packet subkey) in
+    sign ~g ~current_time
+      Subkey_binding_signature
+      priv_key subpackets
+      hash_algo hash_tuple
+
   let root_pk_of_packets (* TODO aka root_key_of_packets *)
     ~current_time
     (packets : (packet_tag_type * Cs.t) list)
@@ -615,4 +690,38 @@ When a signature is made over a key, the hash data starts with the
        hash only the key being revoked. *)
 end
 
-let ()= Signature.( () ) (* TODO otherwise emacs complains about unused module*)
+let new_transferable_public_key
+    ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t)
+    version
+    (root_key : Public_key_packet.private_key)
+      (* TODO revocations *)
+    (uids : Uid_packet.t list) (* TODO revocations*)
+    (* TODO user_attributes *)
+    (priv_subkeys : Public_key_packet.private_key list) (* TODO revocations*)
+  : (Signature.transferable_public_key, [>]) result =
+  if version <> V4 then Error `Invalid_packet (* TODO fix error msg *)
+  else
+  (* TODO create relevant signature subpackets *)
+  uids |> result_ok_list_or_error (fun uid ->
+      Signature.certify_uid ~g ~current_time root_key uid
+      >>= fun certification ->
+      Ok { Signature.uid ; certifications = [certification] }
+  )
+  >>= fun uids ->
+  if List.length uids < 1 then
+    Error `Invalid_packet (* TODO fix error msg *)
+  else
+  priv_subkeys |> result_ok_list_or_error
+        (fun subkey ->
+        let subkey_pk = Public_key_packet.public_of_private subkey in
+        Signature.certify_subkey ~g ~current_time root_key subkey
+        >>= fun certification ->
+        Ok {Signature.key = subkey_pk
+           ; signature = certification ; revocation = None }
+      )
+  >>= fun certified_subkeys ->
+  Ok {Signature.revocations = []
+     ; root_key = root_key.Public_key_packet.public
+     ; uids
+     ; user_attributes = []
+     ; subkeys = certified_subkeys}

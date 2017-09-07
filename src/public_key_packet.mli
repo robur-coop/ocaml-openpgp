@@ -12,10 +12,21 @@ type public_key_asf =
   | RSA_pubkey_encrypt_asf of rsa_pubkey_asf
   | RSA_pubkey_encrypt_or_sign_asf of rsa_pubkey_asf
 
+val public_key_algorithm_of_asf : public_key_asf -> Types.public_key_algorithm
+
 type t = {
   timestamp : Ptime.t ; (** Key creation timestamp *)
   algorithm_specific_data : public_key_asf ;
   v4_fingerprint : Cs.t (** SHA1 hash of the public key *)
+}
+
+type private_key_asf =
+  | DSA_privkey_asf of Nocrypto.Dsa.priv
+  | RSA_privkey_asf of Nocrypto.Rsa.priv
+
+type private_key = {
+  public : t ;
+  priv_asf : private_key_asf
 }
 
 val pp : Format.formatter -> t -> unit
@@ -35,3 +46,10 @@ val parse_packet :
 val serialize : Types.openpgp_version -> t -> Cs.t
 
 val v4_key_id : Cs.t -> string
+
+val generate_new : g:Nocrypto.Rng.g ->
+  current_time:Ptime.t ->
+  Types.public_key_algorithm ->
+  (private_key, [> `Invalid_packet ]) Result.result
+
+val public_of_private : private_key -> t

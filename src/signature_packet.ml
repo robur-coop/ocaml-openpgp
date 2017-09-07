@@ -205,7 +205,9 @@ let check_signature (current_time : Ptime.t)
   in
   loop public_keys
 
-let construct_to_be_hashed_cs t : ('ok,'error) result =
+let construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
+    subpacket_data =
+  (* TODO handle V3 *)
   let buf = Buffer.create 10 in
   let char = Buffer.add_char buf in
   let ichar = fun i -> Char.chr i |> char in
@@ -217,18 +219,18 @@ let construct_to_be_hashed_cs t : ('ok,'error) result =
    subpacket body.
   *)
   (* version: *)
-  char '\x04' ;(*TODO don't hardcode version*)
+  char (char_of_version version) ;(*TODO don't hardcode version*)
 
-  char (char_of_signature_type t.signature_type) ;
+  char (char_of_signature_type sig_type) ;
 
-  char (char_of_public_key_algorithm t.public_key_algorithm) ;
+  char (char_of_public_key_algorithm pk_algo) ;
   (* Can't infer this from the algo-specific data type because
      RSA_sign_only vs RSA_encrypt_or_sign generate different bytes here.*)
 
-  char (char_of_hash_algorithm t.hash_algorithm) ;
+  char (char_of_hash_algorithm hash_algo) ;
 
   (* TODO add error handling here:*)
-  let serialized_subpackets = serialize_signature_subpackets t.subpacket_data
+  let serialized_subpackets = serialize_signature_subpackets subpacket_data
                             |> Cs.to_string in
 
   if String.length serialized_subpackets > 0xffff then begin
@@ -261,6 +263,12 @@ let construct_to_be_hashed_cs t : ('ok,'error) result =
     Buffer.add_string buf (Cs.to_string len)
   in
   R.ok (Buffer.contents buf|>Cstruct.of_string)
+
+let construct_to_be_hashed_cs t : ('ok,'error) result =
+  (* This is a helper function to be used on [t]s for verification purposes *)
+  construct_to_be_hashed_cs_manual V4 t.signature_type
+    t.public_key_algorithm t.hash_algorithm
+    t.subpacket_data
 
 let parse_subpacket buf : (signature_subpacket option * signature_subpacket_tag * Cs.t, [> `Invalid_packet]) result =
   (* TODO this function should return the parsed data also, but need to write more parsers and add a type for that *)

@@ -27,6 +27,9 @@ let pp_pk_asf ppf asf=
   | RSA_pubkey_encrypt_asf pk -> Fmt.pf ppf "%a encryptionsigning key" pp_rsa pk
   | RSA_pubkey_encrypt_or_sign_asf pk -> Fmt.pf ppf "%a encryption & signing key" pp_rsa pk
 
+let public_key_algorithm_of_asf = function
+  | DSA_pubkey_asf _ -> DSA
+
 type private_key_asf =
   | DSA_privkey_asf of Nocrypto.Dsa.priv
   | RSA_privkey_asf of Nocrypto.Rsa.priv
@@ -261,3 +264,6 @@ let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
                 v4_fingerprint = v4_fingerprint ~pk_body:(serialize V4 temp)
                }
      ; priv_asf}
+
+let public_of_private (priv_key : private_key) : t =
+  priv_key.public

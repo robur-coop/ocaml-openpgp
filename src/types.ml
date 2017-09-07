@@ -572,6 +572,8 @@ let cs_of_mpi_list mpi_list =
   in
   loop [] mpi_list
 
+let mpi_of_cs_no_header cs = Cs.reverse cs |> Cs.to_string |> Z.of_bits
+
 let consume_mpi buf : (mpi * Cs.t, 'error) result =
   (*
    Multiprecision integers (also called MPIs) are unsigned integers used
@@ -586,7 +588,7 @@ let consume_mpi buf : (mpi * Cs.t, 'error) result =
   let bytelen = (bitlen + 7) / 8 in
   Logs.debug (fun m -> m "going to read %d:@.%a" bytelen Cstruct.hexdump_pp buf) ;
   Cs.e_split ~start:2 `Incomplete_packet buf bytelen >>= fun (this_mpi, tl) ->
-  R.ok ((Z.of_bits (Cs.reverse this_mpi |> Cs.to_string)), tl)
+  R.ok (mpi_of_cs_no_header this_mpi, tl)
 
 let crc24 (buf : Cs.t) : Cstruct.t =
 (* adopted from the C reference implementation in RFC 4880:

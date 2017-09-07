@@ -95,3 +95,13 @@ val parse_packets :
              | `Unimplemented_feature of string
              | `Unimplemented_version of char ])
            result
+
+val new_transferable_public_key :
+           g:Nocrypto.Rng.g ->
+           current_time:Ptime.t ->
+           Types.openpgp_version ->
+           Public_key_packet.private_key ->
+           Uid_packet.t list ->
+           Public_key_packet.private_key list ->
+           (Signature.transferable_public_key, [> `Invalid_packet ])
+           Rresult.result
