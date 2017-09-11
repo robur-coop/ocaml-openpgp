@@ -41,7 +41,8 @@ let digest_callback hash_algo: digest_feeder =
   let module H = (val (nocrypto_module_of_hash_algorithm hash_algo)) in
   let t = H.init () in
   let feeder cs =
-    Logs.debug (fun m -> m "hashing %d: %s\n" (Cs.len cs) (Cs.to_hex cs)) ;
+    Logs.debug (fun m -> m "hashing %d bytes: %a\n" (Cs.len cs)
+                   Cstruct.hexdump_pp cs) ;
     H.feed t cs
   in
   (feeder, (fun () -> H.get t))
@@ -205,12 +206,20 @@ let check_signature (current_time : Ptime.t)
   in
   loop public_keys
 
-let construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
-    subpacket_data =
-  (* TODO handle V3 *)
-  let buf = Buffer.create 10 in
-  let char = Buffer.add_char buf in
-  let ichar = fun i -> Char.chr i |> char in
+let serialize_hashed_manual version sig_type pk_algo hash_algo subpacket_data =
+  (* Serialize the hashed parts of a signature packet *)
+  (* TODO add error handling here:*)
+  let serialized_subpackets = serialize_signature_subpackets subpacket_data in
+  let subpackets_len = Cs.len serialized_subpackets in
+
+  if subpackets_len > 0xffff then begin
+    Logs.err (fun m ->
+      m "TODO better error, but failing because subpackets are longer than it's possible to sign (0xFF_FF < %d: %s)"
+        (subpackets_len)
+        (Cs.to_hex serialized_subpackets)
+    ) ;
+    R.error `Invalid_packet
+  end else R.ok () >>= fun () ->
   (* A V4 signature hashes the packet body
    starting from its first field, the version number, through the end
    of the hashed subpacket data.  Thus, the fields hashed are the
@@ -218,51 +227,51 @@ let construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
    hash algorithm, the hashed subpacket length, and the hashed
    subpacket body.
   *)
+  let buf = Cs.create (4 + 2 + subpackets_len) in
+  let char = Cs.e_set_char `Invalid_packet buf in
   (* version: *)
-  char (char_of_version version) ;(*TODO don't hardcode version*)
+  char 0 (char_of_version version) >>= fun () ->
+  char 1 (char_of_signature_type sig_type) >>= fun () ->
+  char 2 (char_of_public_key_algorithm pk_algo) >>= fun () ->
 
-  char (char_of_signature_type sig_type) ;
-
-  char (char_of_public_key_algorithm pk_algo) ;
   (* Can't infer this from the algo-specific data type because
      RSA_sign_only vs RSA_encrypt_or_sign generate different bytes here.*)
-
-  char (char_of_hash_algorithm hash_algo) ;
-
-  (* TODO add error handling here:*)
-  let serialized_subpackets = serialize_signature_subpackets subpacket_data
-                            |> Cs.to_string in
-
-  if String.length serialized_subpackets > 0xffff then begin
-    Logs.debug (fun m ->
-      m "TODO better error, but failing because subpackets are longer than it's possible to sign (0xFF_FF < %d)"
-      (String.length serialized_subpackets)
-    ) ;
-    R.error `Invalid_packet
-  end else R.ok ()
-  >>= fun () ->
-
+  char 3 (char_of_hash_algorithm hash_algo) >>= fun () ->
+  Logs.debug (fun m -> m "first four chars set: %s" (Cs.to_hex buf)) ;
   (* len of hashed subpacket data: *)
-  ichar ((String.length serialized_subpackets lsr 8) land 0xff) ;
-  ichar ((String.length serialized_subpackets) land 0xff) ;
-
+  Cs.BE.e_set_uint16 `Invalid_packet buf 4 (Cs.len serialized_subpackets)
+  >>= fun _ ->
+  Logs.debug (fun m -> m "first len of hash chars set: %s" (Cs.to_hex buf)) ;
   (* subpacket data: *)
-  Buffer.add_string buf serialized_subpackets ;
+  Cs.e_blit `Invalid_packet serialized_subpackets 0 buf 6
+    (Cs.len serialized_subpackets) >>= fun () ->
+  Logs.debug (fun m -> m "tbh: %a" Cstruct.hexdump_pp buf) ;
+  Ok buf
 
+let serialize_hashed version {signature_type ; public_key_algorithm
+                                 ; hash_algorithm ; subpacket_data;_ } =
+  serialize_hashed_manual version signature_type
+    public_key_algorithm hash_algorithm subpacket_data
+
+let construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
+    subpacket_data =
+  (* TODO handle V3 *)
+  Logs.debug (fun m -> m "%s" __LOC__);
+  serialize_hashed_manual version sig_type pk_algo hash_algo subpacket_data
+  >>= fun buf ->
+  Logs.debug (fun m -> m "%s" __LOC__);
   (* V4 signatures also hash in a final trailer of six octets: the
    version of the Signature packet, i.e., 0x04; 0xFF; and a four-octet,
    big-endian number that is the length of the hashed data from the
    Signature packet (note that this number does not include these final
             six octets).*)
-  let() =
-    let hashed_so_far_count = Buffer.length buf |> Int32.of_int in
-    ichar 0x04 ;
-    ichar 0xff ;
-    let len = Cstruct.create 4 in
-    Cstruct.BE.set_uint32 len 0 hashed_so_far_count ;
-    Buffer.add_string buf (Cs.to_string len)
+  let signature_tbh =
+    Cs.concat [ buf
+                 ; Cs.BE.create_uint16 0x04_ff
+                 ; Cs.BE.create_uint32 (Cs.len buf |> Int32.of_int) ]
   in
-  R.ok (Buffer.contents buf|>Cstruct.of_string)
+  Logs.debug (fun m -> m "signature to be hashed: @ %a" Cstruct.hexdump_pp signature_tbh) ;
+  Ok signature_tbh
 
 let construct_to_be_hashed_cs t : ('ok,'error) result =
   (* This is a helper function to be used on [t]s for verification purposes *)
@@ -339,14 +348,10 @@ let parse_subpacket_data buf
   : ((signature_subpacket option * signature_subpacket_tag *Cs.t)list,
      [>`Invalid_packet | `Unimplemented_algorithm of char ]) result =
   let rec loop (packets:(signature_subpacket option * signature_subpacket_tag*Cs.t)list) buf =
-    consume_packet_length None buf
-    >>= fun (pkt, extra) ->
-    parse_subpacket pkt >>| (fun tuple -> tuple::packets)
-    >>= fun packets ->
-    if Cs.len extra = 0 then
-      R.ok (List.rev packets)
-    else
-      loop packets extra
+    if 0 = Cs.len buf then R.ok (List.rev packets) else
+    consume_packet_length None buf >>= fun (pkt, extra) ->
+    parse_subpacket pkt >>| (fun tuple -> tuple::packets) >>= fun packets ->
+    loop packets extra
   in
   (loop [] buf
    |>
@@ -400,6 +405,7 @@ let parse_packet buf : (t, 'error) result =
   Cs.e_sub `Incomplete_packet buf (6+hashed_len+2+unhashed_len) 2
   >>= fun two_byte_checksum ->
   *)
+
   let asf_offset = 6+hashed_len +2 + unhashed_len + 2 in
   Cs.e_sub `Incomplete_packet buf asf_offset ((Cs.len buf) -asf_offset)
   >>= fun asf_cs ->
@@ -436,3 +442,19 @@ let parse_packet buf : (t, 'error) result =
           subpacket_data ;
           algorithm_specific_data
          }
+
+let serialize_asf = function
+  | RSA_sig_asf v -> cs_of_mpi v.m_pow_d_mod_n
+  | DSA_sig_asf v -> cs_of_mpi_list [v.r; v.s]
+(*| Elgamal_asf -> *)
+
+let serialize t =
+  (* TODO handle V3 *)
+  serialize_hashed V4 t >>= fun hashed ->
+  serialize_asf t.algorithm_specific_data >>= fun asf_cs ->
+  Ok (Cs.concat [ hashed
+                  (* length of unhashed subpackets (which we don't support): *)
+                ; Cs.BE.create_uint16 0
+                  (* leftmost 16 bits of the signed hash value: *)
+                ; Cs.sub (Nocrypto.Hash.SHA1.digest hashed) 0 2
+                ; asf_cs ])

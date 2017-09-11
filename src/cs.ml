@@ -6,6 +6,19 @@ type cstruct_err =
   [ `Cstruct_invalid_argument of string
   | `Cstruct_out_of_memory ]
 
+let to_string = Cstruct.to_string
+let of_string = Cstruct.of_string
+let equal = Cstruct.equal
+let sub = Cstruct.sub
+let len = Cstruct.len (* TODO consider returning Usane.Uint64.t *)
+let of_string = Cstruct.of_string
+let create = Cstruct.create
+let blit = Cstruct.blit
+let concat = Cstruct.concat (*TODO wrap exceptions *)
+let set_uint8 = Cstruct.set_uint8
+
+let of_char c = String.make 1 c |> of_string
+
 let wrap_invalid_argument f : ('ok , [> cstruct_err ]) result =
   begin try R.ok @@ f () with
     | Invalid_argument s ->
@@ -41,6 +54,14 @@ let get_char_result buf offset =
 let e_get_char e buf offset =
   wrap_err e (get_char_result buf offset)
 
+let e_set_char e buf offset c =
+  (fun () -> Cstruct.set_char buf offset c)
+  |> wrap_invalid_argument |> wrap_err e
+
+let e_blit e src srcoff dst dstoff len =
+  (fun () -> Cstruct.blit src srcoff dst dstoff len)
+  |> wrap_invalid_argument |> wrap_err e
+
 module BE = struct
   let get_uint16 buf offset =
     wrap_f_buf_offset Cstruct.BE.get_uint16 buf offset
@@ -52,9 +73,11 @@ module BE = struct
   let e_get_uint32 e buf offset =
     wrap_err e (get_uint32 buf offset)
 
-  let set_uint16 buf offset (int16 : Usane.Uint16.t) =
+  let set_uint16 (buf:t) (offset:int) (int16 : Usane.Uint16.t)
+    : (Cstruct.t,[>cstruct_err]) result =
     wrap_invalid_argument (fun () ->
         Cstruct.BE.set_uint16 buf offset int16; buf)
+
   let e_set_uint16 e buf offset int16 =
     wrap_err e (set_uint16 buf offset int16)
 
@@ -92,6 +115,9 @@ module BE = struct
 
   let e_set_ptime32 (e:'e) buf offset ptime : (t,'e) result =
     e_set_ptimespan32 e buf offset (Ptime.to_span ptime)
+
+  let e_create_ptimespan32 e = e_set_ptimespan32 e (create 4) 0
+  let e_create_ptime32 e = e_set_ptime32 e (create 4) 0
 end
 
 let of_hex str =
@@ -101,17 +127,6 @@ let of_hex str =
 let to_hex cs =
   match Hex.of_string (Cstruct.to_string cs) with
   | `Hex str -> str
-
-let to_string = Cstruct.to_string
-let of_string = Cstruct.of_string
-let equal = Cstruct.equal
-let sub = Cstruct.sub
-let len = Cstruct.len (* TODO consider returning Usane.Uint64.t *)
-let of_string = Cstruct.of_string
-let create = Cstruct.create
-let blit = Cstruct.blit
-let concat = Cstruct.concat (*TODO wrap exceptions *)
-let set_uint8 = Cstruct.set_uint8
 
 let to_list buf =
   let s = to_string buf in
@@ -212,6 +227,8 @@ let e_equal_string e str buf =
   match equal_string str buf with
   | true -> Ok ()
   | false -> Error e
+
+let e_is_empty e buf = if 0 = len buf then Ok () else Error e
 
 let e_find_list e buf_list buf : (t,'error) result =
   (* TODO perhaps the "find" name is a bit confusing here. this is "find" in the sense of List.find, not Cs.find*)

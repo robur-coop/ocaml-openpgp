@@ -61,10 +61,9 @@ let test_self_check _ =
   | Ok (tag, pkt_body, _) ->
     let _ = (Openpgp.parse_packet_body tag pkt_body >>=
     begin function
-      | (Public_key_packet _
-        ) ->
+      | (Public_key_packet pkt) ->
       let()=Printf.printf "\nPkt len:%d - got a key: %s\n"
-          Cstruct.(len pkt_body) Public_key_packet.(v4_key_id pkt_body) ;
+          Cstruct.(len pkt_body) Public_key_packet.(v4_key_id pkt) ;
                 Logs.debug (fun m -> m "Got a good public key packet")
       in
       R.ok ()

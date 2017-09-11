@@ -31,7 +31,7 @@ type private_key = {
 
 val pp : Format.formatter -> t -> unit
 
-val hash_public_key : Cs.t -> (Cs.t -> unit) -> unit
+val hash_public_key : t -> (Cs.t -> unit) -> unit
 
 val parse_packet :
            Cstruct.t ->
@@ -43,13 +43,13 @@ val parse_packet :
              | `Unimplemented_version of char ])
            Rresult.result
 
-val serialize : Types.openpgp_version -> t -> Cs.t
+val serialize : Types.openpgp_version -> t -> (Cs.t,[> Cs.cstruct_err]) result
 
-val v4_key_id : Cs.t -> string
+val v4_key_id : t -> string
 
 val generate_new : g:Nocrypto.Rng.g ->
   current_time:Ptime.t ->
   Types.public_key_algorithm ->
-  (private_key, [> `Invalid_packet ]) Result.result
+  (private_key, [> `Invalid_packet | Cs.cstruct_err]) Result.result
 
 val public_of_private : private_key -> t

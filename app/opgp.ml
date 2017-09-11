@@ -1,15 +1,18 @@
 open Rresult
 
-let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) Result.result =
-  let res =
-  let file_cb filename =
-    let content = ref (Some (Bos.OS.File.read
-                               (Fpath.of_string filename|>R.get_ok) |> R.get_ok |> Cs.of_string)
-                      ) in
-    (fun () ->
-       match !content with
-       | x -> content := None; Ok x
-    )
+(* TODO set umask when writing files *)
+
+let cs_of_file name =
+  Fpath.of_string name >>= Bos.OS.File.read >>| Cs.of_string
+  |> R.reword_error (fun _ -> `Malformed) (*TODO fix error msg*)
+
+let file_cb filename : unit -> ('a,'b)result =
+  (* TODO read file in chunks *)
+  let content = ref (fun () -> cs_of_file filename >>| (fun cs -> Some cs)) in
+  (fun () ->
+     let x = !content () in
+     content := (fun () -> Ok None); x
+  )
     (*
     Bos.OS.File.with_ic filepath
       (fun ic -> fun _ ->
@@ -25,11 +28,11 @@ let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) R
       ) 0
     |> R.reword_error (fun e -> Printf.printf "whatt\n";e) |> R.get_ok
     *)
-  in
-  Bos.OS.File.read (Fpath.of_string pk_file|>R.get_ok) >>| Cs.of_string
-  >>= fun pk_content ->
-  Bos.OS.File.read (Fpath.of_string detached_file|>R.get_ok) >>| Cs.of_string
-  >>= fun detached_content ->
+
+let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) Result.result =
+  let res =
+  cs_of_file pk_file >>= fun pk_content ->
+  cs_of_file detached_file >>= fun detached_content ->
   Logs.info (fun m -> m "Going to verify that '%S' is a signature on '%S' using key '%S'" detached_file target_file pk_file);
 
   Openpgp.decode_ascii_armor pk_content
@@ -58,11 +61,45 @@ let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) R
       Printf.eprintf "pk:\n%s\nsig:\n%s\n\n%!" (Cs.to_string pk_content) (Cs.to_string detached_content);
       err
   end
-  in res |> R.reword_error (fun _ -> `Msg "fuck")
+  in res |> R.reword_error Types.msg_of_error
 
-(* genkey
-(Public_key_packet.generate_new ~current_time:(Ptime_clock.now ()) DSA ~g:(Nocrypto.Rng.create ~seed:(Cs.of_string "a") (module Nocrypto.Rng.Generators.Fortuna))
-*)
+
+let do_genkey _ uid =
+  (* TODO output private key too ; right now only a transferable public key is serialized *)
+  let current_time = Ptime_clock.now () in
+  let g = !Nocrypto.Rng.generator in
+  let res =
+  Public_key_packet.generate_new ~current_time ~g Types.DSA >>= fun root_key ->
+  Openpgp.new_transferable_public_key ~g ~current_time Types.V4
+    root_key [uid] []
+  >>= Openpgp.serialize_transferable_public_key
+  >>= fun key_cs ->
+  let encoded_pk = Openpgp.encode_ascii_armor Types.Ascii_public_key_block key_cs in
+  Logs.app (fun m -> m "%s" (Cs.to_string encoded_pk)) ;
+  Ok ()
+  in res |> R.reword_error Types.msg_of_error
+
+let do_list_packets _ target =
+  Logs.info (fun m -> m "Listing packets in ascii-armored structure in %s" target) ;
+  let res =
+  cs_of_file target >>=
+  Openpgp.decode_ascii_armor >>= fun (arm_typ,raw_cs) ->
+  Logs.app (fun m -> m "armor type: %a@.%a"
+               Types.pp_ascii_packet_type arm_typ
+               Cstruct.hexdump_pp raw_cs
+           ) ;
+  Openpgp.parse_packets raw_cs |> R.reword_error (snd)
+  >>= fun pkts_tuple ->
+  let () = Logs.app (fun m -> m "Packets:@.|  %a"
+               (fun fmt -> Fmt.pf fmt "%a"
+                 Fmt.(list ~sep:(unit "@.|  ")
+                      (vbox @@ pair ~sep:(unit "@,Hexdump: ")
+                         Openpgp.pp_packet Cstruct.hexdump_pp ))
+               ) pkts_tuple
+  ) in
+  Ok ()
+  in
+  res |> R.reword_error Types.msg_of_error
 
 let setup_log style_renderer level =
   Fmt_tty.setup_std_outputs ?style_renderer ();
@@ -82,8 +119,12 @@ let signature =
   Arg.(required & opt (some string) None & info ["signature"] ~docs ~doc)
 
 let target =
-  let doc = "TODO target doc" in
+  let doc = "Target file to be signed / verified" in
   Arg.(required & opt (some string) None & info ["target"] ~docs ~doc)
+
+let uid =
+  let doc = "User ID text string (name and/or email, the latter enclosed in <brackets>)" in
+  Arg.(required & opt (some string) None & info ["uid"] ~docs ~doc)
 
 let help_secs = [
   `S "DESCRIPTION" ;
@@ -96,6 +137,25 @@ let help_secs = [
 
 let setup_log =
   Term.(const setup_log $ Fmt_cli.style_renderer () $ Logs_cli.level ())
+
+let genkey_cmd =
+  let doc = "TODO genkey cmd doc" in
+  let man = [
+    `S Manpage.s_description ;
+    `P "Generate a new key pair" ;
+    `S "USAGE" ;
+    `P "$(tname)" ; (* TODO optionally output to file *)
+    `Blocks help_secs ]
+  in
+  let secret =
+    let doc = "Filename to write the new secret key to" in
+    Arg.(required & opt (some string) None & info ["secret"] ~docs ~doc)
+  and public =
+    let doc = "Filename to write the new public key to" in
+    Arg.(required & opt (some string) None & info ["public"] ~docs ~doc)
+  in
+  Term.(term_result (const do_genkey $ setup_log $ uid )),
+  Term.info "genkey" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
 
 let verify_cmd =
   let doc = "TODO verify cmd doc" in
@@ -110,11 +170,19 @@ let verify_cmd =
   Term.(term_result (const do_verify $ setup_log $ pk $ signature $ target)),
   Term.info "verify" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
 
+let list_packets_cmd =
+  let doc = "Pretty-print the packets contained in the [--target] file" in
+  let man = [] in
+  Term.(term_result (const do_list_packets $ setup_log $ target)),
+  Term.info "list-packets" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
+
 (*in
   Term.(pure cli_main $ pk),
   Term.info "opgp" ~version:"%%VERSION_NUM%%" ~doc ~man
 *)
 
-let cmds = [verify_cmd]
+let cmds = [verify_cmd ; genkey_cmd; list_packets_cmd]
 
-let () = Term.(exit @@ eval_choice verify_cmd cmds)
+let () =
+  Nocrypto_entropy_unix.initialize () ;
+  Term.(exit @@ eval_choice verify_cmd cmds)

@@ -37,7 +37,6 @@ let list_take_leading f lst : ('a list * 'b list, 'error) result =
   list_find_leading f lst >>= fun left ->
   Ok (left, list_drop_e_n `Guarded (List.length left) lst |> R.get_ok)
 
-
 let result_ok_list_or_error (parser : 'a -> ('b,'c) result) (body_lst : 'a list) =
   (* TODO perhaps this function should be called concat_result or similar *)
   List.fold_left (fun acc -> fun cs ->
@@ -50,12 +49,33 @@ module type Keytype = sig
   type t
 end
 
-let pp_error ppf = function
-  | `Incomplete_packet -> Fmt.pf ppf "incomplete packet"
-  | `Invalid_packet -> Fmt.pf ppf "invalid packet"
-  | `Unimplemented_algorithm c -> Fmt.pf ppf "unimplemented algorithm %c" c
-  | `Unimplemented_version c -> Fmt.pf ppf "unimplemented version %c" c
-  | _ -> Fmt.pf ppf "TODO unimplemented error pp"
+let msg_of_error err=
+  `Msg
+  (match err with
+  | `Incomplete_packet -> "incomplete packet"
+  | `Invalid_packet -> "invalid packet"
+  | `Unimplemented_algorithm c -> Format.sprintf "unimplemented algorithm 0x%02x" (Char.code c)
+  | `Unimplemented_version c -> Format.sprintf "unimplemented version 0x%02x" (Char.code c)
+  | `Invalid -> "invalid"
+  | `Invalid_crc24 -> "invalid crc24"
+  | `Missing_crc24 -> "missing crc24"
+  | `Invalid_key_type -> "invalid key type"
+  | `Invalid_mpi_parameters _ -> "invalid mpi parameters %a"
+  | `Malformed -> "malformed"
+  | `Missing_body -> "missing body"
+  | `Missing_end_block -> "missing end block"
+  | `Unimplemented_feature c -> Format.sprintf "unimplemented feature %S" c
+  | `Invalid_signature -> "invalid signature"
+  | `Invalid_length -> "invalid length"
+  | `Extraneous_packets_after_signature -> "extraneous data after signature"
+  | `Cstruct_invalid_argument s -> Format.sprintf "Cstruct: invalid argument: %s" s
+  | `Cstruct_out_of_memory -> "Cstruct: out of memory error"
+  | `Invalid_packet_header -> "invalid packet header"
+  )
+
+let pp_error ppf err =
+  match msg_of_error err with
+  | `Msg msg -> Fmt.pf ppf "@[<v>%s@]" (msg)
 
 type openpgp_version =
   | V3
@@ -643,6 +663,13 @@ type packet_length_type =
   | Four_octet
   (* | Partial_length - TODO: Not clear to me if this is ever used in practice. seems a bit uselesss, and tricky to implement due to the extended state machine required. *)
 
+let pp_packet_length_type fmt t =
+  (Fmt.parens Fmt.string) fmt
+    (match t with
+    | One_octet -> "one octet"
+    | Two_octet -> "two octet"
+    | Four_octet -> "four octet")
+
 let packet_length_type_enum =
   [ (0 , One_octet)
   ; (1 , Two_octet)
@@ -658,7 +685,17 @@ let packet_length_type_of_size = function
 let serialize_packet_length_int32 len =
   match packet_length_type_of_size len with
   | One_octet -> Cs.make_uint8 (Int32.to_int len)
-  | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)
+  (* TODO V3: | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)*)
+  | Two_octet ->
+    let len = Int32.to_int len in
+    let converted =
+      ((len land 0xff00) - 256 + (192*256))
+      + ((len land 0xff) + 256 - 192)
+      |> Cs.BE.create_uint16
+    in
+    Logs.debug (fun m -> m "serializing packet length of %d -> %a" len
+                   Cstruct.hexdump_pp converted) ;
+    converted
   | Four_octet -> (*This is a V4 "five octet": *)
     Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
 
@@ -676,11 +713,12 @@ let int_of_packet_length_type needle =
   find_enum_value needle packet_length_type_enum |> R.get_ok
 
 let packet_length_type_of_int needle =
+  Logs.debug (fun m -> m "packet_length_type_of_int %d" needle) ;
   find_enum_sumtype needle packet_length_type_enum
 
 let consume_packet_length length_type buf :
   (Cs.t * Cs.t,
-   [>`Invalid_length | `Incomplete_packet | `Unimplemented_feature_partial_length])
+   [>`Invalid_length | `Incomplete_packet | `Unimplemented_feature of string])
     result =
   (* see https://tools.ietf.org/html/rfc4880#section-4.2.2 *)
   Cs.e_get_char `Incomplete_packet buf 0 >>= fun first_c ->
@@ -693,7 +731,7 @@ let consume_packet_length length_type buf :
     | Four_octet ->
       Cs.BE.e_get_uint32 `Incomplete_packet buf 0 >>= fun length ->
       R.ok (4, (length :> Uint32.t))
-  (*| Partial_length -> R.error `Unimplemented_feature_partial_length *)
+  (*| Partial_length -> R.error (`Unimplemented_feature "partial_length") *)
   in
   let consume_new_packet_length = function
     | ('\000'..'\191') ->
@@ -704,7 +742,7 @@ let consume_packet_length length_type buf :
       |> R.reword_error (function _ -> `Invalid_length) >>= fun second ->
       Ok (2 , Uint32.of_int @@ ((first - 192) lsl 8) + second + 192)
     | ('\224'..'\254') ->
-      Error `Unimplemented_feature_partial_length
+      Error (`Unimplemented_feature "partial_length")
     | '\255' ->
       Cs.BE.get_uint32 buf 1
       |> R.reword_error (function _ -> `Invalid_length) >>= fun length ->
@@ -718,6 +756,9 @@ let consume_packet_length length_type buf :
   | Some length ->
     Cs.split_result ~start buf length
     |> R.reword_error (function _ ->  `Incomplete_packet)
+    >>= fun ((header,_) as pair) ->
+    Logs.debug (fun m -> m "consume_packet_length: consuming %a" Cstruct.hexdump_pp header) ;
+    Ok pair
   | None -> Error `Invalid_length
 
 (* https://tools.ietf.org/html/rfc4880#section-4.2 : Packet Headers *)
@@ -729,7 +770,7 @@ type packet_header =
 
 let char_of_packet_header ph : (char,'error) result =
   begin match ph with
-    | { new_format ; packet_tag ; _ } when new_format = true ->
+  | { new_format = true ; packet_tag ; length_type = None } ->
       (1 lsl 6) lor (* 1 bit, new_format = true *)
       (int_of_packet_tag_type packet_tag) (* 6 bits*)
       |> R.ok
@@ -737,6 +778,9 @@ let char_of_packet_header ph : (char,'error) result =
       ((int_of_packet_length_type length_type) land 0x3) (* 2 bits *)
       lor (((int_of_packet_tag_type packet_tag) land 0xf) lsl 2) (* 4 bits *)
       |> R.ok
+  | { new_format = false ; _ } ->
+    Logs.err (fun m -> m "TODO V3 packet header serialization not implemented");
+    R.error `Invalid_packet_header
   | _ -> R.error `Invalid_packet_header
   end
   >>= fun pt ->
@@ -758,6 +802,7 @@ let packet_header_of_char (c : char) : (packet_header,'error) result =
       | true ->
         bits_5_through_0 c_int |> Char.chr
         |> packet_tag_type_of_char >>= fun pt ->
+        Logs.debug (fun m -> m "Read a V4 packet header %a" pp_packet_tag pt) ;
         R.ok (pt, None)
       | false ->
         packet_tag_type_of_char (Char.chr (bits_5_through_2 c_int))
@@ -779,15 +824,8 @@ let consume_packet_header buf :
   Cs.e_split `Incomplete_packet buf 1 >>= fun (header_buf , buf_tl) ->
   Cs.e_get_char `Incomplete_packet header_buf 0 >>= fun c ->
   packet_header_of_char c
-  |> R.reword_error (function _ -> `Invalid_packet_header) >>= fun pkt_header ->
-  Ok (pkt_header , buf_tl)
-
-(*
-let generate_rsa size =
-  let () = Nocrypto.Rng.reseed Cstruct.(of_string "abc") in (* TODO *)
-  let priv = Nocrypto.Rsa.generate 1024 in (* TODO *)
-  (*let pub = Nocrypto.Rsa.pub_of_priv priv in*)
-*)
+  |> R.reword_error (function _ -> `Invalid_packet_header)
+  >>= fun pkt_header -> Ok (pkt_header , buf_tl)
 
 let v4_verify_version (buf : Cs.t) :
   (unit, [> `Unimplemented_version of char | `Incomplete_packet]) result =

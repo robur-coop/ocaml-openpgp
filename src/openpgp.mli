@@ -12,7 +12,9 @@ module Signature : sig
   include module type of Signature_packet
   type uid = { uid : Uid_packet.t ; certifications : Signature_packet.t list}
   type user_attribute = { certifications : Signature_packet.t list }
-  type subkey = { key : Public_key_packet.t ; signature : Signature_packet.t ; revocation : Signature_packet.t option }
+  type subkey = { key : Public_key_packet.t
+                ; signature : Signature_packet.t
+                ; revocation : Signature_packet.t option }
   type transferable_public_key =
     {
       root_key : Public_key_packet.t
@@ -26,13 +28,14 @@ module Signature : sig
     ; subkeys : subkey list
       (** Zero or more subkey packets *)
     }
+
   val root_pk_of_packets : current_time : Ptime.t -> (packet_tag_type * Cs.t) list ->
     (transferable_public_key * (packet_tag_type * Cs.t) list
      ,
      [> `Extraneous_packets_after_signature
      | `Incomplete_packet
      | `Invalid_length
-     | `Unimplemented_feature_partial_length
+     | `Unimplemented_feature of string
      | `Invalid_packet
      | `Unimplemented_version of char
              | `Invalid_signature
@@ -53,6 +56,16 @@ module Signature : sig
              as 'a)
             Rresult.result) ->
            ([> `Good_signature ], 'a) Rresult.result
+
+  val sign_detached_cb :
+     g:Nocrypto.Rng.g -> (* PRNG *)
+     current_time:Ptime.t ->
+     Public_key_packet.private_key ->
+     Types.hash_algorithm ->
+     (Cstruct.t -> unit) * (unit -> Cstruct.t) -> (*hash_cb,hash_finalize*)
+     (unit -> (* io callback for reading the data to sign *)
+        (Cstruct.t option, [> `Invalid_packet ] as 'a) Result.result) ->
+     (t, 'a) Result.result
 end
 
 type packet_type =
@@ -60,8 +73,12 @@ type packet_type =
   | Public_key_packet of Public_key_packet.t
   | Public_key_subpacket of Public_key_packet.t
   | Uid_packet of Uid_packet.t
+  | Secret_key_packet of Public_key_packet.private_key
+  | Secret_key_subpacket of Public_key_packet.private_key
 
 val packet_tag_of_packet : packet_type -> packet_tag_type
+
+val pp_packet : Format.formatter -> packet_type -> unit
 
 val parse_packet_body : packet_tag_type -> Cstruct.t ->
   (packet_type
@@ -103,5 +120,15 @@ val new_transferable_public_key :
            Public_key_packet.private_key ->
            Uid_packet.t list ->
            Public_key_packet.private_key list ->
-           (Signature.transferable_public_key, [> `Invalid_packet ])
+           (Signature.transferable_public_key, [> `Invalid_packet | Cs.cstruct_err])
            Rresult.result
+
+val serialize_transferable_public_key :
+           Signature.transferable_public_key ->
+           (Cstruct.t,
+            [> `Cstruct_invalid_argument of string
+             | `Cstruct_out_of_memory
+             | `Invalid_packet
+             | `Invalid_packet_header
+             | `Unimplemented_feature of string ])
+           Result.result

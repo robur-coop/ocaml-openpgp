@@ -23,9 +23,9 @@ let hash (t:string) hash_cb version =
   | Types.V3 -> () (* TODO not implemented *)
   | Types.V4 ->
     hash_cb (Cs.of_string "\xB4") ;
-    let len = Cstruct.create 4 in
-    Cstruct.BE.set_uint32 len 0 (String.length t
-                                 |>Int32.of_int) ;
-    hash_cb len
+    hash_cb @@ Cs.BE.create_uint32 (String.length t
+                                   |>Int32.of_int)
   end ;
   hash_cb cs
+
+let serialize t = Ok (Cs.of_string t)

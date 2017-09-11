@@ -29,6 +29,10 @@ let pp_pk_asf ppf asf=
 
 let public_key_algorithm_of_asf = function
   | DSA_pubkey_asf _ -> DSA
+  | RSA_pubkey_sign_asf _ -> RSA_sign_only
+  | RSA_pubkey_encrypt_asf _ -> RSA_encrypt_only
+  | RSA_pubkey_encrypt_or_sign_asf _ -> RSA_encrypt_or_sign
+  | Elgamal_pubkey_asf _ -> Elgamal_encrypt_only
 
 type private_key_asf =
   | DSA_privkey_asf of Nocrypto.Dsa.priv
@@ -52,30 +56,59 @@ let pp ppf t =
     pp_pk_asf t.algorithm_specific_data
     (Cs.to_hex t.v4_fingerprint)
 
-let hash_public_key pk_body (hash_cb : Cs.t -> unit) : unit =
-  let to_be_hashed =
-  let buffer = Buffer.create 100 in
+let cs_of_public_key_asf asf =
+  Logs.debug (fun m -> m "cs_of_mpi called");
+  begin match asf with
+  | DSA_pubkey_asf {Nocrypto.Dsa.p;q;gg;y} -> [p;q;gg;y]
+  | Elgamal_pubkey_asf { p ; g ; y } -> [ p; g; y ]
+  | RSA_pubkey_sign_asf p
+  | RSA_pubkey_encrypt_or_sign_asf p
+  | RSA_pubkey_encrypt_asf p -> [ p.Nocrypto.Rsa.n ; p.Nocrypto.Rsa.e ]
+  end
+  |> cs_of_mpi_list
+
+let serialize version {timestamp;algorithm_specific_data;_} =
+  cs_of_public_key_asf algorithm_specific_data >>= fun asf_cs ->
+  Cs.concat [
+
+    (* version *)
+    (char_of_version version |> Cs.of_char) ;
+
+   (* timestamp: *)
+   (Cs.BE.e_set_ptime32 `Null (Cs.create 4) 0 timestamp |> R.get_ok ) ;
+
+   (* public key algorithm: *)
+   (* TODO this API is awkward, but basically what is missing is a "public_key_algorithm_of_packet_tag_type" function: *)
+   (char_of_public_key_algorithm
+     begin match algorithm_specific_data with
+       | DSA_pubkey_asf _ -> DSA
+       | RSA_pubkey_sign_asf _ -> RSA_sign_only
+       | RSA_pubkey_encrypt_asf _ -> RSA_encrypt_only
+       | RSA_pubkey_encrypt_or_sign_asf _ -> RSA_encrypt_or_sign
+       | Elgamal_pubkey_asf _ -> Elgamal_encrypt_only
+     end |> Cs.of_char)
+   ; asf_cs
+  ] |> R.ok
+
+let hash_public_key t (hash_cb : Cs.t -> unit) : unit =
+  let pk_body = serialize V4 t |> R.get_ok in
+  let body_len = Cs.len pk_body in
+  let buf = Cs.create (1 + 2  + body_len) in
   (* a.1) 0x99 (1 octet)*)
-  let()= Buffer.add_char buffer '\x99' in
-  let()=
-    let lenb = Cs.len pk_body in
-    (* a.2) high-order length octet of (b)-(e) (1 octet)*)
-    let() = Buffer.add_char buffer ((lenb land 0xff00)
-                                    lsr 8
-                                    |> Char.chr) in
-    (* a.3) low-order length octet of (b)-(e) (1 octet)*)
-    Buffer.add_char buffer (lenb land 0xff |> Char.chr)
-  in
+  Cs.e_set_char `Invalid_packet buf 0 '\x99' |> R.get_ok ;
+
+  (* a.2) high-order length octet of (b)-(e) (1 octet)*)
+  (* a.3) low-order length octet of (b)-(e) (1 octet)*)
+  let _ = Cs.BE.e_set_uint16 `Invalid_packet buf 1 body_len |> R.get_ok in
+
   (* b) version number = 4 (1 octet);
      c) timestamp of key creation (4 octets);
      d) algorithm (1 octet): 17 = DSA (example)
      e) Algorithm-specific fields.*)
-  let()= Buffer.add_string buffer (Cs.to_string pk_body) in
-  Buffer.contents buffer |> Cs.of_string
-  in
-  hash_cb to_be_hashed
+  Cs.e_blit `Invalid_packet pk_body 0 buf 3 body_len |> R.get_ok ;
+  hash_cb buf
 
-let v4_fingerprint ~(pk_body:Cs.t) : Cs.t =
+let v4_fingerprint t : Cs.t =
   (* RFC 4880: 12.2.  Key IDs and Fingerprints
    A V4 fingerprint is the 160-bit SHA-1 hash of the octet 0x99,
    followed by the two-octet packet length, followed by the entire
@@ -84,16 +117,16 @@ let v4_fingerprint ~(pk_body:Cs.t) : Cs.t =
     (val (nocrypto_module_of_hash_algorithm SHA1))
   in
   let h = H.init () in
-  let()= hash_public_key pk_body (H.feed h) in
+  let()= hash_public_key t (H.feed h) in
   H.get h
 
-let v4_key_id (pk_packet : Cs.t) : string  =
+let v4_key_id t : string  =
   (* in gnupg2 this is g10/keyid.c:fingerprint_from_pk*)
   (*The Key ID is the
    low-order 64 bits of the fingerprint.
   *)
   Cstruct.sub
-    (v4_fingerprint ~pk_body:pk_packet)
+    (v4_fingerprint t)
     (Nocrypto.Hash.SHA1.digest_size - (64/8))
     (64/8)
   |> Cs.to_hex
@@ -165,47 +198,11 @@ let parse_dsa_asf buf : (public_key_asf, 'error) result =
   let pk = {Nocrypto.Dsa.p;q;gg;y} in
   R.ok (DSA_pubkey_asf pk)
 
-let cs_of_public_key_asf asf =
-  begin match asf with
-  | DSA_pubkey_asf {Nocrypto.Dsa.p;q;gg;y} -> [p;q;gg;y]
-  | Elgamal_pubkey_asf { p ; g ; y } -> [ p; g; y ]
-  | RSA_pubkey_sign_asf p
-  | RSA_pubkey_encrypt_or_sign_asf p
-  | RSA_pubkey_encrypt_asf p -> [ p.Nocrypto.Rsa.n ; p.Nocrypto.Rsa.e ]
-  end
-  |> cs_of_mpi_list |> R.get_ok
-
-let serialize version {timestamp;algorithm_specific_data;_} =
-  let buf = Buffer.create 200 in
-
-  (* version *)
-  (Buffer.add_char buf (char_of_version version) ;
-
-   (* timestamp: *)
-   (Cs.BE.e_set_ptime32 `Null (Cs.create 4) 0 timestamp |> R.get_ok
-   |>Cs.to_string
-   )|> Buffer.add_string buf ;
-
-   (* public key algorithm: *)
-   (* TODO this API is awkward, but basically what is missing is a "public_key_algorithm_of_packet_tag_type" function: *)
-   Buffer.add_char buf (char_of_public_key_algorithm
-     begin match algorithm_specific_data with
-       | DSA_pubkey_asf _ -> DSA
-       | RSA_pubkey_sign_asf _ -> RSA_sign_only
-       | RSA_pubkey_encrypt_asf _ -> RSA_encrypt_only
-       | RSA_pubkey_encrypt_or_sign_asf _ -> RSA_encrypt_or_sign
-       | Elgamal_pubkey_asf _ -> Elgamal_encrypt_only
-     end) ;
-
-   Buffer.add_string buf
-     (Cs.to_string
-       (cs_of_public_key_asf algorithm_specific_data))
-  ); Buffer.contents buf |> Cs.of_string
-
 let parse_packet buf : ('a, [> `Incomplete_packet
                         | `Unimplemented_version of char
                         | `Unimplemented_algorithm of char
                         ]) result =
+  Logs.debug (fun m -> m "%s parsing @[<v>%a@]" __LOC__ Cstruct.hexdump_pp buf) ;
   (* 1: '\x04' *)
   v4_verify_version buf >>= fun()->
 
@@ -233,8 +230,9 @@ let parse_packet buf : ('a, [> `Incomplete_packet
   >>= fun parse_asf ->
   parse_asf pk_algo_specific
   >>= fun algorithm_specific_data ->
-  R.ok { timestamp ; algorithm_specific_data ;
-         v4_fingerprint = v4_fingerprint ~pk_body:buf}
+  let temp = { timestamp ; algorithm_specific_data ; v4_fingerprint = Cs.create 0 } in
+  Ok {temp with
+         v4_fingerprint = v4_fingerprint temp}
 
 let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
   begin match key_type with
@@ -261,8 +259,7 @@ let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
              ; v4_fingerprint = Cs.create 0}
   in
   Ok {public = {temp with
-                v4_fingerprint = v4_fingerprint ~pk_body:(serialize V4 temp)
-               }
+                v4_fingerprint = v4_fingerprint temp }
      ; priv_asf}
 
 let public_of_private (priv_key : private_key) : t =
