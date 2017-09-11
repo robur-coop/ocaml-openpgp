@@ -14,7 +14,8 @@ let () =
   Pkg.describe "openpgp" @@ fun _c ->
   Ok [ Pkg.lib "pkg/META"
      ; Pkg.mllib "src/openpgp.mllib"
-     ; Pkg.test "test/test_lib"
+(*     ; Pkg.test "test/test_lib"*)
+     ; Pkg.test "test/alcotest_lib"
      ; Pkg.bin "app/opgp" ]
 (*
   let mirage = Conf.value c mirage in

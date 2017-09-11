@@ -571,7 +571,7 @@ struct
        let (objects, (packets:(packet_tag_type*Cs.t)list)) =
          list_take_leading (pair_must_be packet_tag) packets |> R.get_ok
         in
-      if List.length objects = 0 then
+      if objects = [] then
         (* Return from loop: *)
         Ok (List.rev acc , packets)
       else
@@ -591,7 +591,7 @@ struct
          | _ -> false
         )
       in
-      if List.length valid_certifications < 1 then begin
+      if valid_certifications = [] then begin
         Logs.debug (fun m -> m "Skipping %a due to lack of valid certifications"
                        pp_packet obj
          ) ;
@@ -608,7 +608,7 @@ struct
         ; Casual_certification_of_user_id_and_public_key_packet
         ; Positive_certification_of_user_id_and_public_key_packet]
     >>= fun (verified_uids , packets) ->
-    if List.length verified_uids < 1
+    if verified_uids = []
     then begin
       Logs.err (fun m -> m "Unable to find at least one verifiable UID.") ;
       R.error `Invalid_packet
@@ -773,7 +773,7 @@ let new_transferable_public_key
   )
   >>= fun uids ->
   Logs.debug (fun m -> m "%d UIDs certified. moving on." (List.length uids));
-  if List.length uids < 1 then
+  if uids = [] then
     Error `Invalid_packet (* TODO fix error msg *)
   else
   priv_subkeys |> result_ok_list_or_error

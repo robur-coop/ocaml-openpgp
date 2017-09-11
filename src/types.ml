@@ -568,7 +568,7 @@ let mpis_are_prime lst =
   let non_primes =
     List.find_all (fun mpi -> not @@ Nocrypto.Numeric.pseudoprime mpi) lst
   in
-  if List.length non_primes <> 0 then begin
+  if non_primes <> [] then begin
     Logs.debug (fun m -> m "MPIs are not prime: %a"
                    Fmt.(list ~sep:(unit " ; ") Cstruct.hexdump_pp)
                    (List.map cs_of_mpi_no_header non_primes)) ;
@@ -682,7 +682,7 @@ let packet_length_type_of_size = function
   | s when -1 = Uint32.compare s 8384l -> Two_octet
   | _ -> Four_octet
 
-let serialize_packet_length_int32 len =
+let serialize_packet_length_uint32 (len : Uint32.t) =
   match packet_length_type_of_size len with
   | One_octet -> Cs.make_uint8 (Int32.to_int len)
   (* TODO V3: | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)*)
@@ -700,7 +700,8 @@ let serialize_packet_length_int32 len =
     Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
 
 let serialize_packet_length_int i =
-  Int32.of_int i |> serialize_packet_length_int32
+  (* TODO guard exception *)
+  Uint32.of_int i |> serialize_packet_length_uint32
 
 let serialize_packet_length cs =
   Cs.len cs |> serialize_packet_length_int
@@ -716,50 +717,49 @@ let packet_length_type_of_int needle =
   Logs.debug (fun m -> m "packet_length_type_of_int %d" needle) ;
   find_enum_sumtype needle packet_length_type_enum
 
+let v4_packet_length_of_cs (e:'e) (buf : Cs.t)
+  : (Usane.Uint16.t * Usane.Uint32.t, 'e) result =
+  (* see https://tools.ietf.org/html/rfc4880#section-4.2.2 *)
+  Cs.e_get_char e buf 0 >>= fun first_c ->
+  let first = int_of_char first_c in
+  match first_c with
+  | ('\000'..'\191') -> Ok (1 , Uint32.of_int first)
+  | ('\192'..'\223') ->
+      Cs.get_uint8_result buf 1 |> R.reword_error (function _ -> e)
+      >>| fun second ->
+      (2 , Uint32.of_int @@ ((first - 192) lsl 8) + second + 192)
+  | ('\224'..'\254') -> Error (`Unimplemented_feature "partial_length")
+  | '\255' ->
+      Cs.BE.get_uint32 buf 1 |> R.reword_error (function _ -> e)
+      >>| fun length -> (5, length)
+
+let v3_packet_length_of_cs (e:'e) buf = function
+  | One_octet ->
+      Cs.e_get_uint8 e buf 0 >>| Uint32.of_int >>| fun len -> (1, len)
+  | Two_octet ->
+      Cs.BE.e_get_uint16 e buf 0 >>| fun length -> (2, Uint32.of_int length)
+  | Four_octet ->
+      Cs.BE.e_get_uint32 e buf 0 >>| fun length -> (4, (length :> Uint32.t))
+  (*| Partial_length -> R.error (`Unimplemented_feature "partial_length") *)
+
 let consume_packet_length length_type buf :
   (Cs.t * Cs.t,
-   [>`Invalid_length | `Incomplete_packet | `Unimplemented_feature of string])
+   [>`Incomplete_packet | `Unimplemented_feature of string])
     result =
-  (* see https://tools.ietf.org/html/rfc4880#section-4.2.2 *)
-  Cs.e_get_char `Incomplete_packet buf 0 >>= fun first_c ->
-  let first = int_of_char first_c in
-  let consume_old_packet_length = function
-    | One_octet -> R.ok (1, Uint32.of_int first)
-    | Two_octet ->
-      Cs.BE.e_get_uint16 `Incomplete_packet buf 0 >>= fun length ->
-      R.ok (2, Uint32.of_int length)
-    | Four_octet ->
-      Cs.BE.e_get_uint32 `Incomplete_packet buf 0 >>= fun length ->
-      R.ok (4, (length :> Uint32.t))
-  (*| Partial_length -> R.error (`Unimplemented_feature "partial_length") *)
-  in
-  let consume_new_packet_length = function
-    | ('\000'..'\191') ->
-      (* accomodate old+new format-style 1-octet lengths *)
-      Ok (1 , Uint32.of_int first)
-    | ('\192'..'\223') ->
-      Cs.get_uint8_result buf 1
-      |> R.reword_error (function _ -> `Invalid_length) >>= fun second ->
-      Ok (2 , Uint32.of_int @@ ((first - 192) lsl 8) + second + 192)
-    | ('\224'..'\254') ->
-      Error (`Unimplemented_feature "partial_length")
-    | '\255' ->
-      Cs.BE.get_uint32 buf 1
-      |> R.reword_error (function _ -> `Invalid_length) >>= fun length ->
-      R.ok (5, length)
-  in
+  (* TODO ? make length_type an optional ?v3_length_type arg *)
   begin match length_type with
-    | None -> consume_new_packet_length first_c
-    | Some typ -> consume_old_packet_length typ
+    | None -> v4_packet_length_of_cs `Incomplete_packet buf
+    | Some length -> v3_packet_length_of_cs `Incomplete_packet buf length
   end >>= fun (start , length) ->
   match Uint32.to_int length with
+  | None -> Error `Invalid_length
   | Some length ->
     Cs.split_result ~start buf length
     |> R.reword_error (function _ ->  `Incomplete_packet)
-    >>= fun ((header,_) as pair) ->
-    Logs.debug (fun m -> m "consume_packet_length: consuming %a" Cstruct.hexdump_pp header) ;
-    Ok pair
-  | None -> Error `Invalid_length
+    >>| fun ((header,_) as pair) ->
+    Logs.debug (fun m -> m "consume_packet_length: consuming %a"
+                   Cstruct.hexdump_pp header) ;
+    pair
 
 (* https://tools.ietf.org/html/rfc4880#section-4.2 : Packet Headers *)
 type packet_header =

@@ -36,6 +36,8 @@ let wrap_err errval res =
 let get_uint8_result buf offset =
   wrap_f_buf_offset Cstruct.get_uint8 buf offset
 
+let e_get_uint8 e buf offset = wrap_err e  (get_uint8_result buf offset)
+
 let sub_result cstr off len =
   wrap_invalid_argument (fun () -> Cstruct.sub cstr off len)
 
