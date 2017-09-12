@@ -22,8 +22,8 @@ depends: [
   "ocamlbuild" {build}
   "ocamlfind" {build}
   "odoc" {build & doc}
-  "oUnit" {test}
   "qcheck" {test}
+  "alcotest" {test}
   "logs"
   "cstruct"
   "usane"
