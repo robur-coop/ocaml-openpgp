@@ -43,8 +43,8 @@ The library currently depends on the unreleased `Usane` library for unsigned
 opam pin add -n nocrypto 'https://github.com/cfcs/nocrypto.git#fix_pkcs1'
 opam pin add -n usane 'https://github.com/hannesm/usane.git'
 opam install alcotest bos cmdliner cstruct fmt fpath hex logs \
-             nocrypto ptime qcheck rresult topkg-care usane
-topkg build
+             nocrypto ptime qcheck rresult usane topkg
+ocaml pkg/pkg.ml build
 ```
 
 ### Roadmap
