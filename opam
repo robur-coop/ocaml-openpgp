@@ -21,6 +21,7 @@ build-test: [
 depends: [
   "ocamlbuild" {build}
   "ocamlfind" {build}
+  "topkg" {build}
   "odoc" {build & doc}
   "qcheck" {test}
   "alcotest" {test}
