@@ -79,6 +79,7 @@ type packet_type =
   | Uid_packet of Uid_packet.t
   | Secret_key_packet of Public_key_packet.private_key
   | Secret_key_subpacket of Public_key_packet.private_key
+  | Trust_packet of unit
 
 val packet_tag_of_packet : packet_type -> packet_tag_type
 

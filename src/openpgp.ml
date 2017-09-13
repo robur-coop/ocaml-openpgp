@@ -8,6 +8,7 @@ type packet_type =
   | Uid_packet of Uid_packet.t
   | Secret_key_packet of Public_key_packet.private_key
   | Secret_key_subpacket of Public_key_packet.private_key
+  | Trust_packet of unit
 
 let packet_tag_of_packet = begin function
   | Signature_type _ -> Signature_tag
@@ -16,6 +17,7 @@ let packet_tag_of_packet = begin function
   | Uid_packet _ -> Uid_tag
   | Secret_key_packet _ -> Secret_key_tag
   | Secret_key_subpacket _ -> Secret_subkey_tag
+  | Trust_packet _ -> Trust_packet_tag
   end
 
 let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cstruct.t) =
@@ -172,7 +174,8 @@ let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
     | Secret_key_tag -> Public_key_packet.parse_secret_packet pkt_body
                         >>| fun pkt -> Secret_key_packet pkt
     | Secret_subkey_tag -> Public_key_packet.parse_secret_packet pkt_body
-                           >>| fun pkt -> Secret_key_subpacket pkt
+                        >>| fun pkt -> Secret_key_subpacket pkt
+    | Trust_packet_tag -> Ok (Trust_packet ())
     | User_attribute_tag ->
       R.error (`Unimplemented_algorithm 'P') (*TODO should have it's own (`Unimplemented of [`Algorithm of char | `Tag of char | `Version of char])*)
   end
@@ -190,6 +193,8 @@ let pp_packet ppf = begin function
       Fmt.pf ppf "UID: @[<v>%a@]" Uid_packet.pp pkt
   | Signature_type pkt ->
       Fmt.pf ppf "Signature: @[<v>%a@]" Signature_packet.pp pkt
+  | Trust_packet () ->
+      Fmt.pf ppf "Trust packet (ignored)"
   end
 
 let hash_packet version hash_cb = begin function

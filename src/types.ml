@@ -173,6 +173,7 @@ type packet_tag_type =
   | Uid_tag
   | Public_subkey_tag
   | User_attribute_tag
+  | Trust_packet_tag
 
 let pp_packet_tag ppf v =
   Fmt.string ppf @@ match v with
@@ -183,6 +184,7 @@ let pp_packet_tag ppf v =
   | Uid_tag -> "uid"
   | Public_subkey_tag -> "public subkey"
   | User_attribute_tag -> "user attribute"
+  | Trust_packet_tag -> "trust packet"
 
 (* see RFC 4880: 4.3 Packet Tags *)
 let packet_tag_enum =
@@ -198,9 +200,9 @@ let packet_tag_enum =
     (* '\009', Symmetrically Encrypted Data Packet *)
     (* '\010', Marker Packet *)
     (* '\011', Literal Data Packet *)
-    (* '\012', Trust Packet *)
-  ; ('\013', Uid_tag)
-  ; ('\014', Public_subkey_tag)
+  ; '\012', Trust_packet_tag
+  ; '\013', Uid_tag
+  ; '\014', Public_subkey_tag
   ; '\017', User_attribute_tag (*User Attribute Packet *)
     (* '\018', Symmetrically Encrypted and Integrity Protected Data Packet *)
     (* '\019', Modification Detection Code Packet *)
