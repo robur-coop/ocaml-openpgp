@@ -82,10 +82,16 @@ let do_genkey _ uid =
 let do_list_packets _ target =
   Logs.info (fun m -> m "Listing packets in ascii-armored structure in %s" target) ;
   let res =
-  cs_of_file target >>=
-  Openpgp.decode_ascii_armor >>= fun (arm_typ,raw_cs) ->
+  cs_of_file target >>= fun armor_cs ->
+  let arm_typ, raw_cs =
+    Logs.on_error ~level:Logs.Info
+    ~use:(fun _ -> None, armor_cs)
+    ~pp:(fun fmt e -> Fmt.pf fmt "File doesn't look ascii-armored, trying to parse as-is")
+    (Openpgp.decode_ascii_armor armor_cs >>| fun (a,c) -> (Some a,c))
+  in
   Logs.app (fun m -> m "armor type: %a@.%a"
-               Types.pp_ascii_packet_type arm_typ
+               (Fmt.option ~none:(Fmt.unit "None")
+                 Types.pp_ascii_packet_type) arm_typ
                Cstruct.hexdump_pp raw_cs
            ) ;
   Openpgp.parse_packets raw_cs |> R.reword_error (snd)
