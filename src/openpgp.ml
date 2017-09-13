@@ -169,8 +169,10 @@ let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
     | Signature_tag ->
       Signature_packet.parse_packet pkt_body
       >>| fun pkt -> Signature_type pkt
-    | Secret_key_tag
-    | Secret_subkey_tag
+    | Secret_key_tag -> Public_key_packet.parse_secret_packet pkt_body
+                        >>| fun pkt -> Secret_key_packet pkt
+    | Secret_subkey_tag -> Public_key_packet.parse_secret_packet pkt_body
+                           >>| fun pkt -> Secret_key_subpacket pkt
     | User_attribute_tag ->
       R.error (`Unimplemented_algorithm 'P') (*TODO should have it's own (`Unimplemented of [`Algorithm of char | `Tag of char | `Version of char])*)
   end
@@ -180,6 +182,10 @@ let pp_packet ppf = begin function
       Fmt.pf ppf "Public key: @[<v>%a@]" Public_key_packet.pp pkt
   | Public_key_subpacket pkt ->
       Fmt.pf ppf "Public subkey: @[<v>%a@]" Public_key_packet.pp pkt
+  | Secret_key_packet pkt ->
+      Fmt.pf ppf "Secret key: @[<v>%a@]" Public_key_packet.pp_secret pkt
+  | Secret_key_subpacket pkt ->
+      Fmt.pf ppf "Secret subkey: @[<v>%a@]" Public_key_packet.pp_secret pkt
   | Uid_packet pkt ->
       Fmt.pf ppf "UID: @[<v>%a@]" Uid_packet.pp pkt
   | Signature_type pkt ->
@@ -188,7 +194,11 @@ let pp_packet ppf = begin function
 
 let hash_packet version hash_cb = begin function
   | Uid_packet pkt -> Ok (Uid_packet.hash pkt hash_cb version)
+  | Public_key_subpacket pkt
   | Public_key_packet pkt -> Ok (Public_key_packet.hash_public_key pkt hash_cb)
+  | Secret_key_subpacket pkt
+  | Secret_key_packet pkt ->
+      Ok (Public_key_packet.hash_public_key pkt.public hash_cb)
   (* TODO | Signature_type pkt -> Signature_packet.serialize_hashed >>| hash_cb *)
   end
 
@@ -196,7 +206,7 @@ let serialize_packet version (pkt:packet_type) =
   begin match pkt with
     | Uid_packet pkt -> Uid_packet.serialize pkt
     | Signature_type pkt -> Signature_packet.serialize pkt
-    | Public_key_packet pkt -> Public_key_packet.serialize version pkt
+    | Public_key_packet pkt
     | Public_key_subpacket pkt -> Public_key_packet.serialize version pkt
   end >>= fun body_cs ->
 
@@ -355,7 +365,7 @@ struct
 
   let sign ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t) signature_type
       (sk : Public_key_packet.private_key)
-      signature_subpackets
+      (signature_subpackets : signature_subpacket list)
       hash_algorithm (hash_cb,digest_finalizer) (* TODO def cb type with algo *)
     =
     let pk = Public_key_packet.public_of_private sk in
@@ -409,12 +419,15 @@ struct
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA256 in
-    let subpackets : (signature_subpacket option * signature_subpacket_tag * Cs.t) list = [
-      (* TODO implement proper serialization of subpackets *)
-        Some (Signature_creation_time current_time)
-      , Signature_creation_time
-      , Cs.BE.e_create_ptime32 `TODO current_time |> R.get_ok
-    ] in
+    let subpackets : signature_subpacket list =
+      [ Issuer_fingerprint (V4, priv_key.public.v4_fingerprint)
+      ; Signature_creation_time current_time
+      ; Key_usage_flags { certify_keys = true ; unimplemented = '\000'
+                        ; sign_data = true ; encrypt_communications = false
+                        ; encrypt_storage = false ; authentication = false }
+      ; Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365)
+      ]
+    in
     let (hash_cb, _) as hash_tuple =
       Signature_packet.digest_callback hash_algo in
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
@@ -428,12 +441,17 @@ struct
       priv_key subpackets
       hash_algo hash_tuple
 
-  let certify_subkey ~g ~current_time priv_key subkey
+  let certify_subkey ~g ~current_time
+                     (priv_key:Public_key_packet.private_key) subkey
     : (Signature_packet.t, [>]) result =
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA256 in
-    let subpackets = [] in
+    let subpackets =
+      [ Issuer_fingerprint (V4, priv_key.public.v4_fingerprint)
+      ; Signature_creation_time current_time
+      ]
+    in
     let (hash_cb, _) as hash_tuple =
       Signature_packet.digest_callback hash_algo in
     hash_packet V4 hash_cb (Public_key_packet
@@ -694,13 +712,11 @@ struct
               certification is for that use. *)
               if filter_subpacket_tag Key_flags signature.subpacket_data
                  |> List.for_all (function
-                         | ((Some (Key_usage_flags {
-                               usage_certify_keys = false;
-                               usage_sign_data = false; _ }
-                           )),_,_) -> true
+                     | Key_usage_flags { certify_keys = false;
+                                         sign_data = false; _ }  -> true
                      | _ -> false
                    ) then begin
-                Logs.debug (fun m -> m "Accepting subkey binding without embedded signature because the key flags have {usage_certify_keys=false;usage_sign_data=false}");
+                Logs.debug (fun m -> m "Accepting subkey binding without embedded signature because the key flags have {certify_keys=false;sign_data=false}");
                 R.ok ()
               end else
               (* Subkeys that can be used for signing must accept inclusion by
@@ -709,10 +725,9 @@ struct
                   | [] ->
                     Logs.err (fun m -> m "no embedded signature subpacket in subkey binding signature [TODO: parse 'Key Flags' properly to preclude keys without the certification bit] ");
                     R.error `Invalid_packet
-                  | (_, Embedded_signature, embedded_cs)::_ ->
-                    Signature_packet.parse_packet embedded_cs
-                    >>= fun embedded_sig ->
-                    check_embedded_signature current_time root_pk embedded_sig subkey
+                  | [Embedded_signature embedded_sig] ->
+                    check_embedded_signature current_time root_pk
+                      embedded_sig subkey
                   | _::tl -> loop tl
                 in
                 loop signature.subpacket_data
@@ -768,8 +783,8 @@ let new_transferable_public_key
   (* TODO create relevant signature subpackets *)
   uids |> result_ok_list_or_error (fun uid ->
       Signature.certify_uid ~g ~current_time root_key uid
-      >>= fun certification ->
-      Ok { Signature.uid ; certifications = [certification] }
+      >>| fun certification ->
+      { Signature.uid ; certifications = [certification] }
   )
   >>= fun uids ->
   Logs.debug (fun m -> m "%d UIDs certified. moving on." (List.length uids));
@@ -780,16 +795,16 @@ let new_transferable_public_key
         (fun subkey ->
         let subkey_pk = Public_key_packet.public_of_private subkey in
         Signature.certify_subkey ~g ~current_time root_key subkey
-        >>= fun certification ->
-        Ok {Signature.key = subkey_pk
-           ; signature = certification ; revocation = None }
+        >>| fun certification ->
+        {Signature.key = subkey_pk
+        ; signature = certification ; revocation = None }
       )
-  >>= fun certified_subkeys ->
-  Ok {Signature.revocations = []
-     ; root_key = root_key.Public_key_packet.public
-     ; uids
-     ; user_attributes = []
-     ; subkeys = certified_subkeys}
+  >>| fun certified_subkeys ->
+  { Signature.revocations = []
+  ; root_key = root_key.Public_key_packet.public
+  ; uids
+  ; user_attributes = []
+  ; subkeys = certified_subkeys}
 
 let serialize_transferable_public_key (pk : Signature.transferable_public_key) =
   let open Signature in
@@ -820,8 +835,8 @@ let serialize_transferable_public_key (pk : Signature.transferable_public_key) =
        end >>= fun rev_cs -> Ok (Cs.concat [key_cs ; sig_cs ; rev_cs])
     ) >>| Cs.concat >>= fun subkeys_cs ->
 
-  serialize_packet V4 (Public_key_packet pk.root_key) >>= fun pk_cs ->
-  Ok (Cs.concat [ pk_cs
-                ; revocations
-                ; uids_cs
-                ; subkeys_cs ])
+  serialize_packet V4 (Public_key_packet pk.root_key) >>| fun pk_cs ->
+  (Cs.concat [ pk_cs
+             ; revocations
+             ; uids_cs
+             ; subkeys_cs ])

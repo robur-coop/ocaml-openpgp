@@ -50,6 +50,10 @@ let split_result ?(start=0) buf len =
 let e_split ?(start=0) e buf len =
   wrap_err e (split_result ~start buf len)
 
+let e_split_char ?(start=0) (e:'error) buf : (char * t, 'error) result =
+  (* pops the leftmost char off buf and return the char + remainder *)
+  e_split ~start e buf 1 >>| fun (c,tl) -> (Cstruct.get_char c 0 , tl)
+
 let get_char_result buf offset =
   wrap_f_buf_offset Cstruct.get_char buf offset
 
@@ -133,9 +137,13 @@ let to_hex cs =
 let to_list buf =
   let s = to_string buf in
   let rec loop acc = function
-    | -1 -> List.rev acc
+    | -1 -> acc
     | i -> loop (s.[i]::acc) (pred i)
   in loop [] (String.length s -1)
+
+let of_list (lst : char list) =
+  let buf = Cstruct.create_unsafe (List.length lst) in
+  lst |> List.iteri (Cstruct.set_char buf) ; buf
 
 let make_uint8 int8 =
   let buf = create 1 in
@@ -222,8 +230,7 @@ let split_by_char c ?offset ?max_offset buf : (t*t, 'error) result =
     | Some i -> split_result buf i
   end
 
-let equal_string str buf =
-  equal buf (of_string str)
+let equal_string str buf = equal buf (of_string str)
 
 let e_equal_string e str buf =
   match equal_string str buf with

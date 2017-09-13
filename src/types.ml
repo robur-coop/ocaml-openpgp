@@ -43,11 +43,9 @@ let result_ok_list_or_error (parser : 'a -> ('b,'c) result) (body_lst : 'a list)
             acc >>= fun acc ->
             parser cs >>= fun parsed ->
             R.ok (parsed::acc)
-    ) (Ok []) body_lst
+    ) (Ok []) body_lst >>| List.rev
 
-module type Keytype = sig
-  type t
-end
+let e_char_equal e c c2 = if c <> c2 then Error e else Ok c
 
 let msg_of_error err=
   `Msg
@@ -89,6 +87,8 @@ let pp_version ppf v =
 let char_of_version = function
   | V3 -> '\003'
   | V4 -> '\004'
+
+let cs_of_version v = char_of_version v |> Cs.of_char
 
 let e_version_of_char e = function
   | '\003' -> Ok V3
@@ -265,24 +265,24 @@ let signature_type_enum =
   ]
 
 type key_usage_flags = (* RFC 4880: 5.2.3.21 Key Flags *)
-  { usage_certify_keys : bool
-  ; usage_sign_data : bool
-  ; usage_encrypt_communications : bool
-  ; usage_encrypt_storage : bool
-  ; usage_authentication : bool
-  ; usage_unimplemented : char
+  { certify_keys : bool
+  ; sign_data : bool
+  ; encrypt_communications : bool
+  ; encrypt_storage : bool
+  ; authentication : bool
+  ; unimplemented : char
   }
 
 let key_usage_flags_of_char needle =
   let n = Char.code needle in
   let bit place = 0 <> n land (1 lsl place) in
-  { usage_certify_keys = bit 0
-  ; usage_sign_data    = bit 1
-  ; usage_encrypt_communications = bit 2
-  ; usage_encrypt_storage = bit 3
+  { certify_keys = bit 0
+  ; sign_data    = bit 1
+  ; encrypt_communications = bit 2
+  ; encrypt_storage = bit 3
   (* ; whatever = bit 4 *)
-  ; usage_authentication = bit 5
-  ; usage_unimplemented = needle
+  ; authentication = bit 5
+  ; unimplemented = needle
   }
 
 let char_of_key_usage_flags t =
@@ -290,15 +290,17 @@ let char_of_key_usage_flags t =
     | false -> 0
     | true -> 1 lsl place
   in
-  [ Char.code t.usage_unimplemented
-  ; bit 0 t.usage_certify_keys
-  ; bit 1 t.usage_sign_data
-  ; bit 2 t.usage_encrypt_communications
-  ; bit 3 t.usage_encrypt_storage
+  [ Char.code t.unimplemented
+  ; bit 0 t.certify_keys
+  ; bit 1 t.sign_data
+  ; bit 2 t.encrypt_communications
+  ; bit 3 t.encrypt_storage
   (*; bit 4 some-other-thing-not-implemented *)
-  ; bit 5 t.usage_authentication
+  ; bit 5 t.authentication
   ] |> List.fold_left (lor) 0
   |> Char.chr
+
+let cs_of_key_usage_flags t = char_of_key_usage_flags t |> Cs.of_char
 
 type signature_subpacket_tag =
   | Signature_creation_time
@@ -356,7 +358,8 @@ let pp_signature_subpacket_tag ppf = function
     | Signature_target -> "Signature_target"
     | Embedded_signature -> "Embedded_signature"
     | Issuer_fingerprint -> "Issuer_fingerprint"
-    | Unimplemented_signature_subpacket_tag _ -> "Unimplemented_signature_subpacket_tag"
+    | Unimplemented_signature_subpacket_tag c ->
+      Format.sprintf "(Unimplemented subpacket tag: %02x)" (Char.code c)
     end
 
 let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
@@ -386,50 +389,6 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
   ; '\033', Issuer_fingerprint (* This is not from RFC 4880, but it consists
                                 * of a version char (04) and a SHA1 of the pk *)
   ]
-
-type signature_subpacket =
-  | Signature_creation_time of Ptime.t
-  | Signature_expiration_time of Ptime.Span.t
-  | Key_expiration_time of Ptime.Span.t
-  | Key_usage_flags of key_usage_flags
-  | Issuer_fingerprint of openpgp_version * Cs.t
-  | Preferred_hash_algorithms of hash_algorithm list
-
-let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
-  match packet with
-  | Signature_creation_time _ -> Signature_creation_time
-  | Signature_expiration_time _ -> Signature_expiration_time
-  | Key_expiration_time _ -> Key_expiration_time
-  | Key_usage_flags _ -> Key_flags
-  | Issuer_fingerprint _ -> Issuer_fingerprint
-  | Preferred_hash_algorithms _ -> Preferred_symmetric_algorithms
-
-let pp_signature_subpacket ppf = function
-  | Signature_creation_time time ->
-    Fmt.pf ppf "[%a UTC: %a]" pp_signature_subpacket_tag Signature_creation_time
-      Ptime.pp time
-  | ( Signature_expiration_time time
-    | Key_expiration_time time) as tag ->
-      Fmt.pf ppf "[%a: %a]"
-      pp_signature_subpacket_tag (signature_subpacket_tag_of_signature_subpacket tag)
-      Ptime.Span.pp time
-  | Key_usage_flags (* TODO also prettyprint unimplemented flags *)
-    { usage_certify_keys = certs
-    ; usage_sign_data = sign_data
-    ; usage_encrypt_communications = enc_comm
-    ; usage_encrypt_storage = enc_store
-    ; usage_authentication = auth
-    ; usage_unimplemented = unimpl_char }
-    -> Fmt.pf ppf "Key usage flags:@,{certify: %b ; @,sign data: %b ; @,encrypt communications: %b ; @,encrypt storage: %b ; @,authentication: %b ; @,raw decimal char: %C}" certs sign_data enc_comm enc_store auth unimpl_char
-  | Issuer_fingerprint (v,fp) -> begin match v with
-      | V3 (*TODO*)
-      | V4 -> Fmt.pf ppf "[%a SHA1: %s]"
-                pp_signature_subpacket_tag Issuer_fingerprint (Cs.to_hex fp)
-    end
-  | Preferred_hash_algorithms algos ->
-    Fmt.pf ppf "Pref. hash algorithms: %a"
-      Fmt.(brackets @@ hvbox ~indent:2 @@ list ~sep:(unit "; ") pp_hash_algorithm)
-      algos
 
 let e_compare_ptime_plus_span e (base,span) current_time =
   match Ptime.add_span base span with
@@ -480,6 +439,19 @@ let rec find_enum_sumtype needle = function
   | (value, sumtype)::_ when value = needle -> Ok sumtype
   | _::tl -> find_enum_sumtype needle tl
 
+let hash_algorithm_of_char needle =
+  find_enum_sumtype needle hash_algorithm_enum
+  |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
+
+let hash_algorithm_of_cs_offset cs offset =
+  Cs.e_get_char `Incomplete_packet cs offset >>= fun hash_algo_c ->
+  hash_algorithm_of_char hash_algo_c
+
+let char_of_hash_algorithm needle =
+  find_enum_value needle hash_algorithm_enum |> R.get_ok
+
+let cs_of_hash_algorithm a = char_of_hash_algorithm a |> Cs.of_char
+
 let packet_tag_type_of_char needle =
   find_enum_sumtype needle packet_tag_enum
 
@@ -528,17 +500,6 @@ let char_of_signature_subpacket_tag = function
 let cs_of_signature_subpacket_tag needle =
   char_of_signature_subpacket_tag needle |> String.make 1 |> Cs.of_string
 
-let hash_algorithm_of_char needle =
-  find_enum_sumtype needle hash_algorithm_enum
-  |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
-
-let hash_algorithm_of_cs_offset cs offset =
-  Cs.e_get_char `Incomplete_packet cs offset >>= fun hash_algo_c ->
-  hash_algorithm_of_char hash_algo_c
-
-let char_of_hash_algorithm needle =
-  find_enum_value needle hash_algorithm_enum |> R.get_ok
-
 let mpi_len buf : (Uint16.t, 'error) result =
   (* big-endian 16-bit integer len *)
   let rec search byte_offset =
@@ -573,7 +534,7 @@ let mpis_are_prime lst =
                    Fmt.(list ~sep:(unit " ; ") Cstruct.hexdump_pp)
                    (List.map cs_of_mpi_no_header non_primes)) ;
     R.error (`Invalid_mpi_parameters non_primes)
-  end else R.ok lst
+  end else R.ok ()
 
 let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
@@ -835,7 +796,8 @@ let v4_verify_version (buf : Cs.t) :
   else
     R.ok ()
 
-let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo =
+let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
+  : (unit,'error) result =
   (* From RFC 4880 (we whitelist these parameters): *)
   (*   DSA keys MUST also be a multiple of 64 bits, *)
   (*   and the q size MUST be a multiple of 8 bits. *)
@@ -848,4 +810,6 @@ let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo =
     | 2048 , 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | (2048|3072), 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
     | _ , _ , _ -> R.error (`Invalid_mpi_parameters [p;q])
-  end
+  end >>= fun () ->
+  (* Check that p and q look like primes: *)
+  mpis_are_prime [p;q]

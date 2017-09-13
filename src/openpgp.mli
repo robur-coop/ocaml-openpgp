@@ -37,6 +37,7 @@ module Signature : sig
      | `Invalid_length
      | `Unimplemented_feature of string
      | `Invalid_packet
+     | Cs.cstruct_err
      | `Unimplemented_version of char
              | `Invalid_signature
              | `Invalid_mpi_parameters of (Types.mpi list)
@@ -52,6 +53,7 @@ module Signature : sig
              [> `Invalid_mpi_parameters of Nocrypto.Numeric.Z.t list
               | `Invalid_packet
               | `Invalid_signature
+              | Cs.cstruct_err
               | `Unimplemented_algorithm of char ]
              as 'a)
             Rresult.result) ->
@@ -64,7 +66,9 @@ module Signature : sig
      Types.hash_algorithm ->
      (Cstruct.t -> unit) * (unit -> Cstruct.t) -> (*hash_cb,hash_finalize*)
      (unit -> (* io callback for reading the data to sign *)
-        (Cstruct.t option, [> `Invalid_packet ] as 'a) Result.result) ->
+      (Cstruct.t option, [> `Invalid_packet
+                         | Cs.cstruct_err
+                         | `Invalid_signature ] as 'a) Result.result) ->
      (t, 'a) Result.result
 end
 
@@ -101,34 +105,31 @@ val next_packet : Cstruct.t ->
     ) result
 
 val parse_packets :
-           Cs.t ->
-           ((packet_type * Cs.t) list
-            ,
-            int *
-            [> `Incomplete_packet
+  Cs.t ->
+  ((packet_type * Cs.t) list
+    , int * [> `Incomplete_packet
              | `Invalid_packet
              | `Invalid_mpi_parameters of (Types.mpi list)
              | `Unimplemented_algorithm of char
              | `Unimplemented_feature of string
-             | `Unimplemented_version of char ])
-           result
+             | `Unimplemented_version of char ]) result
 
 val new_transferable_public_key :
-           g:Nocrypto.Rng.g ->
-           current_time:Ptime.t ->
-           Types.openpgp_version ->
-           Public_key_packet.private_key ->
-           Uid_packet.t list ->
-           Public_key_packet.private_key list ->
-           (Signature.transferable_public_key, [> `Invalid_packet | Cs.cstruct_err])
-           Rresult.result
+  g:Nocrypto.Rng.g ->
+  current_time:Ptime.t ->
+  Types.openpgp_version ->
+  Public_key_packet.private_key ->
+  Uid_packet.t list ->
+  Public_key_packet.private_key list ->
+  (Signature.transferable_public_key, [> `Invalid_packet
+                                       | Cs.cstruct_err
+                                       | `Invalid_signature ]) result
 
 val serialize_transferable_public_key :
-           Signature.transferable_public_key ->
-           (Cstruct.t,
-            [> `Cstruct_invalid_argument of string
-             | `Cstruct_out_of_memory
-             | `Invalid_packet
-             | `Invalid_packet_header
-             | `Unimplemented_feature of string ])
-           Result.result
+  Signature.transferable_public_key ->
+  (Cstruct.t,
+    [> Cs.cstruct_err
+     | `Invalid_packet
+     | `Invalid_packet_header
+     | `Invalid_signature
+      | `Unimplemented_feature of string ]) result
