@@ -112,56 +112,42 @@ let public_key_not_expired (current_time : Ptime.t)
      [pk] plus the [t].Key_expiration_time is ahead of [current_time] *)
   match filter_subpacket_tag Key_expiration_time t.subpacket_data with
   | [Key_expiration_time expiry] ->
-    e_compare_ptime_plus_span `Invalid_signature (*TODO better error msg *)
-      (timestamp,expiry) current_time
-    >>= begin function
-      | 1 ->
-        Logs.debug (fun m -> m "public_key_not_expired: Good: %a < %a from %a"
-                       Ptime.pp current_time
-                       Ptime.Span.pp expiry Ptime.pp timestamp
-                   ) ;
-        Ok ()
-      | _ ->
-        Logs.err (fun m -> m "public_key_not_expired: EXPIRED: %a > %a from %a"
+    e_log_compare_ptime_plus_span_is_smaller `Invalid_signature
+      (fun m -> m "public_key_not_expired: EXPIRED: %a > %a from %a"
                      Ptime.pp current_time
-                     Ptime.Span.pp expiry Ptime.pp timestamp
-        ) ;
-        Error `Invalid_signature
-    end
+                     Ptime.Span.pp expiry Ptime.pp timestamp)
+      (timestamp,expiry) current_time >>| fun () ->
+    Logs.debug (fun m -> m "public_key_not_expired: Good: %a < %a from %a"
+                 Ptime.pp current_time
+                 Ptime.Span.pp expiry Ptime.pp timestamp )
   | [] ->
     Logs.debug (fun m -> m "public_key_not_expired: No expiration timestamp") ;
     Ok ()
-  | _ -> Logs.err (fun m -> m "Multiple expiration timestamps found in sig TODO") ;
-    Error `Invalid_signature
+  | _ -> error_and_log `Invalid_signature
+           (fun m -> m "Multiple expiration timestamps found in sig TODO")
 
 let signature_expiration_date_is_valid (current_time : Ptime.t) (t : t) =
     (* must have a Signature_creation_time to be valid: *)
     match filter_subpacket_tag Signature_creation_time t.subpacket_data with
-    | [] ->
-      Logs.err (fun m -> m "Missing signature creation time") ;
-      Error `Invalid_signature
+    | [] -> error_and_log `Invalid_signature
+              (fun m -> m "Missing signature creation time")
     | [Signature_creation_time base] ->
         begin match filter_subpacket_tag Signature_expiration_time t.subpacket_data with
         | [] -> Ok ()
         | [Signature_expiration_time expiry] ->
-          begin match e_compare_ptime_plus_span `Invalid_signature
-                        (base,expiry) current_time with
-            | Ok 1 ->
+          e_log_compare_ptime_plus_span_is_smaller `Invalid_signature
+            (fun m -> m "Bad time: %a > %a + %a"
+               Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base )
+            (base,expiry) current_time >>| fun () ->
               Logs.debug (fun m -> m "Good time: %a < %a + %a"
-                    Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base ) ;
-              Ok ()
-            | _ -> (* If it's expired, or base+expiry is not valid *)
-              Logs.err (fun m -> m "Bad time: %a > %a + %a"
-                    Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base ) ;
-              Error `Invalid_signature
-            end
+                    Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base )
         | _ ->
-          Logs.err (fun m -> m "Multiple signature expiration times") ;
-          Error `Invalid_signature (* TODO shouldn't have to check for this *)
+          error_and_log `Invalid_signature (* TODO shouldn't have to check for this *)
+            (fun m -> m "Multiple signature expiration times")
         end
     | _ ->
-      Logs.err (fun m -> m "Multiple signature creation times") ;
-      Error `Invalid_signature
+      error_and_log `Invalid_signature
+        (fun m -> m "Multiple signature creation times")
 
 let check_signature (current_time : Ptime.t)
     (public_keys : Public_key_packet.t list)
@@ -206,11 +192,11 @@ let check_signature (current_time : Ptime.t)
       >>= fun () ->
       let cs_r = cs_of_mpi_no_header r in
       let cs_s = cs_of_mpi_no_header s in
-      begin match Nocrypto.Dsa.verify ~key (cs_r,cs_s) digest with
-        | true -> R.ok `Good_signature
-        | false -> R.error `Invalid_signature
-      end
-      | ( Public_key_packet.RSA_pubkey_sign_asf pub
+      e_bool_or_log `Invalid_signature
+        (Nocrypto.Dsa.verify ~key (cs_r,cs_s) digest)
+        (fun m -> m "DSA signature validation failed")
+        >>| fun () -> `Good_signature
+    | ( Public_key_packet.RSA_pubkey_sign_asf pub
       | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf pub), RSA_sig_asf {m_pow_d_mod_n} ->
         (* TODO validate parameters? *)
         let()= Logs.debug (fun m ->
@@ -220,15 +206,13 @@ let check_signature (current_time : Ptime.t)
         in
         let module PKCS : Nocrypto.Rsa.PKCS1.S =
               (val (nocrypto_pkcs_module_of_hash_algorithm t.hash_algorithm)) in
-      begin match PKCS.verify_cs ~key:pub ~digest (cs_of_mpi_no_header m_pow_d_mod_n) with
-      | true -> R.ok `Good_signature
-      | false ->
-        Logs.debug (fun m -> m "RSA signature validation failed") ;
-        R.error `Invalid_signature
-      end
+        e_bool_or_log `Invalid_signature
+          (PKCS.verify_cs ~key:pub ~digest (cs_of_mpi_no_header m_pow_d_mod_n))
+          (fun m -> m "RSA signature validation failed")
+          >>| fun () -> `Good_signature
     | _ , _ ->
-      Logs.debug (fun m -> m "Not implemented: Validating signatures with this pk type") ;
-      R.error (`Unimplemented_algorithm '=') (* TODO clarify error message *)
+      error_and_log (`Unimplemented_algorithm '=')
+        (fun m -> m "Not implemented: Validating signatures with this pk type")
     end)
     in
     if res = Error `Invalid_signature then begin
@@ -261,14 +245,12 @@ and serialize_hashed_manual version sig_type pk_algo hash_algo subpacket_data =
   serialize_signature_subpackets subpacket_data >>= fun serialized_subpackets ->
   let subpackets_len = Cs.len serialized_subpackets in
 
-  if subpackets_len > 0xffff then begin
-    Logs.err (fun m ->
+  e_bool_or_log `Invalid_packet (subpackets_len < 0xffff)
+    (fun m ->
       m "TODO better error, but failing because subpackets are longer than it's possible to sign (0xFF_FF < %d: %s)"
         (subpackets_len)
         (Cs.to_hex serialized_subpackets)
-    ) ;
-    R.error `Invalid_packet
-  end else R.ok () >>= fun () ->
+    ) >>= fun () ->
   (* A V4 signature hashes the packet body
    starting from its first field, the version number, through the end
    of the hashed subpacket data.  Thus, the fields hashed are the
@@ -413,11 +395,10 @@ let parse_subpacket buf : (signature_subpacket, [> `Invalid_packet]) result =
       >>= fun lst -> Ok (Some (Preferred_hash_algorithms lst))
   | _ when not is_critical -> Ok None
   | tag ->
-      Logs.err (fun m -> m "Unimplemented critical subpacket: [%a] %s"
+    error_and_log (`Unimplemented_algorithm tag_c)
+      (fun m -> m "Unimplemented critical subpacket: [%a] %s"
         pp_signature_subpacket_tag tag
-        (Cs.to_hex data)
-      ) ;
-      R.error (`Unimplemented_algorithm tag_c)
+        (Cs.to_hex data) )
   end
   >>| function
       | Some parsed_opt ->

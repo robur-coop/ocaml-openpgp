@@ -181,7 +181,7 @@ let parse_secret_dsa_asf {Nocrypto.Dsa.p;q;gg;y} buf =
   consume_mpi buf >>| fun (x,tl) ->
   DSA_privkey_asf {Nocrypto.Dsa.x;p;q;gg;y}, tl
 
-let parse_secret_rsa_asf ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf =
+let parse_secret_rsa_asf ({Nocrypto.Rsa.e; _}:Nocrypto.Rsa.pub) buf =
   (* Algorithm-Specific Fields for RSA secret keys:
      - multiprecision integer (MPI) of RSA secret exponent d.
      - MPI of RSA secret prime value p.
@@ -190,10 +190,15 @@ let parse_secret_rsa_asf ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf =
   consume_mpi buf >>= fun (_, buf) -> (* "d" *)
   consume_mpi buf >>= fun (p, buf) ->
   consume_mpi buf >>= fun (q, buf) ->
-  consume_mpi buf >>| fun (_, tl) -> (* "u" *)
-  (* TODO validate key; check primality; check (p<q) *)
-  (* TODO verify that priv_of_primes doesn't throw exceptions *)
-  RSA_privkey_asf (Nocrypto.Rsa.priv_of_primes ~e ~q ~p), tl
+  consume_mpi buf >>= fun (_, tl) -> (* "u" *)
+  (* TODO validate key parameters; check "d" and "u" *)
+  mpis_are_prime [e;q;p] >>= fun () ->
+  begin match Z.compare p q ,
+              Nocrypto.Rsa.priv_of_primes ~e ~q ~p with
+  | exception _ -> Error (`Invalid_mpi_parameters [e;p;q])
+  | -1 , sk -> Ok (RSA_privkey_asf sk, tl)
+  | _ , _ -> Error (`Invalid_mpi_parameters [p;q])
+  end
 
 let parse_packet_return_extraneous_data buf
   : (t * Cs.t, [> `Incomplete_packet
@@ -250,7 +255,7 @@ let parse_secret_packet buf : (private_key, 'error) result =
   (* TODO Elgamal_pubkey_asf, read:
        Algorithm-Specific Fields for Elgamal secret keys:
        - MPI of Elgamal secret exponent x. *)
-  end
+  end |> R.reword_error (fun _ -> `Invalid_packet)
   >>= fun (priv_asf, buf_tl) ->
   Cs.e_is_empty `Invalid_packet buf_tl >>| fun () ->
   {public ; priv_asf }
@@ -271,8 +276,8 @@ let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
     let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
     Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_or_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
   | Elgamal_encrypt_only ->
-    Logs.err (fun m -> m "Elgamal key generation not supported") ;
-    Error `Invalid_packet
+    error_and_log `Invalid_packet
+      (fun m -> m "Elgamal key generation not supported")
   end
   >>| fun (priv_asf,pub) ->
   let temp = {timestamp = current_time

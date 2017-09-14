@@ -233,6 +233,7 @@ let split_by_char c ?offset ?max_offset buf : (t*t, 'error) result =
 let equal_string str buf = equal buf (of_string str)
 
 let e_equal_string e str buf =
+  (* aka: Types.e_bool e (equal_string str buf) *)
   match equal_string str buf with
   | true -> Ok ()
   | false -> Error e

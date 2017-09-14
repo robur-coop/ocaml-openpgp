@@ -268,7 +268,7 @@ let parse_packets cs : (('ok * Cs.t) list, int * 'error) result =
         (parse_packet_body packet_type pkt_body
         |> R.reword_error (fun e -> List.length acc , e))
         >>= fun parsed ->
-        Logs.debug (fun m -> m "Packet: %a" pp_packet parsed) ;
+        Logs.debug (fun m -> m "%a" pp_packet parsed) ;
         loop ((parsed,pkt_body)::acc) next_tl
       | None ->
         R.ok (List.rev acc)
@@ -344,12 +344,11 @@ struct
        that it is owned by the primary key and subkey.  This signature
        is calculated the same way as a 0x18 signature: directly on the
         primary key and subkey, and not on any User ID or other packets. *)
-    begin match t.signature_type <> Primary_key_binding_signature with
-      | true ->
-        Logs.debug (fun m -> m "Rejecting embedded signature with invalid signature_type");
-        R.error `Invalid_signature
-      | false -> R.ok ()
-    end >>= fun () ->
+
+    e_bool_or_log `Invalid_signature
+      (t.signature_type = Primary_key_binding_signature)
+      (fun m -> m "Rejecting embedded signature with invalid signature_type")
+    >>= fun () ->
 
     (* set up hashing with this signature: *)
     let (hash_cb, hash_final) =

@@ -46,8 +46,11 @@ let result_ok_list_or_error (parser : 'a -> ('b,'c) result) (body_lst : 'a list)
     ) (Ok []) body_lst >>| List.rev
 
 let e_char_equal e c c2 = if c <> c2 then Error e else Ok c
+let error_and_log e log = Logs.err log ; Error e
+let e_bool e bool = if bool then Ok () else Error e
+let e_bool_or_log e bool log =  if bool then Ok () else error_and_log e log
 
-let msg_of_error err=
+let msg_of_error err =
   `Msg
   (match err with
   | `Incomplete_packet -> "incomplete packet"
@@ -392,10 +395,11 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
                                 * of a version char (04) and a SHA1 of the pk *)
   ]
 
-let e_compare_ptime_plus_span e (base,span) current_time =
-  match Ptime.add_span base span with
-    | None -> Error e (* TODO fix error *)
-    | Some ptime -> Ok (Ptime.compare ptime current_time)
+let e_log_compare_ptime_plus_span_is_smaller e log (base,span) current_time =
+  Ptime.add_span base span |> R.of_option ~none:(fun () -> error_and_log e log)
+  >>| Ptime.compare current_time
+  >>= fun comp ->
+  e_bool_or_log e (-1 = comp) log
 
 let nocrypto_module_of_hash_algorithm : hash_algorithm ->
   (module Nocrypto.Hash.S) = function
@@ -742,8 +746,8 @@ let char_of_packet_header ph : (char,'error) result =
       lor (((int_of_packet_tag_type packet_tag) land 0xf) lsl 2) (* 4 bits *)
       |> R.ok
   | { new_format = false ; _ } ->
-    Logs.err (fun m -> m "TODO V3 packet header serialization not implemented");
-    R.error `Invalid_packet_header
+    error_and_log `Invalid_packet_header
+      (fun m -> m "TODO V3 packet header serialization not implemented")
   | _ -> R.error `Invalid_packet_header
   end
   >>= fun pt ->
@@ -800,6 +804,22 @@ let v4_verify_version (buf : Cs.t) :
 
 let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
   : (unit,'error) result =
+  (* Ideally this function would reside in Nocrypto.Dsa *)
+
+  (* - p,q : must be prime: *)
+  mpis_are_prime [p;q] >>= fun () ->
+
+  let mpi_error = `Invalid_mpi_parameters [p;q] in
+
+  (* - q : q < p *)
+  e_bool mpi_error (-1 = compare q p) >>= fun () ->
+
+  (* - q : must be prime divisor of p-1 : *)
+  e_bool mpi_error Z.(equal zero (rem (pred p) q)) >>= fun () ->
+
+  (* TODO - g : g = h^(p-1)/q mod p *)
+  (* TODO rest of http://csrc.nist.gov/groups/STM/cavp/documents/dss/DSAVS.pdf *)
+
   (* From RFC 4880 (we whitelist these parameters): *)
   (*   DSA keys MUST also be a multiple of 64 bits, *)
   (*   and the q size MUST be a multiple of 8 bits. *)
