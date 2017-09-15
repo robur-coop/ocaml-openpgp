@@ -1,7 +1,6 @@
 open Rresult
 
 (* TODO set umask when writing files *)
-
 let cs_of_file name =
   Fpath.of_string name >>= Bos.OS.File.read >>| Cs.of_string
   |> R.reword_error (fun _ -> `Malformed) (*TODO fix error msg*)
@@ -29,7 +28,7 @@ let file_cb filename : unit -> ('a,'b)result =
     |> R.reword_error (fun e -> Printf.printf "whatt\n";e) |> R.get_ok
     *)
 
-let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) Result.result =
+let do_verify _ current_time pk_file detached_file target_file : (unit, [ `Msg of string ]) Result.result =
   let res =
   cs_of_file pk_file >>= fun pk_content ->
   cs_of_file detached_file >>= fun detached_content ->
@@ -39,7 +38,6 @@ let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) R
   >>= (function (Types.Ascii_public_key_block, pk_cs) -> Ok pk_cs
               | _ -> Error `Invalid_packet)
   >>= Openpgp.parse_packets >>= fun pk_packets ->
-  let current_time = Ptime_clock.now () in
   Openpgp.Signature.root_pk_of_packets ~current_time pk_packets >>= fun (root_pk,_) ->
   Logs.debug (fun m -> m "root_of_pk_packets worked") ;
   Openpgp.decode_ascii_armor detached_content
@@ -62,10 +60,8 @@ let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) R
   in res |> R.reword_error Types.msg_of_error
 
 
-let do_genkey _ uid =
+let do_genkey _ g current_time uid =
   (* TODO output private key too ; right now only a transferable public key is serialized *)
-  let current_time = Ptime_clock.now () in
-  let g = !Nocrypto.Rng.generator in
   let res =
   Public_key_packet.generate_new ~current_time ~g Types.DSA >>= fun root_key ->
   Openpgp.new_transferable_public_key ~g ~current_time Types.V4
@@ -122,6 +118,34 @@ let signature =
   let doc = "TODO sig doc" in
   Arg.(required & opt (some string) None & info ["signature"] ~docs ~doc)
 
+let rng_seed : Nocrypto.Rng.g Cmdliner.Term.t =
+  let doc = "Manually supply a hex-encoded seed for the pseudo-random number generator. Used for debugging; SHOULD NOT be used for generating real-world keys" in
+  let random_seed seed_hex =
+     (Cs.of_hex seed_hex |> R.reword_error
+       (fun _ -> "rng-seed: invalid hex string") >>| fun seed ->
+     Logs.warn (fun m -> m "PRNG from seed %a" Cstruct.hexdump_pp seed );
+     Nocrypto.Rng.generator := Nocrypto.Rng.create ~seed
+         (module Nocrypto.Rng.Generators.Fortuna)
+     ; !Nocrypto.Rng.generator
+     ) |> R.to_presult
+  in
+  Arg.(value & opt (random_seed, (fun fmt _ -> Format.fprintf fmt "RNG-SEED"))
+       !Nocrypto.Rng.generator & info ["rng-seed"] ~docs ~doc)
+
+let override_timestamp : Ptime.t Cmdliner.Term.t =
+  let doc = "Manually override the current timestamp (useful for reproducible debugging)" in
+  let current_time t =
+     (* TODO this can't express the full unix timestamp on 32-bit *)
+     let error = `Error ("Unable to parse override-time=" ^ t) in
+     match int_of_string t |> Ptime.Span.of_int_s |> Ptime.of_span with
+     | exception _ -> error | None -> error
+     | Some time -> Logs.warn
+        (fun m -> m "Overriding current timestamp, set to %a" Ptime.pp time)
+        ; `Ok time
+  in
+  Arg.(value & opt (current_time, Ptime.pp) (Ptime_clock.now ())
+             & info ["override-timestamp"] ~docs ~doc)
+
 let target =
   let doc = "Target file to be signed / verified" in
   Arg.(required & opt (some string) None & info ["target"] ~docs ~doc)
@@ -158,7 +182,7 @@ let genkey_cmd =
     let doc = "Filename to write the new public key to" in
     Arg.(required & opt (some string) None & info ["public"] ~docs ~doc)
   in
-  Term.(term_result (const do_genkey $ setup_log $ uid )),
+  Term.(term_result (const do_genkey $ setup_log $ rng_seed $ override_timestamp $ uid )),
   Term.info "genkey" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
 
 let verify_cmd =
@@ -171,7 +195,7 @@ let verify_cmd =
     `P "$(tname) --pk PUBLIC_KEY.ASC FILE_WITH_INLINE_SIGNATURE" ;
     `Blocks help_secs ]
   in
-  Term.(term_result (const do_verify $ setup_log $ pk $ signature $ target)),
+  Term.(term_result (const do_verify $ setup_log $ override_timestamp $ pk $ signature $ target)),
   Term.info "verify" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
 
 let list_packets_cmd =
