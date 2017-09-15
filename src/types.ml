@@ -45,10 +45,16 @@ let result_ok_list_or_error (parser : 'a -> ('b,'c) result) (body_lst : 'a list)
             R.ok (parsed::acc)
     ) (Ok []) body_lst >>| List.rev
 
+let result_filter f lst =
+  (* List.filter returning the elements with Ok results *)
+  Ok (List.filter (fun e -> match f e with Ok _ -> true | _ -> false) lst)
+
 let e_char_equal e c c2 = if c <> c2 then Error e else Ok c
 let error_and_log e log = Logs.err log ; Error e
-let e_bool e bool = if bool then Ok () else Error e
-let e_bool_or_log e bool log =  if bool then Ok () else error_and_log e log
+let e_true e bool = if bool then Ok () else Error e
+let e_true_or_log e bool log =  if bool then Ok () else error_and_log e log
+let log_msg log v = Logs.debug log ; v
+let log_failed log = R.reword_error (log_msg log)
 
 let msg_of_error err =
   `Msg
@@ -395,11 +401,11 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
                                 * of a version char (04) and a SHA1 of the pk *)
   ]
 
-let e_log_compare_ptime_plus_span_is_smaller e log (base,span) current_time =
+let e_log_ptime_plus_span_is_smaller e log (base,span) current_time =
   Ptime.add_span base span |> R.of_option ~none:(fun () -> error_and_log e log)
   >>| Ptime.compare current_time
   >>= fun comp ->
-  e_bool_or_log e (-1 = comp) log
+  e_true_or_log e (-1 = comp) log
 
 let nocrypto_module_of_hash_algorithm : hash_algorithm ->
   (module Nocrypto.Hash.S) = function
@@ -806,32 +812,30 @@ let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
   : (unit,'error) result =
   (* Ideally this function would reside in Nocrypto.Dsa *)
 
-  (* - p,q : must be prime: *)
-  mpis_are_prime [p;q] >>= fun () ->
-
   let mpi_error = `Invalid_mpi_parameters [p;q] in
 
-  (* - q : q < p *)
-  e_bool mpi_error (-1 = compare q p) >>= fun () ->
-
-  (* - q : must be prime divisor of p-1 : *)
-  e_bool mpi_error Z.(equal zero (rem (pred p) q)) >>= fun () ->
-
-  (* TODO - g : g = h^(p-1)/q mod p *)
-  (* TODO rest of http://csrc.nist.gov/groups/STM/cavp/documents/dss/DSAVS.pdf *)
-
   (* From RFC 4880 (we whitelist these parameters): *)
-  (*   DSA keys MUST also be a multiple of 64 bits, *)
-  (*   and the q size MUST be a multiple of 8 bits. *)
-  (*   1024-bit key, 160-bit q, SHA-1, SHA-224, SHA-256, SHA-384, or SHA-512 hash *)
-  (*   2048-bit key, 224-bit q, SHA-224, SHA-256, SHA-384, or SHA-512 hash *)
-  (*   2048-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
-  (*   3072-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
+  (*  DSA keys MUST also be a multiple of 64 bits, *)
+  (*  and the q size MUST be a multiple of 8 bits. *)
+  (*  1024-bit key, 160-bit q, SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 hash *)
+  (*  2048-bit key, 224-bit q, SHA-224, SHA-256, SHA-384, or SHA-512 hash *)
+  (*  2048-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
+  (*  3072-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
   begin match Z.numbits p , Z.numbits q, hash_algo with
     | 1024 , 160 ,(SHA1|SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | 2048 , 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | (2048|3072), 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
-    | _ , _ , _ -> R.error (`Invalid_mpi_parameters [p;q])
+    | _ , _ , _ -> Error mpi_error
   end >>= fun () ->
-  (* Check that p and q look like primes: *)
-  mpis_are_prime [p;q]
+
+  (* - q : q < p *)
+  e_true mpi_error (-1 = compare q p) >>= fun () ->
+
+  (* - p,q : must be prime: *)
+  mpis_are_prime [p;q] >>= fun () ->
+
+  (* - q : must be (prime) divisor of p-1 : *)
+  e_true mpi_error Z.(equal zero (rem (pred p) q))
+
+  (* TODO - g : g = h^(p-1)/q mod p *)
+  (* TODO rest of http://csrc.nist.gov/groups/STM/cavp/documents/dss/DSAVS.pdf *)

@@ -38,6 +38,7 @@ let public_key_algorithm_of_asf = function
 type private_key_asf =
   | DSA_privkey_asf of Nocrypto.Dsa.priv
   | RSA_privkey_asf of Nocrypto.Rsa.priv
+  | Elgamal_privkey_asf of { x : mpi}
 
 type t =
   { timestamp: Ptime.t
@@ -181,6 +182,12 @@ let parse_secret_dsa_asf {Nocrypto.Dsa.p;q;gg;y} buf =
   consume_mpi buf >>| fun (x,tl) ->
   DSA_privkey_asf {Nocrypto.Dsa.x;p;q;gg;y}, tl
 
+let parse_secret_elgamal_asf (_:'pk) buf =
+  (* Algorithm-Specific Fields for Elgamal secret keys:
+     - MPI of Elgamal secret exponent x. *)
+  consume_mpi buf >>| fun (x, tl) ->
+  Elgamal_privkey_asf {x}, tl
+
 let parse_secret_rsa_asf ({Nocrypto.Rsa.e; _}:Nocrypto.Rsa.pub) buf =
   (* Algorithm-Specific Fields for RSA secret keys:
      - multiprecision integer (MPI) of RSA secret exponent d.
@@ -252,9 +259,7 @@ let parse_secret_packet buf : (private_key, 'error) result =
   | RSA_pubkey_sign_asf pk -> parse_secret_rsa_asf pk asf
   | RSA_pubkey_encrypt_asf pk -> parse_secret_rsa_asf pk asf
   | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf pk asf
-  (* TODO Elgamal_pubkey_asf, read:
-       Algorithm-Specific Fields for Elgamal secret keys:
-       - MPI of Elgamal secret exponent x. *)
+  | Elgamal_pubkey_asf pk -> parse_secret_elgamal_asf () asf
   end |> R.reword_error (fun _ -> `Invalid_packet)
   >>= fun (priv_asf, buf_tl) ->
   Cs.e_is_empty `Invalid_packet buf_tl >>| fun () ->

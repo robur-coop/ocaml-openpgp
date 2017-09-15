@@ -16,6 +16,7 @@ type t = {
 type private_key_asf =
   | DSA_privkey_asf of Nocrypto.Dsa.priv
   | RSA_privkey_asf of Nocrypto.Rsa.priv
+  | Elgamal_privkey_asf of { x: Types.mpi}
 
 type private_key = {
   public : t ;

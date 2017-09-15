@@ -38,21 +38,19 @@ let do_verify _ pk_file detached_file target_file : (unit, [ `Msg of string ]) R
   Openpgp.decode_ascii_armor pk_content
   >>= (function (Types.Ascii_public_key_block, pk_cs) -> Ok pk_cs
               | _ -> Error `Invalid_packet)
-  >>= fun pk_cs ->
-  Openpgp.parse_packets pk_cs |> R.reword_error (snd)
-  >>| List.map (fun (a,b) -> Openpgp.packet_tag_of_packet a , b)
-  >>= fun pk_packets ->
+  >>= Openpgp.parse_packets >>= fun pk_packets ->
   let current_time = Ptime_clock.now () in
   Openpgp.Signature.root_pk_of_packets ~current_time pk_packets >>= fun (root_pk,_) ->
-
+  Logs.debug (fun m -> m "root_of_pk_packets worked") ;
   Openpgp.decode_ascii_armor detached_content
   >>= (function (Types.Ascii_signature, sig_cs) -> Ok sig_cs | _ -> Error `Invalid_packet)
   >>= fun sig_cs ->
-  Openpgp.parse_packets sig_cs |> R.reword_error (snd)
+  Openpgp.parse_packets sig_cs
   >>= (function
       |((Openpgp.Signature_type detached_sig , _)::_) -> Ok detached_sig
       | _ -> Error `Invalid_packet
     ) >>= fun detached_sig ->
+  Logs.debug (fun m -> m "Parsed sig") ;
   begin match Openpgp.Signature.verify_detached_cb ~current_time root_pk detached_sig (file_cb target_file) with
     | Ok `Good_signature ->
       Logs.app (fun m -> m "Good signature!") ; Printf.printf "IT WORKS\n"; Ok ()
@@ -86,7 +84,7 @@ let do_list_packets _ target =
   let arm_typ, raw_cs =
     Logs.on_error ~level:Logs.Info
     ~use:(fun _ -> None, armor_cs)
-    ~pp:(fun fmt e -> Fmt.pf fmt "File doesn't look ascii-armored, trying to parse as-is")
+    ~pp:(fun fmt _ -> Fmt.pf fmt "File doesn't look ascii-armored, trying to parse as-is")
     (Openpgp.decode_ascii_armor armor_cs >>| fun (a,c) -> (Some a,c))
   in
   Logs.app (fun m -> m "armor type: %a@.%a"
@@ -94,7 +92,7 @@ let do_list_packets _ target =
                  Types.pp_ascii_packet_type) arm_typ
                Cstruct.hexdump_pp raw_cs
            ) ;
-  Openpgp.parse_packets raw_cs |> R.reword_error (snd)
+  Openpgp.parse_packets raw_cs
   >>= fun pkts_tuple ->
   let () = Logs.app (fun m -> m "Packets:@.|  %a"
                (fun fmt -> Fmt.pf fmt "%a"

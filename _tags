@@ -9,5 +9,5 @@ true: package(rresult nocrypto usane logs hex fmt ptime)
 
 #  <*/*_lwt.*>: package(lwt), package(lwt.ppx)
 
-<test/*>: package(oUnit qcheck logs.fmt ptime.clock.os alcotest)
+<test/*>: package(alcotest bos fpath qcheck logs.fmt ptime.clock.os rresult)
 
