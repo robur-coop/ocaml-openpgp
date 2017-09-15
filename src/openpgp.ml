@@ -440,10 +440,13 @@ struct
     in
     (* add Signature_creation_time with [current_time] if no creation time: *)
     let signature_subpackets =
-      if signature_subpackets |>
+      (if signature_subpackets |>
          List.exists (function Signature_creation_time _ -> true | _ -> false)
       then signature_subpackets
       else (Signature_creation_time current_time)::signature_subpackets
+     ) |> List.cons (Issuer_fingerprint (V4,pk.v4_fingerprint))
+          (* GnuPG won't accept keys unless they have this: *)
+       |> List.cons (Issuer_keyid (Cs.sub pk.v4_fingerprint 12 8))
     in
     Logs.debug (fun m -> m "sign: constructing signature tbh") ;
     Signature_packet.construct_to_be_hashed_cs_manual V4
@@ -470,8 +473,8 @@ struct
       error_and_log `Invalid_signature
         (fun m -> m "Cannot sign with El-Gamal key")
     end
-    >>= fun algorithm_specific_data ->
-    Ok { signature_type ; public_key_algorithm ; hash_algorithm
+    >>| fun algorithm_specific_data ->
+       { signature_type ; public_key_algorithm ; hash_algorithm
        ; algorithm_specific_data ; subpacket_data = signature_subpackets}
 
   let sign_detached_cb ~g ~current_time sk hash_algo ((hash_cb, _) as hash_tuple) io_cb =
@@ -493,10 +496,7 @@ struct
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA256 in
     let subpackets : signature_subpacket list =
-      [ Issuer_fingerprint (V4,
-                            Public_key_packet.(priv_key.public.v4_fingerprint))
-      ; Signature_creation_time current_time
-      ; Key_usage_flags { certify_keys = true ; unimplemented = '\000'
+      [ Key_usage_flags { certify_keys = true ; unimplemented = '\000'
                         ; sign_data = true ; encrypt_communications = false
                         ; encrypt_storage = false ; authentication = false }
       ; Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365)
@@ -521,12 +521,7 @@ struct
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA256 in
-    let subpackets =
-      [ Issuer_fingerprint (V4,
-                            Public_key_packet.(priv_key.public.v4_fingerprint))
-      ; Signature_creation_time current_time
-      ]
-    in
+    let subpackets = [ ] in
     let (hash_cb, _) as hash_tuple =
       Signature_packet.digest_callback hash_algo in
     hash_packet V4 hash_cb (Public_key_packet
@@ -783,8 +778,8 @@ let serialize_transferable_public_key (pk : Signature.transferable_public_key) =
   pk.uids |> result_ok_list_or_error (fun {uid;certifications} ->
       serialize_packet V4 (Uid_packet uid) >>= fun uid_cs ->
       certifications |> result_ok_list_or_error (fun s ->
-          serialize_packet V4 (Signature_type s)) >>= fun certs_cs ->
-      Ok (Cs.concat (uid_cs::certs_cs))
+          serialize_packet V4 (Signature_type s))
+      >>| fun certs_cs -> Cs.concat (uid_cs::certs_cs)
     ) >>| Cs.concat
   >>= fun uids_cs ->
 

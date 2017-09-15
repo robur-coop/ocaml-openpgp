@@ -354,7 +354,7 @@ let pp_signature_subpacket_tag ppf = function
     | Key_expiration_time -> "Key expiration time"
     | Preferred_symmetric_algorithms -> "Preferred_symmetric_algorithms"
     | Revocation_key -> "Revocation_key"
-    | Issuer -> "Issuer"
+    | Issuer -> "Issuer key ID"
     | Notation_data -> "Notation_data"
     | Preferred_hash_algorithms -> "Preferred_hash_algorithms"
     | Preferred_compression_algorithms -> "Preferred_compression_algorithms"

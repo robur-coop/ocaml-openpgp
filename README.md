@@ -60,6 +60,24 @@ The library ships with a sample application in `app/opgp.ml`.
 
 Usage is available with `--help`.
 
+- Generating public keys (currently `--uid` is only option flag):
+```bash
+$ ./opgp.native genkey --uid 'My voice is my passport' | gpg2 --import
+gpg: key 9C829342D5E17B69: public key "My voice is my passport" imported
+gpg: Total number processed: 1
+gpg:               imported: 1
+$ gpg2 --list-keys passport
+pub   dsa2048 2017-09-15 [SC] [expires: 2018-09-15]
+      6390AE6B56040888C289A2F79C829342D5E17B69
+uid           [ unknown] My voice is my passport
+```
+
+- Verifying a detached signature:
+```bash
+./_build/app/opgp.native verify -vv --pk MY_KEY.asc \
+    --signature MY_SIGNATURE.asc  --target MYSIGNEDFILE
+```
+
 - Listing packets:
 ```
 $ ./_build/app/opgp.native list-packets --target dsadetached_pub.asc
@@ -263,38 +281,6 @@ Packets:
    e2 9a a2 5a 16 dd b7 c2 98 df 02 be 93 d5 18 b7
    68 8c c4 d6 d1 06 56 6a 5e 96 5d c9 44 0b db 92
    7b aa 51 e3 2e b2 e8 be 8e e1 ae 74
-```
-
-- Verifying a detached signature:
-```bash
-./_build/app/opgp.native verify -vv --pk MY_KEY.asc --signature MY_SIGNATURE.asc --target MYSIGNEDFILE
-```
-
-- Generating a key (only pk for now) (currently not accepted by GnuPG):
-```
-$ ./_build/app/opgp.native genkey --uid cfcs
------BEGIN PGP PUBLIC KEY BLOCK-----
-
-xsJuBFm4OBwRCAC5DfiLpaq3kTEkFs92nwWw7nARreQerGegvCOuicEF/L6E4Ol518hmKzol
-2Z7XN1s5umzRd9dbAKY4UCBLIHipLPTme7v12GGNRdHnzlX0XcQu9CMjklifBgLo6yRP3N+6
-C1l87Tp+JXEZ7/dxnjDAxEmnN7BhDmF6l4GnSyJH+bRTe3Tugm2NQ3ddDyPMPCe32jKGAwAL
-J3puDSFjYsrPbZUm4V39446LVHUHhMD/z6Bzi90+YXHk6xIOdbfxg00m6WP0Ysy4dLuP3Nj1
-8icBiaFSBHovhvw0RqEPl49Pnn7Acel4Eg1pxBY/qSkYDHJproosjH+jpeYXFLdOQ9ZlAQDD
-qRElU30978msnE1GIifzAfWl7jn9IzFo92GmcpDU5QgAgxLxlOafG4UO8rzvcmAXy1cj5+Ar
-dnfKLkHamotKbeoIA/D3Yr2VDOB3QSJny+3Psm2t02XTA5ox9M3kc6DU9+5gwzBP+pwgytD2
-o5DHInngANtIpFoUXhDEFsfYCMj6GT3vhqfw21uS+cQIKq4UADmy97EuI9MkMAi9MU+tIrHe
-h1mKCghP39v32aAAWPAe1HegNENeeDEY9Ezbq9mAMQsIDVCNnrw5M16IPax1v5/exsi09tLC
-OSbRqqn7vu2e2DxCbFqSun2sbClShzOrezFu12FsqwUlL1SQ5hfZbxDugLUTFtOaTvXS3GF/
-GtAz6BR5KNxsHGUalPiLDe6Rrgf/Y9RzZ41AC8H5P+8mnNfZGWtft0pywkm/OnUr2IafOlAK
-9J9uRynNDT37HjfY2eu+fa64rTLYnMUMUdt49NguT9WMxBmrfNJbrgHR8jjy4dybrxs/JDC/
-9ijTFFqzu7Y3PkpZHxR/Ed77atZxg6lDpF64zRwm1rjk729l2pBb/4qhZPwm33Vx/yrIzgPF
-gqWGd7j3SL0KkKsdY8f1HuiFcyRz/v3G8OSiY1lBigMruyUR4gCGYzXjpZqK6yX5r/AdpHJK
-SqHLZ8pwoKLOV6WYPYTreGB0YyOpojmZnRa6p/PEWcycbhyOqjrpC+4NDFnUYdpuxTKyl5A1
-WTiKTNKc5s0EY2Zjc8JUBBMRCAAGBQJZuDgcAACUawEAj4bmqVT/CpzeYTQTKQtVR0PM2g0J
-IXQ20vaugF6x+8YBALdEyE8AwoMJeWAD3fhfy+Uigk/tvxMkWypNC9hGtfVH
-=No/f
------END PGP PUBLIC KEY BLOCK-----
-
 ```
 
 ### Resources

@@ -31,6 +31,7 @@ and signature_subpacket =
   | Preferred_hash_algorithms of hash_algorithm list
   | Embedded_signature of t
   | Key_server_preferences of Cs.t
+  | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
   | Unimplemented_subpacket of signature_subpacket_tag * Cs.t
 
 let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
@@ -43,6 +44,7 @@ let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_
   | Preferred_hash_algorithms _ -> Preferred_hash_algorithms
   | Embedded_signature _ -> Embedded_signature
   | Key_server_preferences _ -> Key_server_preferences
+  | Issuer_keyid _ -> Issuer
   | Unimplemented_subpacket (tag,_) -> tag
 
 (* [pp] and [pp_signature_subpacket] are mutually recursive because a [t] can
@@ -84,6 +86,7 @@ and pp_signature_subpacket ppf pkt =
            list ~sep:(unit "; ") pp_hash_algorithm) algos
   | Embedded_signature em_sig -> Fmt.pf fmt "@[%a@]" pp em_sig
   | Key_server_preferences cs -> Fmt.pf fmt "%a" Cstruct.hexdump_pp cs
+  | Issuer_keyid cs -> Fmt.pf fmt "%a" Cstruct.hexdump_pp cs
   | Unimplemented_subpacket (_, cs) -> Fmt.pf fmt "%a" Cstruct.hexdump_pp cs
   end
 
@@ -319,7 +322,8 @@ and cs_of_signature_subpacket pkt =
   | Preferred_hash_algorithms algos ->
     Ok (Cs.concat @@ List.map cs_of_hash_algorithm algos)
   | Embedded_signature embedded -> serialize embedded
-  | Key_server_preferences cs -> Ok cs
+  | Issuer_keyid cs
+  | Key_server_preferences cs
   | Unimplemented_subpacket (_ , cs) -> Ok cs (* cs does not contain the tag *)
   end
   |> log_failed (fun m -> m "Error while serializing signature subpacket: %a"
@@ -341,7 +345,10 @@ and serialize t =
               (* length of unhashed subpackets (which we don't support): *)
             ; Cs.BE.create_uint16 0
               (* leftmost 16 bits of the signed hash value: *)
-            ; Cs.sub (Nocrypto.Hash.SHA1.digest hashed) 0 2
+            ; Cs.sub
+                (let module H = (val (nocrypto_module_of_hash_algorithm
+                                        t.hash_algorithm))
+                 in H.digest hashed) 0 2
             ; asf_cs ]
 
 let hash t hash_cb = construct_to_be_hashed_cs t >>| hash_cb
