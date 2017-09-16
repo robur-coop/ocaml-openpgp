@@ -326,9 +326,7 @@ struct
               signature_type.Signature_of_canonical_text_document *)
       Error `Invalid_signature
     else
-    let (hash_cb, hash_final) =
-      Signature_packet.digest_callback signature.hash_algorithm
-    in
+    let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
     Logs.debug (fun m -> m "hashing detached signature...");
     let rec hash_loop () =
       cb () >>= function
@@ -350,7 +348,7 @@ struct
     >>= fun () ->
 
     (* set up hashing with this signature: *)
-    let(hash_cb, hash_fin)= Signature_packet.digest_callback t.hash_algorithm in
+    let (hash_cb, hash_final) = digest_callback t.hash_algorithm in
 
     (* This signature is calculated directly on the
        primary key and subkey, and not on any User ID or other packets.*)
@@ -362,7 +360,7 @@ struct
       | Primary_key_binding_signature -> [subkey.key]
       | _ -> [root_pk]
     in
-    check_signature current_time designated_keys hash_fin t
+    check_signature current_time designated_keys hash_final t
     |> log_failed (fun m -> m "Rejecting bad signature on (root & subkey)")
     >>| log_msg (fun m -> m "Accepting signature on (root & subkey)")
 
@@ -502,8 +500,7 @@ struct
       ; Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365)
       ]
     in
-    let (hash_cb, _) as hash_tuple =
-      Signature_packet.digest_callback hash_algo in
+    let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
     hash_packet V4 hash_cb (Public_key_packet
       (Public_key_packet.public_of_private priv_key)) >>= fun () ->
@@ -522,8 +519,7 @@ struct
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA256 in
     let subpackets = [ ] in
-    let (hash_cb, _) as hash_tuple =
-      Signature_packet.digest_callback hash_algo in
+    let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
     hash_packet V4 hash_cb (Public_key_packet
        (Public_key_packet.public_of_private priv_key)) >>= fun () ->
     (* TODO add Embedded_signature if the key can be used for signing
@@ -600,9 +596,7 @@ struct
     (* TODo (followed by zero or more signature packets) -- we fail if there are unsigned Uids - design feature? *)
     let validate_uid_signature (root_pk:Public_key_packet.t) (uid:packet_type) signature =
       (* set up hashing with this signature: *)
-      let (hash_cb, hash_final) =
-        Signature_packet.digest_callback signature.hash_algorithm
-      in
+      let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
       (* TODO handle version V3 *)
       hash_packet V4 hash_cb (Public_key_packet root_pk) >>= fun () ->
       hash_packet V4 hash_cb uid >>= fun () ->

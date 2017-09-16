@@ -19,6 +19,14 @@ let set_uint8 = Cstruct.set_uint8
 
 let of_char c = String.make 1 c |> of_string
 
+let dup {Cstruct.buffer ; len ; off} =
+  let kind , layout , dim = Bigarray.Array1.(kind, layout, dim) in
+  let new_buf =
+    Bigarray.Array1.create (kind buffer) (layout buffer) (dim buffer)
+  in
+  Bigarray.Array1.blit buffer new_buf ;
+  Cstruct.of_bigarray ~off ~len new_buf
+
 let wrap_invalid_argument f : ('ok , [> cstruct_err ]) result =
   begin try R.ok @@ f () with
     | Invalid_argument s ->
@@ -104,7 +112,6 @@ module BE = struct
     (** [e_get_ptime32 e buf offset] is the big-endian UNIX timestamp contained in [buf] at [offset], or [Error e] *)
     e_get_uint32 e buf offset
     >>| Int32.to_int >>| Ptime.Span.of_int_s
-    >>= fun time -> Ok time
 
   let e_get_ptime32 (e:'e) buf offset : (Ptime.t, 'e) result =
     e_get_ptimespan32 e buf offset >>= fun span ->
@@ -265,3 +272,55 @@ let next_line ?max_length buf : [> `Last_line of t | `Next_tuple of t*t] =
         Cstruct.sub buf (n_idx+1) (len buf - n_idx-1)
       )
   end
+
+module W : sig
+  type t
+  val create : int -> t
+  val of_cs : Cstruct.t -> t
+  val to_cs : t -> Cstruct.t
+  val to_string : t -> string
+  val char : t -> char -> unit
+  val cs : t -> ?offset:int -> ?len:int -> Cstruct.t -> unit
+  val str : t -> ?offset:int -> ?len:int -> string -> unit
+  val e_ptime32 : 'error -> t -> Ptime.t -> (t, 'error) result
+  val e_ptimespan32 : 'error -> t -> Ptime.Span.t -> (t, 'error) result
+  (** add a char to [t] *)
+end = struct
+  type t = Cstruct.t ref
+  let increase t n_len : int =
+    let old_len = Cstruct.len !t in
+    ( try t := Cstruct.add_len !t n_len
+      with Invalid_argument _ ->
+        t := concat [!t ; create n_len ]
+    ) ; old_len
+
+  let to_string t = to_string !t
+  let to_cs t = !t
+
+  let create initial_len =
+    ref (Cstruct.set_len (Cstruct.create_unsafe initial_len) 0)
+
+  let of_cs cs = ref (dup cs)
+
+  let char t c = Cstruct.set_char !t (increase t 1) c
+
+  let min_len cs =
+    let src_len = match cs with
+      | `Cs cs -> Cstruct.len cs
+      | `Str str -> String.length str
+    in function
+       | None -> src_len
+       | Some len -> min len src_len
+
+  let cs t ?(offset=0) ?len src =
+    let src_len = min_len (`Cs src) len in
+    Cstruct.blit src offset !t (increase t src_len) src_len
+
+  let str t ?(offset=0) ?len src =
+    let src_len = min_len (`Str src) len in
+    Cstruct.blit_from_string src offset !t (increase t src_len) src_len
+
+  let e_ptime32 e t ptime = BE.e_create_ptime32 e ptime >>| cs t >>| fun () -> t
+  let e_ptimespan32 e t ptimespan =
+    BE.e_create_ptimespan32 e ptimespan >>| cs t >>| fun () -> t
+end

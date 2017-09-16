@@ -411,10 +411,27 @@ let nocrypto_module_of_hash_algorithm : hash_algorithm ->
   (module Nocrypto.Hash.S) = function
   | MD5 -> (module Nocrypto.Hash.MD5)
   | SHA1 -> (module Nocrypto.Hash.SHA1)
+  | SHA224 -> (module Nocrypto.Hash.SHA224)
   | SHA256 -> (module Nocrypto.Hash.SHA256)
   | SHA384 -> (module Nocrypto.Hash.SHA384)
   | SHA512 -> (module Nocrypto.Hash.SHA512)
-  | SHA224 -> (module Nocrypto.Hash.SHA224)
+
+type digest_finalizer = unit -> Cs.t
+type digest_feeder = (Cs.t -> unit) * digest_finalizer
+
+let digest_callback hash_algo: digest_feeder =
+  let module H = (val (nocrypto_module_of_hash_algorithm hash_algo)) in
+  let t = H.init () in
+  let feeder cs = H.feed t cs
+                  |> log_msg (fun m -> m "%a hashing %d bytes: %a\n"
+                                 pp_hash_algorithm hash_algo
+                                 (Cs.len cs) Cstruct.hexdump_pp cs)
+  in (feeder,
+      (fun () -> H.dup t |> H.get))
+
+let compute_digest hash_algo to_be_hashed =
+  let (feed , get) = digest_callback hash_algo in
+  feed to_be_hashed ; Ok (get ())
 
 let nocrypto_pkcs_module_of_hash_algorithm : hash_algorithm ->
   (module Nocrypto.Rsa.PKCS1.S) =
@@ -551,12 +568,12 @@ let mpis_are_prime lst =
 let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
   mpi_len mpi_body >>= fun body_len ->
-  let mpi_header = Cs.create 2 in
-  let ()= Logs.debug (fun m -> m "cs_of_mpi: %d: %a"
-                         body_len Cstruct.hexdump_pp mpi_body)
-  in
-  Cs.BE.set_uint16 mpi_header 0 body_len >>= fun mpi_header ->
-  R.ok (Cs.concat [mpi_header; mpi_body])
+  Logs.debug (fun m -> m "cs_of_mpi: %d: %a"
+                 body_len Cstruct.hexdump_pp mpi_body) ;
+  let buf = Cs.W.create (2 + body_len) in
+  Cs.W.cs buf (Cs.BE.create_uint16 body_len) ;
+  Cs.W.cs buf mpi_body ;
+  Ok (Cs.W.to_cs buf)
 
 let cs_of_mpi_list mpi_list =
   let rec loop acc = function

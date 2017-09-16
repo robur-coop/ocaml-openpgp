@@ -72,60 +72,46 @@ let cs_of_public_key_asf asf =
   |> cs_of_mpi_list
 
 let serialize version {timestamp;algorithm_specific_data;_} =
-  cs_of_public_key_asf algorithm_specific_data >>| fun asf_cs ->
-  [ (* version *)
-    (char_of_version version |> Cs.of_char)
-
-    (* timestamp: *)
-  ; (Cs.BE.e_set_ptime32 `Null (Cs.create 4) 0 timestamp |> R.get_ok )
-
-    (* public key algorithm: *)
-    (* TODO this API is awkward, but basically what is missing is a "public_key_algorithm_of_packet_tag_type" function: *)
-  ; (char_of_public_key_algorithm
-       begin match algorithm_specific_data with
-       | DSA_pubkey_asf _ -> DSA
-       | RSA_pubkey_sign_asf _ -> RSA_sign_only
-       | RSA_pubkey_encrypt_asf _ -> RSA_encrypt_only
-       | RSA_pubkey_encrypt_or_sign_asf _ -> RSA_encrypt_or_sign
-       | Elgamal_pubkey_asf _ -> Elgamal_encrypt_only
-       end |> Cs.of_char)
-  ; asf_cs
-  ] |> Cs.concat
+  let buf = Cs.W.create 1024 in
+  Cs.W.char buf (char_of_version version) ;
+  (Cs.W.e_ptime32 (`Cstruct_invalid_argument "e_ptime32") buf timestamp
+   |> log_failed(fun m -> m "Error serializing timestamp %a" Ptime.pp timestamp)
+   >>| fun _ ->
+   Cs.W.char buf (char_of_public_key_algorithm
+                    (public_key_algorithm_of_asf algorithm_specific_data))
+  ) >>= fun () ->
+  cs_of_public_key_asf algorithm_specific_data >>| Cs.W.cs buf >>| fun _ ->
+  Cs.W.to_cs buf
 
 let hash_public_key t (hash_cb : Cs.t -> unit) : unit =
   let pk_body = serialize V4 t |> R.get_ok in
   let body_len = Cs.len pk_body in
-  let buf = Cs.create (1 + 2  + body_len) in
+  let buf = Cs.W.create (1 + 2  + body_len) in
   (* a.1) 0x99 (1 octet)*)
-  Cs.e_set_char `Invalid_packet buf 0 '\x99' |> R.get_ok ;
+  Cs.W.char buf '\x99' ;
 
   (* a.2) high-order length octet of (b)-(e) (1 octet)*)
   (* a.3) low-order length octet of (b)-(e) (1 octet)*)
-  let _ = Cs.BE.e_set_uint16 `Invalid_packet buf 1 body_len |> R.get_ok in
+  Cs.W.cs buf (Cs.BE.create_uint16 body_len) ;
 
   (* b) version number = 4 (1 octet);
      c) timestamp of key creation (4 octets);
      d) algorithm (1 octet): 17 = DSA (example)
      e) Algorithm-specific fields.*)
-  Cs.e_blit `Invalid_packet pk_body 0 buf 3 body_len |> R.get_ok ;
-  hash_cb buf
+  Cs.W.cs buf pk_body ;
+  hash_cb (Cs.W.to_cs buf)
 
 let v4_fingerprint t : Cs.t =
   (* RFC 4880: 12.2.  Key IDs and Fingerprints
    A V4 fingerprint is the 160-bit SHA-1 hash of the octet 0x99,
    followed by the two-octet packet length, followed by the entire
      Public-Key packet starting with the version field. *)
-  let module H =
-    (val (nocrypto_module_of_hash_algorithm SHA1))
-  in
-  let h = H.init () in
-  hash_public_key t (H.feed h) ; H.get h
+  let feed, final = digest_callback SHA1 in
+  hash_public_key t feed ; final ()
 
 let v4_key_id t : string  =
   (* in gnupg2 this is g10/keyid.c:fingerprint_from_pk*)
-  (*The Key ID is the
-   low-order 64 bits of the fingerprint.
-  *)
+  (* The Key ID is the low-order 64 bits of the fingerprint.*)
   Cstruct.sub
     (v4_fingerprint t)
     (Nocrypto.Hash.SHA1.digest_size - (64/8))
@@ -259,7 +245,7 @@ let parse_secret_packet buf : (private_key, 'error) result =
   | RSA_pubkey_sign_asf pk -> parse_secret_rsa_asf pk asf
   | RSA_pubkey_encrypt_asf pk -> parse_secret_rsa_asf pk asf
   | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf pk asf
-  | Elgamal_pubkey_asf pk -> parse_secret_elgamal_asf () asf
+  | Elgamal_pubkey_asf _ -> parse_secret_elgamal_asf () asf
   end |> R.reword_error (fun _ -> `Invalid_packet)
   >>= fun (priv_asf, buf_tl) ->
   Cs.e_is_empty `Invalid_packet buf_tl >>| fun () ->
