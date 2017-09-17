@@ -723,6 +723,33 @@ struct
       , packets)
 end
 
+let armored_or_not ?armored armor_type cs =
+  match armored with
+  | Some false -> Ok cs
+  | _ ->
+  let decoded = decode_ascii_armor cs in
+  begin match armored, decoded with
+  | (Some true | None), Ok (my_armor, cs) when my_armor = armor_type -> Ok cs
+  | None , Error _-> Ok cs
+  | _ , _ -> Error (`Msg "Cannot decode OpenPGP blob")
+  end
+
+let decode_public_key_block ~current_time ?armored cs
+  : (Signature.transferable_public_key * (packet_type * Cs.t) list
+    , [> `Msg of string]) result =
+  armored_or_not ?armored Ascii_public_key_block cs
+  >>= (fun pub_cs -> parse_packets pub_cs |> R.reword_error Types.msg_of_error)
+  >>= (fun pub_cs ->
+  Signature.root_pk_of_packets ~current_time pub_cs
+  |> R.reword_error Types.msg_of_error)
+
+let decode_detached_signature ?armored cs =
+  armored_or_not ?armored Ascii_signature cs
+  >>= (fun sig_cs -> parse_packets sig_cs |> R.reword_error Types.msg_of_error)
+  >>= (function
+      | [Signature_type detached_sig , _] -> Ok detached_sig
+      | _ -> Error (`Msg "detached signature expected")
+      )
 let new_transferable_public_key
     ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t)
     version

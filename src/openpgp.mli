@@ -117,6 +117,25 @@ val parse_packets :
        | `Unimplemented_feature of string
        | `Unimplemented_version of char ]) result
 
+val decode_public_key_block :
+  (** [decode_public_key_block ~current_time ?armored blob] decode and validates
+      the RFC 4880 transferable public key contained in [blob] using
+      [current_time] to check expiry timestamps.
+      If [?armored] is [Some true], the key must be ASCII-armored.
+      If [?armored] is [Some false] the key must be in raw binary format.
+      If [?armored] is [None], both ASCII-armored and binary are attempted.
+  *)
+  current_time:Ptime.t ->
+  ?armored:bool -> (** None: *)
+  Cs.t -> (* the public key blob *)
+  ( Signature.transferable_public_key * (packet_type * Cs.t) list
+  , [> `Msg of string ]) Rresult.result
+
+val decode_detached_signature :
+  (** TODO doc string*)
+  ?armored:bool ->
+  Cs.t -> (Signature.t, [> `Msg of string])result
+
 val new_transferable_public_key :
   g:Nocrypto.Rng.g ->
   current_time:Ptime.t ->

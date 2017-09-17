@@ -78,6 +78,7 @@ let msg_of_error err =
   | `Cstruct_invalid_argument s -> Format.sprintf "Cstruct: invalid argument: %s" s
   | `Cstruct_out_of_memory -> "Cstruct: out of memory error"
   | `Invalid_packet_header -> "invalid packet header"
+  | `Msg str -> str
   )
 
 let pp_error ppf err =
@@ -552,7 +553,7 @@ let cs_of_mpi_no_header mpi : Cs.t =
   |> Cs.of_string
   (* TODO |> strip trailing section of nullbytes *)
   |> Cs.reverse
-  |> fun buf -> Cs.strip_leading_char buf '\x00'
+  |> Cs.strip_leading_char '\x00'
 
 let mpis_are_prime lst =
   let non_primes =

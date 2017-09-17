@@ -216,7 +216,7 @@ let e_find e b ?max_offset ?offset needle =
   find b ?max_offset ?offset needle
   |> R.of_option ~none:(fun () -> Error e)
 
-let strip_leading_char buf c : t =
+let strip_leading_char c buf : t =
   let rec loop offset =
     let max_offset = offset + 1 in
     match index buf ~offset ~max_offset c with
@@ -229,7 +229,7 @@ let strip_leading_char buf c : t =
   loop 0
 
 let strip_trailing_char c buf : t =
-  strip_leading_char (reverse buf) c
+  strip_leading_char c (reverse buf)
 
 let split_by_char c ?offset ?max_offset buf : (t*t, 'error) result =
   begin match index_opt ?offset ?max_offset buf c with

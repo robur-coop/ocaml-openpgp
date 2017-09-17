@@ -34,24 +34,13 @@ let do_verify _ current_time pk_file detached_file target_file : (unit, [ `Msg o
   cs_of_file detached_file >>= fun detached_content ->
   Logs.info (fun m -> m "Going to verify that '%S' is a signature on '%S' using key '%S'" detached_file target_file pk_file);
 
-  Openpgp.decode_ascii_armor pk_content
-  >>= (function (Types.Ascii_public_key_block, pk_cs) -> Ok pk_cs
-              | _ -> Error `Invalid_packet)
-  >>= Openpgp.parse_packets >>= fun pk_packets ->
-  Openpgp.Signature.root_pk_of_packets ~current_time pk_packets >>= fun (root_pk,_) ->
-  Logs.debug (fun m -> m "root_of_pk_packets worked") ;
-  Openpgp.decode_ascii_armor detached_content
-  >>= (function (Types.Ascii_signature, sig_cs) -> Ok sig_cs | _ -> Error `Invalid_packet)
-  >>= fun sig_cs ->
-  Openpgp.parse_packets sig_cs
-  >>= (function
-      |((Openpgp.Signature_type detached_sig , _)::_) -> Ok detached_sig
-      | _ -> Error `Invalid_packet
-    ) >>= fun detached_sig ->
+  Openpgp.decode_public_key_block ~current_time pk_content
+  >>= fun (root_pk, extra) ->
+  Openpgp.decode_detached_signature detached_content >>= fun detached_sig ->
   Logs.debug (fun m -> m "Parsed sig") ;
   begin match Openpgp.Signature.verify_detached_cb ~current_time root_pk detached_sig (file_cb target_file) with
     | Ok `Good_signature ->
-      Logs.app (fun m -> m "Good signature!") ; Printf.printf "IT WORKS\n"; Ok ()
+      Logs.app (fun m -> m "Good signature!"); Ok ()
     | (Error _ as err) ->
       Logs.err (fun m -> m "BAD signature!") ;
       Printf.eprintf "pk:\n%s\nsig:\n%s\n\n%!" (Cs.to_string pk_content) (Cs.to_string detached_content);
