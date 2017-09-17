@@ -492,7 +492,7 @@ struct
     : (Signature_packet.t, [>]) result =
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
-    let hash_algo = SHA256 in
+    let hash_algo = SHA384 in
     let subpackets : signature_subpacket list =
       [ Key_usage_flags { certify_keys = true ; unimplemented = '\000'
                         ; sign_data = true ; encrypt_communications = false
@@ -517,7 +517,7 @@ struct
     : (Signature_packet.t, [>]) result =
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
-    let hash_algo = SHA256 in
+    let hash_algo = SHA384 in
     let subpackets = [ ] in
     let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
     hash_packet V4 hash_cb (Public_key_packet
