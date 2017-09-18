@@ -50,9 +50,18 @@ let result_filter f lst =
   Ok (List.filter (fun e -> match f e with Ok _ -> true | _ -> false) lst)
 
 let e_char_equal e c c2 = if c <> c2 then Error e else Ok c
-let error_and_log e log = Logs.err log ; Error e
+
+(* The polymorphic error type helps you define wrapper around error_msg: *)
+type ('a,'b,'c,'d,'err) msg_err =
+  ( ('a, Format.formatter, unit,'b) format4 -> 'c)
+  -> ('d,'err) result
+let error_msg (params : ('a,'b,'c,'d,[>`Msg of string]) msg_err) =
+  (* <error_msg (fun m -> m "foo:%d" 123)> is <Error (`Msg "foo:123")>*)
+  params @@ Fmt.kstrf (fun a -> Logs.err (fun m -> m "%a" Fmt.text a) ;
+                                Error (`Msg a) )
 let e_true e bool = if bool then Ok () else Error e
-let e_true_or_log e bool log =  if bool then Ok () else error_and_log e log
+let true_or_error bool f : (unit,'t)result = if bool then Ok () else
+    let e = error_msg f |> R.get_error in (Error e :> (unit,'polymagic) result)
 let log_msg log v = Logs.debug log ; v
 let log_failed log = R.reword_error (log_msg log)
 
@@ -60,26 +69,14 @@ let msg_of_error err =
   `Msg
   (match err with
   | `Incomplete_packet -> "incomplete packet"
-  | `Invalid_packet -> "invalid packet"
-  | `Unimplemented_algorithm c -> Format.sprintf "unimplemented algorithm 0x%02x" (Char.code c)
-  | `Unimplemented_version c -> Format.sprintf "unimplemented version 0x%02x" (Char.code c)
-  | `Invalid -> "invalid"
-  | `Invalid_crc24 -> "invalid crc24"
-  | `Missing_crc24 -> "missing crc24"
-  | `Invalid_key_type -> "invalid key type"
-  | `Invalid_mpi_parameters _ -> "invalid mpi parameters %a"
-  | `Malformed -> "malformed"
-  | `Missing_body -> "missing body"
-  | `Missing_end_block -> "missing end block"
-  | `Unimplemented_feature c -> Format.sprintf "unimplemented feature %S" c
-  | `Invalid_signature -> "invalid signature"
-  | `Invalid_length -> "invalid length"
   | `Extraneous_packets_after_signature -> "extraneous data after signature"
-  | `Cstruct_invalid_argument s -> Format.sprintf "Cstruct: invalid argument: %s" s
-  | `Cstruct_out_of_memory -> "Cstruct: out of memory error"
-  | `Invalid_packet_header -> "invalid packet header"
   | `Msg str -> str
   )
+
+let pp_mpi = Z.pp_print
+
+let msg_of_invalid_mpi_parameters mpi_list : [> `Msg of string ]=
+  `Msg (Fmt.strf "%a" Fmt.(list ~sep:(unit "; ") pp_mpi) mpi_list)
 
 let pp_error ppf err =
   match msg_of_error err with
@@ -402,11 +399,11 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
                                 * of a version char (04) and a SHA1 of the pk *)
   ]
 
-let e_log_ptime_plus_span_is_smaller e log (base,span) current_time =
-  Ptime.add_span base span |> R.of_option ~none:(fun () -> error_and_log e log)
+let e_log_ptime_plus_span_is_smaller err_cb (base,span) current_time =
+  Ptime.add_span base span |> R.of_option ~none:(fun () -> error_msg err_cb)
   >>| Ptime.compare current_time
   >>= fun comp ->
-  e_true_or_log e (-1 = comp) log
+  true_or_error (-1 = comp) err_cb
 
 let nocrypto_module_of_hash_algorithm : hash_algorithm ->
   (module Nocrypto.Hash.S) = function
@@ -471,7 +468,8 @@ let rec find_enum_sumtype needle = function
 
 let hash_algorithm_of_char needle =
   find_enum_sumtype needle hash_algorithm_enum
-  |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
+  |> log_failed (fun m -> m "Unimplemented hash algorithm: %02x" (Char.code needle))
+  |> R.reword_error (function _ -> `Msg "Unimplemented hash algorithm")
 
 let hash_algorithm_of_cs_offset cs offset =
   Cs.e_get_char `Incomplete_packet cs offset >>= fun hash_algo_c ->
@@ -484,6 +482,8 @@ let cs_of_hash_algorithm a = char_of_hash_algorithm a |> Cs.of_char
 
 let packet_tag_type_of_char needle =
   find_enum_sumtype needle packet_tag_enum
+  |> R.reword_error (fun `Unmatched_enum_value ->
+                         `Msg "Invalid packet_tag_type")
 
 let int_of_packet_tag_type (needle:packet_tag_type) =
   (find_enum_value needle packet_tag_enum >>= fun c ->
@@ -491,7 +491,8 @@ let int_of_packet_tag_type (needle:packet_tag_type) =
 
 let public_key_algorithm_of_char needle =
   find_enum_sumtype needle public_key_algorithm_enum
-  |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
+  |> log_failed (fun m -> m "Unimplemented public key algorithm: %02x" (Char.code needle))
+  |> R.reword_error (fun _ -> `Msg "Unimplemented public key algorithm")
 
 let public_key_algorithm_of_cs_offset cs offset =
   Cs.e_get_char `Incomplete_packet cs offset >>= fun pk_algo_c ->
@@ -508,7 +509,8 @@ let char_of_signature_type needle =
 
 let signature_type_of_char needle =
   find_enum_sumtype needle signature_type_enum
-  |> R.reword_error (function _ -> `Unimplemented_algorithm needle)
+  |> log_failed (fun m -> m "Unimplemented signature type %02x" (Char.code needle))
+  |> R.reword_error (fun _ -> `Msg "Unimplemented signature type algorithm")
 
 let signature_type_of_cs_offset cs offset =
   Cs.e_get_char `Incomplete_packet cs offset
@@ -563,7 +565,7 @@ let mpis_are_prime lst =
     Logs.debug (fun m -> m "MPIs are not prime: %a"
                    Fmt.(list ~sep:(unit " ; ") Cstruct.hexdump_pp)
                    (List.map cs_of_mpi_no_header non_primes)) ;
-    R.error (`Invalid_mpi_parameters non_primes)
+    R.error (msg_of_invalid_mpi_parameters non_primes)
   end else R.ok ()
 
 let cs_of_mpi mpi : (Cs.t, 'error) result =
@@ -585,7 +587,7 @@ let cs_of_mpi_list mpi_list =
 
 let mpi_of_cs_no_header cs = Cs.reverse cs |> Cs.to_string |> Z.of_bits
 
-let consume_mpi buf : (mpi * Cs.t, 'error) result =
+let consume_mpi buf : (mpi * Cs.t, [> `Incomplete_packet ]) result =
   (*
    Multiprecision integers (also called MPIs) are unsigned integers used
    to hold large integers such as the ones used in cryptographic
@@ -719,7 +721,7 @@ let v4_packet_length_of_cs (e:'e) (buf : Cs.t)
       Cs.get_uint8_result buf 1 |> R.reword_error (function _ -> e)
       >>| fun second ->
       (2 , Uint32.of_int @@ ((first - 192) lsl 8) + second + 192)
-  | ('\224'..'\254') -> Error (`Unimplemented_feature "partial_length")
+  | ('\224'..'\254') -> Error (`Msg "Unimplemented feature: partial_length")
   | '\255' ->
       Cs.BE.get_uint32 buf 1 |> R.reword_error (function _ -> e)
       >>| fun length -> (5, length)
@@ -735,7 +737,7 @@ let v3_packet_length_of_cs (e:'e) buf = function
 
 let consume_packet_length length_type buf :
   (Cs.t * Cs.t,
-   [>`Incomplete_packet | `Unimplemented_feature of string])
+   [>`Incomplete_packet | `Msg of string])
     result =
   (* TODO ? make length_type an optional ?v3_length_type arg *)
   begin match length_type with
@@ -743,7 +745,7 @@ let consume_packet_length length_type buf :
     | Some length -> v3_packet_length_of_cs `Incomplete_packet buf length
   end >>= fun (start , length) ->
   match Uint32.to_int length with
-  | None -> Error `Invalid_length
+  | None -> error_msg (fun m -> m "consume_packet_length: Invalid packet length: %ld" length)
   | Some length ->
     Cs.split_result ~start buf length
     |> R.reword_error (function _ ->  `Incomplete_packet)
@@ -770,15 +772,15 @@ let char_of_packet_header ph : (char,'error) result =
       lor (((int_of_packet_tag_type packet_tag) land 0xf) lsl 2) (* 4 bits *)
       |> R.ok
   | { new_format = false ; _ } ->
-    error_and_log `Invalid_packet_header
-      (fun m -> m "TODO V3 packet header serialization not implemented")
-  | _ -> R.error `Invalid_packet_header
+    error_msg (fun m -> m "TODO V3 packet header serialization not implemented")
+  | _ -> error_msg (fun m -> m "Invalid bitfield combination in packet header")
   end
   >>= fun pt ->
   pt lor (1 lsl 7) (* always one, 1 bit *)
   |> Char.chr |> R.ok
 
-let packet_header_of_char (c : char) : (packet_header,'error) result =
+let packet_header_of_char (c : char)
+  : (packet_header, [> `Msg of string]) result =
   let bit_7_set x = x land (1 lsl 7) <> 0 in
   let bit_6_set x = x land (1 lsl 6) <> 0 in
   let bits_5_through_2 x = (x land (32 lor 16 lor 8 lor 4)) lsr 2 in
@@ -787,7 +789,7 @@ let packet_header_of_char (c : char) : (packet_header,'error) result =
   let c_int = int_of_char c in
   let new_format = bit_6_set c_int in
   if not (bit_7_set c_int) then
-    Error `Invalid_packet_header
+    error_msg (fun m -> m "Not a PGP packet header (MSB not set: %02x)" c_int)
   else
     begin match new_format with
       | true ->
@@ -811,18 +813,16 @@ let packet_header_of_char (c : char) : (packet_header,'error) result =
      }
 
 let consume_packet_header buf :
-  ((packet_header * Cs.t), [`Invalid_packet_header | `Incomplete_packet]) result =
+  ((packet_header * Cs.t), [> `Msg of string | `Incomplete_packet]) result =
   Cs.e_split `Incomplete_packet buf 1 >>= fun (header_buf , buf_tl) ->
-  Cs.e_get_char `Incomplete_packet header_buf 0 >>= fun c ->
-  packet_header_of_char c
-  |> R.reword_error (function _ -> `Invalid_packet_header)
-  >>= fun pkt_header -> Ok (pkt_header , buf_tl)
+  Cs.e_get_char `Incomplete_packet header_buf 0
+  >>= packet_header_of_char >>| fun pkt_header -> (pkt_header , buf_tl)
 
 let v4_verify_version (buf : Cs.t) :
-  (unit, [> `Unimplemented_version of char | `Incomplete_packet]) result =
+  (unit, [> `Msg of string | `Incomplete_packet]) result =
   Cs.e_get_char `Incomplete_packet buf 0 >>= fun version ->
   if version <> '\x04' then
-    R.error (`Unimplemented_version version)
+    error_msg (fun m -> m "Expected OpenPGP version 4, got v. %d" (Char.code version))
   else
     R.ok ()
 
@@ -830,7 +830,7 @@ let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
   : (unit,'error) result =
   (* Ideally this function would reside in Nocrypto.Dsa *)
 
-  let mpi_error = `Invalid_mpi_parameters [p;q] in
+  let mpi_error = msg_of_invalid_mpi_parameters [p;q] in
 
   (* From RFC 4880 (we whitelist these parameters): *)
   (*  DSA keys MUST also be a multiple of 64 bits, *)

@@ -2,9 +2,6 @@
 open Rresult
 
 type t = Cstruct.t
-type cstruct_err =
-  [ `Cstruct_invalid_argument of string
-  | `Cstruct_out_of_memory ]
 
 let to_string = Cstruct.to_string
 let of_string = Cstruct.of_string
@@ -27,12 +24,12 @@ let dup {Cstruct.buffer ; len ; off} =
   Bigarray.Array1.blit buffer new_buf ;
   Cstruct.of_bigarray ~off ~len new_buf
 
-let wrap_invalid_argument f : ('ok , [> cstruct_err ]) result =
+let wrap_invalid_argument f : ('ok , [> `Msg of string ]) result =
   begin try R.ok @@ f () with
     | Invalid_argument s ->
-      Error (`Cstruct_invalid_argument s)
+      Error (`Msg "Cstruct.invalid_argument")
     | Out_of_memory ->
-      Error (`Cstruct_out_of_memory)
+      Error (`Msg "Cstruct.out_of_memory")
   end
 
 let wrap_f_buf_offset f buf offset =
@@ -88,7 +85,7 @@ module BE = struct
     wrap_err e (get_uint32 buf offset)
 
   let set_uint16 (buf:t) (offset:int) (int16 : Usane.Uint16.t)
-    : (Cstruct.t,[>cstruct_err]) result =
+    : (Cstruct.t,[> `Msg of string]) result =
     wrap_invalid_argument (fun () ->
         Cstruct.BE.set_uint16 buf offset int16; buf)
 
@@ -245,7 +242,7 @@ let e_equal_string e str buf =
   | true -> Ok ()
   | false -> Error e
 
-let e_is_empty e buf = if 0 = len buf then Ok () else Error e
+let e_is_empty (e:'e) buf : (unit, 'e) result = if 0 = len buf then Ok () else Error e
 
 let e_find_list e buf_list buf : (t,'error) result =
   (* TODO perhaps the "find" name is a bit confusing here. this is "find" in the sense of List.find, not Cs.find*)

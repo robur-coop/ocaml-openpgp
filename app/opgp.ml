@@ -3,7 +3,7 @@ open Rresult
 (* TODO set umask when writing files *)
 let cs_of_file name =
   Fpath.of_string name >>= Bos.OS.File.read >>| Cs.of_string
-  |> R.reword_error (fun _ -> `Malformed) (*TODO fix error msg*)
+  |> R.reword_error (fun _ -> `Msg "Can't open file for reading")
 
 let file_cb filename : unit -> ('a,'b)result =
   (* TODO read file in chunks *)

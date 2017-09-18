@@ -2,11 +2,8 @@ open Types
 
 val encode_ascii_armor : ascii_packet_type -> Cs.t -> Cs.t
 
-val decode_ascii_armor : Cstruct.t -> (ascii_packet_type * Cstruct.t,
-[> `Invalid
-| `Invalid_crc24
-| `Missing_crc24
-| `Invalid_key_type | `Missing_body | `Missing_end_block | `Malformed]) result
+val decode_ascii_armor : Cs.t -> (ascii_packet_type * Cs.t,
+                                  [> `Msg of string ]) result
 
 type packet_type =
   | Signature_type of Signature_packet.t
@@ -44,30 +41,18 @@ module Signature : sig
      ,
      [> `Extraneous_packets_after_signature
      | `Incomplete_packet
-     | `Invalid_length
-     | `Unimplemented_feature of string
-     | `Invalid_packet
-     | Cs.cstruct_err
-     | `Unimplemented_version of char
-             | `Invalid_signature
-             | `Invalid_mpi_parameters of (Types.mpi list)
-             | `Unimplemented_algorithm of char ])
+     | `Msg of string
+     ])
       result
 
   val verify_detached_cb :
-           current_time : Ptime.t ->
-           transferable_public_key ->
-           t ->
-           (unit ->
-            (Cs.t option,
-             [> `Invalid_mpi_parameters of Nocrypto.Numeric.Z.t list
-              | `Invalid_packet
-              | `Invalid_signature
-              | Cs.cstruct_err
-              | `Unimplemented_algorithm of char ]
-             as 'a)
-            Rresult.result) ->
-           ([> `Good_signature ], 'a) Rresult.result
+    current_time : Ptime.t ->
+    transferable_public_key ->
+    t ->
+    (unit ->
+       (Cs.t option,
+       ([> `Msg of string] as 'err)) result) ->
+    ([> `Good_signature ], 'err ) result
 
   val sign_detached_cb :
      g:Nocrypto.Rng.g -> (* PRNG *)
@@ -76,9 +61,7 @@ module Signature : sig
      Types.hash_algorithm ->
      (Cstruct.t -> unit) * (unit -> Cstruct.t) -> (*hash_cb,hash_finalize*)
      (unit -> (* io callback for reading the data to sign *)
-         (Cstruct.t option, [> `Invalid_packet
-                             | Cs.cstruct_err
-                             | `Invalid_signature ] as 'a
+         (Cstruct.t option, [> `Msg of string ] as 'a
          ) Result.result) ->
      (t, 'a) Result.result
 end with type t = Signature_packet.t
@@ -89,33 +72,19 @@ val pp_packet : Format.formatter -> packet_type -> unit
 
 val parse_packet_body : packet_tag_type -> Cstruct.t ->
   (packet_type
-   ,
-   [> `Incomplete_packet
-   | `Invalid_packet
-   | `Invalid_mpi_parameters of (Types.mpi list)
-   | `Unimplemented_algorithm of char
-   | `Unimplemented_version of char
-   ]
+   , [> `Msg of string | `Incomplete_packet ]
   ) Rresult.result
 
 val next_packet : Cstruct.t ->
     (
       (packet_tag_type * Cstruct.t * Cstruct.t) option,
-      [> `Incomplete_packet
-      | `Invalid_packet
-      | `Unimplemented_feature of string
-      ]
+      [> `Incomplete_packet | `Msg of string ]
     ) result
 
 val parse_packets :
   Cs.t ->
   ((packet_type * Cs.t) list
-    , [> `Incomplete_packet
-       | `Invalid_packet
-       | `Invalid_mpi_parameters of (Types.mpi list)
-       | `Unimplemented_algorithm of char
-       | `Unimplemented_feature of string
-       | `Unimplemented_version of char ]) result
+    , [> `Incomplete_packet | `Msg of string ]) result
 
 val decode_public_key_block :
   (** [decode_public_key_block ~current_time ?armored blob] decode and validates
@@ -143,15 +112,9 @@ val new_transferable_public_key :
   Public_key_packet.private_key ->
   Uid_packet.t list ->
   Public_key_packet.private_key list ->
-  (Signature.transferable_public_key, [> `Invalid_packet
-                                       | Cs.cstruct_err
-                                       | `Invalid_signature ]) result
+  (Signature.transferable_public_key, [> `Msg of string ]) result
 
 val serialize_transferable_public_key :
   Signature.transferable_public_key ->
   (Cstruct.t,
-    [> Cs.cstruct_err
-     | `Invalid_packet
-     | `Invalid_packet_header
-     | `Invalid_signature
-      | `Unimplemented_feature of string ]) result
+    [> `Msg of string]) result

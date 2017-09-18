@@ -3,11 +3,7 @@ open Rresult
 
 (* RFC 4880: 5.5.2 Public-Key Packet Formats *)
 
-type parse_error = [ `Incomplete_packet
-                   | `Invalid_mpi_parameters of Types.mpi list
-                   | `Invalid_packet
-                   | `Unimplemented_algorithm of char
-                   | `Unimplemented_version of char ]
+type parse_error = [ `Incomplete_packet | `Msg of string]
 
 type public_key_asf =
   | DSA_pubkey_asf of Nocrypto.Dsa.pub
@@ -74,7 +70,7 @@ let cs_of_public_key_asf asf =
 let serialize version {timestamp;algorithm_specific_data;_} =
   let buf = Cs.W.create 1024 in
   Cs.W.char buf (char_of_version version) ;
-  (Cs.W.e_ptime32 (`Cstruct_invalid_argument "e_ptime32") buf timestamp
+  (Cs.W.e_ptime32 (`Msg "serialize: e_ptime32") buf timestamp
    |> log_failed(fun m -> m "Error serializing timestamp %a" Ptime.pp timestamp)
    >>| fun _ ->
    Cs.W.char buf (char_of_public_key_algorithm
@@ -134,7 +130,7 @@ let parse_elgamal_asf buf : (public_key_asf * Cs.t, 'error) result =
 let parse_rsa_asf
     (purpose:[`Sign|`Encrypt|`Encrypt_or_sign])
     buf
-  : (public_key_asf * Cs.t, 'error) result =
+  : (public_key_asf * Cs.t, [> `Msg of string ]) result =
   consume_mpi buf >>= fun (n, buf) ->
   consume_mpi buf >>= fun (e, buf_tl) ->
   mpis_are_prime [e] >>| fun _ ->
@@ -161,7 +157,8 @@ let parse_dsa_asf buf : (public_key_asf * Cs.t, 'error) result =
   let pk = {Nocrypto.Dsa.p;q;gg;y} in
   (DSA_pubkey_asf pk), buf_tl
 
-let parse_secret_dsa_asf {Nocrypto.Dsa.p;q;gg;y} buf =
+let parse_secret_dsa_asf {Nocrypto.Dsa.p;q;gg;y} buf
+  : (private_key_asf * Cs.t, [> `Msg of string ] ) result =
   (* Algorithm-Specific Fields for DSA secret keys:
      - MPI of DSA secret exponent x. *)
   (* TODO validate parameters *)
@@ -174,7 +171,8 @@ let parse_secret_elgamal_asf (_:'pk) buf =
   consume_mpi buf >>| fun (x, tl) ->
   Elgamal_privkey_asf {x}, tl
 
-let parse_secret_rsa_asf ({Nocrypto.Rsa.e; _}:Nocrypto.Rsa.pub) buf =
+let parse_secret_rsa_asf ({Nocrypto.Rsa.e; _}:Nocrypto.Rsa.pub) buf
+  : (private_key_asf * Cs.t, [> `Msg of string]) result =
   (* Algorithm-Specific Fields for RSA secret keys:
      - multiprecision integer (MPI) of RSA secret exponent d.
      - MPI of RSA secret prime value p.
@@ -188,15 +186,13 @@ let parse_secret_rsa_asf ({Nocrypto.Rsa.e; _}:Nocrypto.Rsa.pub) buf =
   mpis_are_prime [e;q;p] >>= fun () ->
   begin match Z.compare p q ,
               Nocrypto.Rsa.priv_of_primes ~e ~q ~p with
-  | exception _ -> Error (`Invalid_mpi_parameters [e;p;q])
+  | exception _ -> Error (msg_of_invalid_mpi_parameters [e;p;q])
   | -1 , sk -> Ok (RSA_privkey_asf sk, tl)
-  | _ , _ -> Error (`Invalid_mpi_parameters [p;q])
+  | _ , _ -> Error (msg_of_invalid_mpi_parameters [p;q])
   end
 
 let parse_packet_return_extraneous_data buf
-  : (t * Cs.t, [> `Incomplete_packet
-         | `Unimplemented_version of char
-         | `Unimplemented_algorithm of char ]) result =
+  : (t * Cs.t, [> `Msg of string]) result =
   Logs.debug (fun m -> m "%s parsing @[<v>%a@]" __LOC__ Cstruct.hexdump_pp buf) ;
   (* 1: '\x04' *)
   v4_verify_version buf >>= fun()->
@@ -224,10 +220,9 @@ let parse_packet_return_extraneous_data buf
   {temp with
     v4_fingerprint = v4_fingerprint temp}, buf_tl
 
-let parse_packet buf : (t, 'error) result =
+let parse_packet buf =
   parse_packet_return_extraneous_data buf >>= fun (pk,buf_tl) ->
-  Cs.e_is_empty `Invalid_packet buf_tl >>| fun () ->
-  (* TODO Logs.err if is empty *)
+  Cs.e_is_empty (`Msg "Public key contains extraneous data") buf_tl >>| fun () ->
   pk
 
 let parse_secret_packet buf : (private_key, 'error) result =
@@ -235,7 +230,7 @@ let parse_secret_packet buf : (private_key, 'error) result =
   Cs.e_split_char `Incomplete_packet buf >>= fun (string_to_key, buf) ->
 
   (* Make sure the secret key is not encrypted: *)
-  e_char_equal `Invalid_packet '\x00' string_to_key >>= fun _ ->
+  e_char_equal (`Msg "Secret key is not unencrypted") '\x00' string_to_key >>= fun _ ->
 
   (* Ignore the "(sum octets) mod 65536" checksum (WTF?) *)
   Cs.e_split_char `Incomplete_packet buf >>| snd >>=
@@ -246,9 +241,9 @@ let parse_secret_packet buf : (private_key, 'error) result =
   | RSA_pubkey_encrypt_asf pk -> parse_secret_rsa_asf pk asf
   | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf pk asf
   | Elgamal_pubkey_asf _ -> parse_secret_elgamal_asf () asf
-  end |> R.reword_error (fun _ -> `Invalid_packet)
+  end
   >>= fun (priv_asf, buf_tl) ->
-  Cs.e_is_empty `Invalid_packet buf_tl >>| fun () ->
+  Cs.e_is_empty (`Msg "Extraneous data after secret ASF") buf_tl >>| fun () ->
   {public ; priv_asf }
 
 let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
@@ -267,8 +262,7 @@ let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
     let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
     Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_or_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
   | Elgamal_encrypt_only ->
-    error_and_log `Invalid_packet
-      (fun m -> m "Elgamal key generation not supported")
+    error_msg (fun m -> m "Elgamal key generation not supported")
   end
   >>| fun (priv_asf,pub) ->
   let temp = {timestamp = current_time

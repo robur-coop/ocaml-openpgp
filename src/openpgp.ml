@@ -58,20 +58,18 @@ let decode_ascii_armor (buf : Cstruct.t) =
   begin match Cs.next_line ~max_length buf with
     | `Next_tuple pair -> Ok pair
     | `Last_line _ ->
-      Logs.err (fun m -> m "Unexpected end of ascii armor; expected more lines") ;
-      Error `Invalid
-  end
-  >>= fun (begin_header, buf) ->
+      error_msg(fun m -> m "Unexpected end of ascii armor; expected more lines")
+  end >>= fun (begin_header, buf) ->
 
   Logs.debug (fun m -> m "Checking that armor begins with -----BEGIN PGP...") ;
-  Cs.e_split `Invalid begin_header (String.length "-----BEGIN PGP ")
+  Cs.e_split (`Msg "`Invalid") begin_header (String.length "-----BEGIN PGP ")
   >>= fun (begin_pgp, begin_tl) ->
-  Cs.e_equal_string `Invalid "-----BEGIN PGP " begin_pgp >>= fun () ->
+  Cs.e_equal_string (`Msg "Invalid") "-----BEGIN PGP " begin_pgp >>= fun () ->
 
   Logs.debug (fun m -> m "Checking that armor line ends with five dashes") ;
-  Cs.e_split `Invalid begin_tl (Cs.len begin_tl -5)
-  >>= fun (begin_type , begin_tl) ->
-  Cs.e_equal_string `Invalid "-----" begin_tl >>= fun () ->
+  Cs.e_split (`Msg "first line doesn't end in dashes")
+    begin_tl (Cs.len begin_tl -5) >>= fun (begin_type , begin_tl) ->
+  Cs.e_equal_string (`Msg "Invalid") "-----" begin_tl >>= fun () ->
 
   (* check that we know how to handle this type of ascii-armored message: *)
   Logs.debug (fun m -> m "Checking that we know how to handle this type of armored message") ;
@@ -80,56 +78,59 @@ let decode_ascii_armor (buf : Cstruct.t) =
       | "SIGNATURE" -> Ok Ascii_signature
       | "MESSAGE" -> Ok Ascii_message
       | "PRIVATE KEY BLOCK" -> Ok Ascii_private_key_block
-      | _ -> Error `Invalid_key_type (*TODO better error*)
+      | unknown -> error_msg (fun m -> m "Unknown armor type: %S" unknown)
   end
   >>= fun pkt_type ->
 
   Logs.debug (fun m -> m "Skipping armor headers (like \"Version:\"; not handled in this implementation)") ;
   let rec skip_headers buf_tl =
     match Cs.next_line ~max_length buf_tl  with
-    | `Last_line _ -> Error `Missing_body
+    | `Last_line not_body_cs ->
+      error_msg (fun m -> m "Missing armored body, expected here: %a"
+                    Cstruct.hexdump_pp not_body_cs)
     | `Next_tuple (header, buf_tl) ->
       if Cs.len header = 0 then
         R.ok buf_tl
-      else begin
-        Logs.debug (fun m -> m "Skipping header: %S" (Cs.to_string header)) ;
-        skip_headers buf_tl
-    end
+      else
+        log_msg (fun m -> m "Skipping header: %S" (Cs.to_string header))
+          buf_tl |> skip_headers
   in
   skip_headers buf
   >>= fun body ->
 
-  let rec decode_body acc tl : (Cs.t*Cs.t,[> `Invalid]) result =
+  let rec decode_body acc tl : (Cs.t*Cs.t,[> `Msg of string]) result =
     let b64_decode cs =
       Nocrypto.Base64.decode cs
-      |> R.of_option ~none:(fun()-> Error `Invalid)
+      |> R.of_option ~none:(fun()->
+          error_msg (fun m -> m "Cannot base64-decode body line: %a"
+                        Cstruct.hexdump_pp cs ))
     in
     begin match Cs.next_line ~max_length:76 tl with
-      | `Last_line _ ->
-        Logs.err (fun m -> m "Unexpected end of armored body") ;
-        R.error `Invalid (*TODO better error*)
+      | `Last_line not_end_cs ->
+        error_msg (fun m -> m "Unexpected end of armored body: %a"
+                  Cstruct.hexdump_pp not_end_cs)
       | `Next_tuple (cs,tl) when Some 0 = Cs.index_opt cs '=' ->
-        (* the CRC-24 starts with an =-sign *)
-        Cs.e_split ~start:1 `Invalid cs 4
+        Cs.e_split ~start:1 (`Msg "CRC24 must start with '='-sign") cs 4
         >>= fun (b64,must_be_empty) ->
-        Cs.e_is_empty `Invalid_crc24 must_be_empty >>= fun () ->
+        Cs.e_is_empty (`Msg "CRC-24 is not 24 bits") must_be_empty >>= fun () ->
         b64_decode b64 >>= fun target_crc ->
         Logs.debug (fun m -> m "target crc: %s" (Cs.to_hex target_crc));
-        begin match List.rev acc |> Cs.concat with
-          | decoded when Cs.equal target_crc (crc24 decoded) ->
-            Ok (decoded, tl)
-          | _ -> Error `Invalid_crc24
-        end
+        let decoded = List.rev acc |> Cs.concat in
+        let decoded_crc24 = crc24 decoded in
+        if Cs.equal target_crc decoded_crc24 then
+          Ok (decoded, tl)
+        else
+          error_msg (fun m -> m "CRC-24 mismatch! Expected %a, got %a"
+                 Cstruct.hexdump_pp target_crc Cstruct.hexdump_pp decoded_crc24)
       | `Next_tuple (cs,tl) ->
         b64_decode cs >>= fun decoded ->
         decode_body (decoded::acc) tl
     end
   in
-  Logs.debug (fun m -> m "Decoding armored body") ;
-  decode_body [] body
-  >>= fun (decoded, buf) ->
+  log_msg (fun m -> m "Decoding armored body")
+  @@ decode_body [] body >>= fun (decoded, buf) ->
 
-  Logs.debug (fun m -> m "Now we should be at the last line.") ;
+  log_msg (fun m -> m "Now we should be at the last line.") @@
   begin match Cs.next_line ~max_length buf with
     | `Next_tuple ok -> Ok ok
     | `Last_line cs -> Ok (cs, Cs.create 0)
@@ -140,13 +141,13 @@ let decode_ascii_armor (buf : Cstruct.t) =
   let rec loop buf =
     match Cs.next_line ~max_length buf with
     | `Next_tuple (this,tl) ->
-      Cs.e_is_empty `Invalid this >>= fun () ->
+      Cs.e_is_empty (`Msg "packet contains data after footer") this >>= fun () ->
       loop tl
-    | `Last_line this -> Cs.e_is_empty `Invalid this
+    | `Last_line this -> Cs.e_is_empty (`Msg "last armor line is not empty") this
   in loop buf >>= fun () ->
 
   Logs.debug (fun m -> m "Checking that last armor contains correct END footer") ;
-  end_line |> Cs.e_equal_string `Missing_end_block
+  end_line |> Cs.e_equal_string (`Msg "Armored message is missing end block")
   (begin match pkt_type with
   | Ascii_public_key_block -> "-----END PGP PUBLIC KEY BLOCK-----"
   | Ascii_signature -> "-----END PGP SIGNATURE-----"
@@ -157,7 +158,8 @@ let decode_ascii_armor (buf : Cstruct.t) =
   end) >>= fun () ->
   Ok (pkt_type, decoded)
 
-let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
+let parse_packet_body packet_tag pkt_body
+  : (packet_type, [> `Msg of string | `Incomplete_packet ]) result =
   begin match packet_tag with
     | Public_key_tag ->
       Public_key_packet.parse_packet pkt_body
@@ -174,10 +176,11 @@ let parse_packet_body packet_tag pkt_body : (packet_type,'error) result =
     | Secret_key_tag -> Public_key_packet.parse_secret_packet pkt_body
                         >>| fun pkt -> Secret_key_packet pkt
     | Secret_subkey_tag -> Public_key_packet.parse_secret_packet pkt_body
-                        >>| fun pkt -> Secret_key_subpacket pkt
+                           >>| fun pkt -> Secret_key_subpacket pkt
     | Trust_packet_tag -> Ok (Trust_packet pkt_body)
     | User_attribute_tag ->
-      R.error (`Unimplemented_algorithm 'P') (*TODO should have it's own (`Unimplemented of [`Algorithm of char | `Tag of char | `Version of char])*)
+        error_msg
+          (fun m -> m "parse_packet_body: Unimplemented: User_attribute_tag")
   end
 
 let pp_packet ppf = begin function
@@ -203,10 +206,10 @@ let hash_packet version hash_cb = begin function
   | Public_key_packet pkt -> Ok (Public_key_packet.hash_public_key pkt hash_cb)
   | Secret_key_subpacket pkt
   | Secret_key_packet pkt ->
-    Ok (Public_key_packet.(hash_public_key pkt.public hash_cb))
+      Ok (Public_key_packet.(hash_public_key pkt.public hash_cb))
   | Signature_type pkt -> Signature_packet.hash pkt hash_cb
-  | Trust_packet _ -> error_and_log `Invalid_signature
-                        (fun m -> m "Should NOT be hashing Trust_packets!")
+  | Trust_packet _ ->
+      error_msg (fun m -> m "Should NOT be hashing Trust_packets!")
   end
 
 let serialize_packet version (pkt:packet_type) =
@@ -222,10 +225,8 @@ let serialize_packet version (pkt:packet_type) =
   | V3 ->
     let length_type = packet_length_type_of_size
         (Cs.len body_cs |> Int32.of_int) in
-    Logs.debug (fun m -> m "serialize_packet: V3: serializing length type: %a"
-                 pp_packet_length_type length_type) ;
-    (* TODO handle V3 *)
-    R.error (`Unimplemented_feature "serialization of V3 packets")
+    error_msg (fun m -> m "serialize_packet: V3: try serialize length type: %a"
+                 pp_packet_length_type length_type)
   | V4 ->
     char_of_packet_header {new_format = true; length_type = None
                           ; packet_tag = packet_tag_of_packet pkt}
@@ -240,24 +241,15 @@ let serialize_packet version (pkt:packet_type) =
   Cs.concat [header_cs ; body_cs ]
 
 let next_packet (full_buf : Cs.t) :
-  ((packet_tag_type * Cs.t * Cs.t) option,
-   [>`Invalid_packet
-   | `Unimplemented_feature of string
-   | `Incomplete_packet]) result =
+  ((packet_tag_type * Cs.t * Cs.t) option
+   , [> `Msg of string | `Incomplete_packet]) result =
   if Cs.len full_buf = 0 then Ok None else
   consume_packet_header full_buf
-  |> R.reword_error (function
-      |`Incomplete_packet as i -> i
-      |`Invalid_packet_header -> `Invalid_packet)
   >>= begin function
   | { length_type ; packet_tag; _ } , pkt_header_tl ->
     consume_packet_length length_type pkt_header_tl
-    |> R.reword_error (function
-        | `Invalid_length -> `Invalid_packet
-        | `Incomplete_packet as i -> i
-        | `Unimplemented_feature s -> `Unimplemented_feature s
-        ) >>| fun (pkt_body, next_packet) ->
-                Some (packet_tag , pkt_body, next_packet)
+    >>| fun (pkt_body, next_packet) ->
+    Some (packet_tag , pkt_body, next_packet)
   end
 
 let parse_packets cs : (('ok * Cs.t) list, 'error) result =
@@ -318,13 +310,11 @@ struct
     check_signature current_time pks hash_final signature
 
   let verify_detached_cb ~current_time (pk:transferable_public_key)
-      (signature:t) (cb:(unit -> (Cs.t option,'error) result))
-  : ('ok, 'error) result =
+      (signature:t) (cb:(unit -> (Cs.t option, [> `Msg of string]) result))
+  : ('ok, [> `Msg of string]) result =
     (* TODO check pk is valid *)
     if signature.signature_type <> Signature_of_binary_document then
-      (* TODO not implemented: we don't handle the newline-normalized (->\r\n)
-              signature_type.Signature_of_canonical_text_document *)
-      Error `Invalid_signature
+      error_msg (fun m -> m "TODO not implemented: we do not handle the newline-normalized@,(->\\r\\n) signature_type.Signature_of_canonical_text_document")
     else
     let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
     Logs.debug (fun m -> m "hashing detached signature...");
@@ -339,8 +329,7 @@ struct
 
   let check_signature_on_root_and_subkey ~current_time sig_types
                                           root_pk subkey t =
-    e_true_or_log `Invalid_signature
-      (List.exists (fun st -> st = t.signature_type) sig_types)
+    true_or_error (List.exists (fun st -> st = t.signature_type) sig_types)
       (fun m -> m "Invalid signature type %a rejected, expecting one of @[%a@]"
           pp_signature_type t.signature_type
           Fmt.(list pp_signature_type) sig_types
@@ -413,8 +402,8 @@ struct
               embedding a signature on the root key (made using the subkey)*)
            let rec loop = function
            | [] ->
-               error_and_log `Invalid_packet
-                 (fun m -> m "no embedded signature subpacket in subkey binding signature")
+             error_msg (fun m ->
+                m "no embedded signature subpacket in subkey binding signature")
            | [Embedded_signature embedded_sig] ->
                check_embedded_signature current_time root_pk
                  embedded_sig {key = subkey
@@ -468,8 +457,7 @@ struct
                           |> mpi_of_cs_no_header
                       })
     | Public_key_packet.Elgamal_privkey_asf _ ->
-      error_and_log `Invalid_signature
-        (fun m -> m "Cannot sign with El-Gamal key")
+      error_msg (fun m -> m "Cannot sign with El-Gamal key")
     end
     >>| fun algorithm_specific_data ->
        { signature_type ; public_key_algorithm ; hash_algorithm
@@ -537,13 +525,7 @@ struct
   : (transferable_public_key * 'datatype,
    [> `Extraneous_packets_after_signature
    | `Incomplete_packet
-   | `Invalid_packet
-   | `Invalid_length
-   | `Unimplemented_feature of string
-   | `Invalid_signature
-   | `Unimplemented_version of char
-   | `Unimplemented_algorithm of char
-   | `Invalid_mpi_parameters of Types.mpi list
+   | `Msg of string
    ]
   ) result
   =
@@ -560,24 +542,24 @@ struct
   (* RFC 4880: - One Public-Key packet: *)
   begin match packets with
     | (Public_key_packet pk, _) :: tl -> Ok (pk, tl)
-    | _ -> R.error `Invalid_packet
+    | _ -> R.error (`Msg "Transferable public key does not start with a PK")
   end
   >>= fun (root_pk, (packets: (packet_type*'yyy) list)) ->
 
     (* TODO extract version from the root_pk and make sure the remaining packets use the same version *)
 
     let pair_must_be tag ((t,_) as ret) =
-      e_true `Invalid_packet (tag = packet_tag_of_packet t) >>| fun () -> ret
+      e_true (`Msg "not tag") (tag = packet_tag_of_packet t) >>| fun () -> ret
     in
 
     let take_signatures_of_types sig_types (packets:'datatype) =
       packets |> list_take_leading
         (function
           | (Signature_type signature, _) ->
-             e_true `Invalid_packet
+             e_true (`Msg "wrong sig type in packet")
                (List.exists (fun t -> t = signature.signature_type) sig_types)
                >>| fun () -> signature
-          | _ -> Error `Invalid_packet
+          | _ -> Error (`Msg "no signature in packet list")
         )
     in
 
@@ -617,9 +599,11 @@ struct
         (* Return from loop: *)
         Ok (List.rev acc , packets)
       else
-      (* Drop unsigned objects: *)
-        list_drop_e_n `Invalid_packet ((List.length objects)-1) objects
-      >>= (function [tuple] -> Ok tuple | _ -> Error `Invalid_packet)
+        list_drop_e_n (`Msg "while dropping unsigned objects")
+          ((List.length objects)-1) objects
+        >>= (function [tuple] -> Ok tuple
+                    | lst -> error_msg (fun m -> m "TODOclarify obj err msg: %d"
+                                           (List.length lst)))
       >>= fun (obj, _) ->
       packets |> take_signatures_of_types sig_types
       >>= fun (certifications, packets) ->
@@ -633,9 +617,8 @@ struct
         )
       in
       if valid_certifications = [] then begin
-        error_and_log `Invalid_signature
-          (fun m -> m "Skipping %a due to lack of valid certifications"
-                       pp_packet obj )
+        error_msg (fun m -> m "Skipping %a due to lack of valid certifications"
+                      pp_packet obj )
       end else
          inner_loop ((obj, valid_certifications)::acc) packets
       in inner_loop [] packets
@@ -648,7 +631,7 @@ struct
         ; Casual_certification_of_user_id_and_public_key_packet
         ; Positive_certification_of_user_id_and_public_key_packet]
     >>= fun (verified_uids , packets) ->
-    e_true_or_log `Invalid_packet (verified_uids <> [])
+    true_or_error (verified_uids <> [])
         (fun m -> m "Unable to find at least one verifiable UID.")
     >>= fun () ->
     let verified_uids =
@@ -658,7 +641,7 @@ struct
 
     (* Validate user attributes (basically, embedded image files) *)
     let validate_user_attribute_signature _ _ _ (* root_pk obj signature*) =
-            R.error `Not_implemented
+      error_msg (fun m -> m "validation of user attribute sig not implemented")
     in
     packets |> take_and_validate_certifications User_attribute_tag
       (validate_user_attribute_signature) []
@@ -691,8 +674,7 @@ struct
     Logs.debug (fun m -> m "About to look for subkeys") ;
     find_subkeys_and_their_sigs [] packets
     >>= fun ((subkey_list : subkey list) , packets) ->
-    e_true_or_log `Invalid_packet
-      (List.length subkey_list < 500)
+    true_or_error (List.length subkey_list < 500)
       (fun m -> m "Encountered more than 500 subkeys; this is probably not a legitimate public key")
     >>= fun () ->
 
@@ -704,7 +686,7 @@ struct
         (fun t -> check_subkey_binding_signature ~current_time root_pk key t
            |> log_failed (fun m -> m "Skipping subkey binding due to sigfail")
         ) >>= fun binding_signatures ->
-        e_true_or_log `Invalid_signature (binding_signatures <> [])
+        true_or_error (binding_signatures <> [])
           (fun m -> m "No valid binding signatures on this subkey")
         >>| fun () ->
           (* TODO handle revocations *)
@@ -748,8 +730,17 @@ let decode_detached_signature ?armored cs =
   >>= (fun sig_cs -> parse_packets sig_cs |> R.reword_error Types.msg_of_error)
   >>= (function
       | [Signature_type detached_sig , _] -> Ok detached_sig
-      | _ -> Error (`Msg "detached signature expected")
+      | first_packet::_ ->
+        error_msg (fun m -> m "detached signature expected; got %a"
+                      pp_packet (fst first_packet))
+      | [] -> error_msg (fun m -> m "No packets found in supposed detached sig")
       )
+
+let decode_secret_key_block ?armored cs =
+  armored_or_not ?armored Ascii_private_key_block cs
+  >>= (fun key_cs -> parse_packets key_cs |> R.reword_error Types.msg_of_error)
+  (*  TODO  *)
+
 let new_transferable_public_key
     ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t)
     version
@@ -759,7 +750,7 @@ let new_transferable_public_key
     (* TODO user_attributes *)
     (priv_subkeys : Public_key_packet.private_key list) (* TODO revocations*)
   : (Signature.transferable_public_key, [>]) result =
-  if version <> V4 then Error `Invalid_packet (* TODO fix error msg *)
+  if version <> V4 then error_msg (fun x -> x "wrong version %d" 3)
   else
   let () = Logs.debug (fun m -> m "trying to certify UIDs") in
   (* TODO create relevant signature subpackets *)
@@ -771,7 +762,7 @@ let new_transferable_public_key
   >>= fun uids ->
   Logs.debug (fun m -> m "%d UIDs certified. moving on." (List.length uids));
   if uids = [] then
-    Error `Invalid_packet (* TODO fix error msg *)
+    error_msg (fun m ->m "No UIDs given. Need at least one.")
   else
   priv_subkeys |> result_ok_list_or_error
         (fun subkey ->
