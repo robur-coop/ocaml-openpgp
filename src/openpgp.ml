@@ -58,7 +58,9 @@ let decode_ascii_armor (buf : Cstruct.t) =
   begin match Cs.next_line ~max_length buf with
     | `Next_tuple pair -> Ok pair
     | `Last_line _ ->
-      error_msg(fun m -> m "Unexpected end of ascii armor; expected more lines")
+      error_msg
+        (fun m -> m "Unexpected end of ascii armor; expected more lines (%d)"
+                                                                (Cs.len buf))
   end >>= fun (begin_header, buf) ->
 
   Logs.debug (fun m -> m "Checking that armor begins with -----BEGIN PGP...") ;
@@ -817,8 +819,12 @@ let armored_or_not ?armored armor_type cs =
   let decoded = decode_ascii_armor cs in
   begin match armored, decoded with
   | (Some true | None), Ok (my_armor, cs) when my_armor = armor_type -> Ok cs
-  | None , Error _-> Ok cs
-  | _ , _ -> Error (`Msg "Cannot decode OpenPGP blob")
+  | None , Error _->
+    Logs.err(fun m -> m "Failed decoding ASCII armor %a, parsing as raw instead"
+                pp_ascii_packet_type armor_type ) ; Ok cs
+  | _ , _ -> error_msg
+      (fun m -> m "Cannot decode OpenPGP ASCII armor of supposed type %a"
+          pp_ascii_packet_type armor_type)
   end
 
 let decode_public_key_block ~current_time ?armored cs

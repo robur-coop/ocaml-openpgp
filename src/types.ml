@@ -128,6 +128,12 @@ type public_key_algorithm =
   | Elgamal_encrypt_only
   | DSA
 
+let public_key_algorithm_of_string algo =
+  match String.lowercase_ascii algo with
+  | "rsa" -> Ok RSA_sign_only
+  | "dsa" -> Ok DSA
+  | _ -> error_msg (fun m -> m "of_string: unknown pk algorithm: \"%S\"" algo)
+
 let pp_public_key_algorithm ppf a =
   Fmt.string ppf @@ match a with
   | RSA_encrypt_or_sign -> "RSA encrypt or sign"
