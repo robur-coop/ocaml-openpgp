@@ -57,13 +57,22 @@ let pp ppf t =
 let pp_secret ppf t = pp ppf t.public (* TODO *)
 
 let cs_of_public_key_asf asf =
-  Logs.debug (fun m -> m "cs_of_mpi called");
+  Logs.debug (fun m -> m "cs_of_public_key_asf called");
   begin match asf with
   | DSA_pubkey_asf {Nocrypto.Dsa.p;q;gg;y} -> [p;q;gg;y]
   | Elgamal_pubkey_asf { p ; g ; y } -> [ p; g; y ]
   | RSA_pubkey_sign_asf p
   | RSA_pubkey_encrypt_or_sign_asf p
   | RSA_pubkey_encrypt_asf p -> [ p.Nocrypto.Rsa.n ; p.Nocrypto.Rsa.e ]
+  end
+  |> cs_of_mpi_list
+
+let cs_of_secret_key_asf asf =
+  Logs.debug (fun m -> m "cs_of_secret_key_asf called") ;
+  begin match asf with
+    | Elgamal_privkey_asf {x} -> [x]
+    | DSA_privkey_asf {Nocrypto.Dsa.x ; _} -> [x]
+    | RSA_privkey_asf {Nocrypto.Rsa.d; p; q; q'; _} -> [d;p;q;q']
   end
   |> cs_of_mpi_list
 
@@ -77,6 +86,25 @@ let serialize version {timestamp;algorithm_specific_data;_} =
                     (public_key_algorithm_of_asf algorithm_specific_data))
   ) >>= fun () ->
   cs_of_public_key_asf algorithm_specific_data >>| Cs.W.cs buf >>| fun _ ->
+  Cs.W.to_cs buf
+
+let serialize_secret version sk =
+  (* a secret key is the public key followed my the secret ASF MPIs: *)
+  let buf = Cs.W.create 2000 in
+  serialize version sk.public >>| Cs.W.cs buf >>= fun () ->
+  (* One octet indicating string-to-key usage conventions.  Zero
+     indicates that the secret-key data is not encrypted.  255 or 254
+     indicates that a string-to-key specifier is being given.  Any
+     other value is a symmetric-key encryption algorithm identifier.*)
+  Cs.W.char buf '\x00' ;
+
+  cs_of_secret_key_asf sk.priv_asf >>| fun asf ->
+  Cs.W.cs buf asf ;
+
+  (* - If the string-to-key usage octet is zero or 255, then a two-octet
+       checksum of the plaintext of the algorithm-specific portion*)
+  Cs.W.cs buf (Types.two_octet_checksum asf) ;
+
   Cs.W.to_cs buf
 
 let hash_public_key t (hash_cb : Cs.t -> unit) : unit =
@@ -178,16 +206,21 @@ let parse_secret_rsa_asf ({Nocrypto.Rsa.e; _}:Nocrypto.Rsa.pub) buf
      - MPI of RSA secret prime value p.
      - MPI of RSA secret prime value q (p < q).
      - MPI of u, the multiplicative inverse of p, mod q. *)
-  consume_mpi buf >>= fun (_, buf) -> (* "d" *)
+  consume_mpi buf >>= fun (check_d, buf) -> (* "d" *)
   consume_mpi buf >>= fun (p, buf) ->
   consume_mpi buf >>= fun (q, buf) ->
-  consume_mpi buf >>= fun (_, tl) -> (* "u" *)
+  consume_mpi buf >>= fun (check_q', tl) -> (* "u" aka Nocrypto.Rsa.priv.q' *)
   (* TODO validate key parameters; check "d" and "u" *)
   mpis_are_prime [e;q;p] >>= fun () ->
   begin match Z.compare p q ,
               Nocrypto.Rsa.priv_of_primes ~e ~q ~p with
   | exception _ -> Error (msg_of_invalid_mpi_parameters [e;p;q])
-  | -1 , sk -> Ok (RSA_privkey_asf sk, tl)
+  | -1 , sk ->
+    let open Nocrypto.Rsa in
+    true_or_error (check_d = sk.d && check_q' = sk.q')
+    (fun m -> m "Inconsistent RSA secret key parameters read (d;q';d;q'): {%a}"
+       Fmt.(list ~sep:(unit "; ") pp_mpi) [check_d;check_q';sk.d;sk.q])
+     >>| fun () -> (RSA_privkey_asf sk, tl)
   | _ , _ -> Error (msg_of_invalid_mpi_parameters [p;q])
   end
 
@@ -204,7 +237,8 @@ let parse_packet_return_extraneous_data buf
   (* 1: public key algorithm *)
   Cs.e_split_char ~start:5 `Incomplete_packet buf
   >>= fun (pk_algo_c , asf_cs) ->
-  public_key_algorithm_of_char pk_algo_c >>|
+  public_key_algorithm_of_char pk_algo_c
+  |> log_failed (fun m -> m "Unknown public key algo when parsing PK") >>|
 
   (* MPIs / "Algorithm-Specific Fields" *)
   begin function
@@ -227,22 +261,34 @@ let parse_packet buf =
 
 let parse_secret_packet buf : (private_key, 'error) result =
   parse_packet_return_extraneous_data buf >>= fun (public,buf) ->
-  Cs.e_split_char `Incomplete_packet buf >>= fun (string_to_key, buf) ->
+  Logs.debug (fun m -> m "got the public part of secret key") ;
+  Cs.e_split_char `Incomplete_packet buf >>= fun (string_to_key, asf_cs) ->
 
   (* Make sure the secret key is not encrypted: *)
-  e_char_equal (`Msg "Secret key is not unencrypted") '\x00' string_to_key >>= fun _ ->
+  e_char_equal (`Msg "Secret key is not unencrypted") '\x00' string_to_key
+  >>| log_msg (fun m -> m "secret key not encrypted; good") >>= fun _ ->
 
-  (* Ignore the "(sum octets) mod 65536" checksum (WTF?) *)
-  Cs.e_split_char `Incomplete_packet buf >>| snd >>=
-  Cs.e_split_char `Incomplete_packet >>| snd >>= fun asf ->
   begin match public.algorithm_specific_data with
-  | DSA_pubkey_asf pk -> parse_secret_dsa_asf pk asf
-  | RSA_pubkey_sign_asf pk -> parse_secret_rsa_asf pk asf
-  | RSA_pubkey_encrypt_asf pk -> parse_secret_rsa_asf pk asf
-  | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf pk asf
-  | Elgamal_pubkey_asf _ -> parse_secret_elgamal_asf () asf
+  | DSA_pubkey_asf pk -> parse_secret_dsa_asf pk asf_cs
+  | RSA_pubkey_sign_asf pk -> parse_secret_rsa_asf pk asf_cs
+  | RSA_pubkey_encrypt_asf pk -> parse_secret_rsa_asf pk asf_cs
+  | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf pk asf_cs
+  | Elgamal_pubkey_asf _ -> parse_secret_elgamal_asf () asf_cs
   end
-  >>= fun (priv_asf, buf_tl) ->
+  >>= fun (priv_asf, checksum_tl) ->
+
+  (* The "(sum octets) mod 65536" checksum: *)
+  Cs.e_split `Incomplete_packet checksum_tl 2 >>= fun (csum, buf_tl) ->
+  let computed_sum =
+      let asf_portion = Cs.sub asf_cs 0 (Cs.len asf_cs - Cs.len checksum_tl) in
+      two_octet_checksum asf_portion
+  in
+  true_or_error (Cs.equal computed_sum csum)
+    (fun m -> m "Parsing secret key: Invalid mod-65536-checksum: %a <> %a"
+        Cstruct.hexdump_pp csum Cstruct.hexdump_pp computed_sum
+    ) >>| log_msg (fun m -> m "Parsing secret key: Good checksum: %a"
+                      Cstruct.hexdump_pp csum) >>= fun () ->
+
   Cs.e_is_empty (`Msg "Extraneous data after secret ASF") buf_tl >>| fun () ->
   {public ; priv_asf }
 

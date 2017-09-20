@@ -36,6 +36,9 @@ val parse_secret_packet : Cstruct.t -> (private_key, [> parse_error] ) result
 
 val serialize : Types.openpgp_version -> t -> (Cs.t,[> `Msg of string]) result
 
+val serialize_secret : Types.openpgp_version -> private_key ->
+  (Cs.t, [> `Msg of string]) result
+
 val v4_key_id : t -> string
 
 val generate_new : g:Nocrypto.Rng.g ->

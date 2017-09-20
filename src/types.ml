@@ -570,11 +570,11 @@ let mpis_are_prime lst =
 
 let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
-  mpi_len mpi_body >>= fun body_len ->
+  mpi_len mpi_body >>= fun body_bitlen ->
   Logs.debug (fun m -> m "cs_of_mpi: %d: %a"
-                 body_len Cstruct.hexdump_pp mpi_body) ;
-  let buf = Cs.W.create (2 + body_len) in
-  Cs.W.cs buf (Cs.BE.create_uint16 body_len) ;
+                 body_bitlen Cstruct.hexdump_pp mpi_body) ;
+  let buf = Cs.W.create (2 + body_bitlen/8) in
+  Cs.W.uint16 buf body_bitlen ;
   Cs.W.cs buf mpi_body ;
   Ok (Cs.W.to_cs buf)
 
@@ -857,3 +857,12 @@ let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
 
   (* TODO - g : g = h^(p-1)/q mod p *)
   (* TODO rest of http://csrc.nist.gov/groups/STM/cavp/documents/dss/DSAVS.pdf *)
+
+let two_octet_checksum data =
+  (* This is used to compute checksums on private keys.
+     See https://tools.ietf.org/html/rfc4880#section-5.5.3
+     a two-octet checksum of the plaintext of the algorithm-specific portion
+     (sum of all octets, mod 65536).*)
+  Cs.to_list data
+  |> List.fold_left (fun acc c -> (acc + Char.code c) land 0xffff) 0
+  |> Cs.BE.create_uint16

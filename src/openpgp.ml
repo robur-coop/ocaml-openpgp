@@ -219,6 +219,8 @@ let serialize_packet version (pkt:packet_type) =
     | Public_key_packet pkt
     | Public_key_subpacket pkt -> Public_key_packet.serialize version pkt
     | Trust_packet cs -> Ok cs
+    | Secret_key_packet pkt -> Public_key_packet.serialize_secret version pkt
+    | Secret_key_subpacket pkt -> Public_key_packet.serialize_secret version pkt
   end >>= fun body_cs ->
 
   begin match version with
@@ -290,6 +292,13 @@ struct
     ; revocations : Signature_packet.t list
     }
 
+  type private_subkey = { secret_key : Public_key_packet.private_key
+                        ; binding_signatures : Signature_packet.t list
+                        ; revocations : Signature_packet.t list }
+  let public_subkey_of_private {secret_key;binding_signatures;revocations} =
+    { key = secret_key.Public_key_packet.public
+    ; binding_signatures; revocations }
+
   type transferable_public_key =
     { (* V4 public key. V3 is slightly different (see RFC 4880: 12.1)*)
     (* One Public-Key packet *)
@@ -304,7 +313,14 @@ struct
     ; subkeys : subkey list
     }
 
-  let check_signature_transferable current_time pk hash_final signature =
+  type transferable_secret_key =
+    { root_key : Public_key_packet.private_key
+    ; uids : uid list
+    ; secret_subkeys : private_subkey list
+    }
+
+  let check_signature_transferable current_time (pk:transferable_public_key)
+                                   hash_final signature  =
     let pks = pk.root_key :: (pk.subkeys |> List.map (fun k -> k.key)) in
     (* ^-- TODO filter out non-signing-keys*)
     check_signature current_time pks hash_final signature
@@ -473,6 +489,15 @@ struct
     let subpackets = [] in
     sign ~g ~current_time Signature_of_binary_document sk subpackets hash_algo hash_tuple
 
+  let sign_detached_cs ~g ~current_time secret_key hash_algo target_cs =
+    let subpackets = [ (* TODO support expiry time *) ] in
+    let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
+    hash_cb target_cs ;
+    sign ~g ~current_time
+      Signature_of_binary_document
+      secret_key subpackets
+      hash_algo hash_tuple
+
   let certify_uid
       ~(g : Nocrypto.Rng.g)
       ~(current_time : Ptime.t)
@@ -519,40 +544,7 @@ struct
       priv_key subpackets
       hash_algo hash_tuple
 
-  let root_pk_of_packets (* TODO aka root_key_of_packets *)
-    ~current_time
-    (packets : ((packet_type * Cs.t) list) as 'datatype)
-  : (transferable_public_key * 'datatype,
-   [> `Extraneous_packets_after_signature
-   | `Incomplete_packet
-   | `Msg of string
-   ]
-  ) result
-  =
-  (* RFC 4880: 11.1 Transferable Public Keys *)
-  (* this function imports the output of gpg --export *)
-
-  let debug_if_any s = begin function
-      | [] -> ()
-      | lst ->
-        Logs.debug (fun m -> m ("%s: %d") s (List.length lst))
-  end
-  in
-
-  (* RFC 4880: - One Public-Key packet: *)
-  begin match packets with
-    | (Public_key_packet pk, _) :: tl -> Ok (pk, tl)
-    | _ -> R.error (`Msg "Transferable public key does not start with a PK")
-  end
-  >>= fun (root_pk, (packets: (packet_type*'yyy) list)) ->
-
-    (* TODO extract version from the root_pk and make sure the remaining packets use the same version *)
-
-    let pair_must_be tag ((t,_) as ret) =
-      e_true (`Msg "not tag") (tag = packet_tag_of_packet t) >>| fun () -> ret
-    in
-
-    let take_signatures_of_types sig_types (packets:'datatype) =
+  let take_signatures_of_types sig_types (packets:'datatype) =
       packets |> list_take_leading
         (function
           | (Signature_type signature, _) ->
@@ -561,40 +553,34 @@ struct
                >>| fun () -> signature
           | _ -> Error (`Msg "no signature in packet list")
         )
+
+  let validate_uid_certification ~current_time (root_pk:Public_key_packet.t)
+      (uid:packet_type) signature =
+    (* set up hashing with this signature: *)
+    let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
+    (* TODO handle version V3 *)
+    hash_packet V4 hash_cb (Public_key_packet root_pk) >>= fun () ->
+    hash_packet V4 hash_cb uid >>= fun () ->
+    hash_packet V4 hash_cb (Signature_type signature) >>= fun () ->
+
+    (* Check that the root key has not expired with this UID *)
+    public_key_not_expired current_time root_pk signature >>= fun () ->
+
+    check_signature current_time [root_pk] hash_final signature
+    |> log_failed (fun m -> m "signature check failed on a uid sig")
+
+  let take_and_validate_certifications packet_tag
+      (validation_cb : packet_type -> Signature_packet.t -> ('ok,'error) result)
+      sig_types packets =
+    let pair_must_be tag ((t,_) as ret) =
+      e_true (`Msg "not tag") (tag = packet_tag_of_packet t) >>| fun () -> ret
     in
 
-    (* RFC 4880: Zero or more revocation signatures: *)
-    take_signatures_of_types [Key_revocation_signature] packets
-    >>= fun (revocation_signatures , packets) ->
-    (* revocation keys are detailed here:
-       https://tools.ietf.org/html/rfc4880#section-5.2.3.15 *)
-    (* TODO check revocation signatures *)
-
-    (* RFC 4880: - One or more User ID packets: *)
-    (* Immediately following each User ID packet, there are zero or more
-   Signature packets.  Each Signature packet is calculated on the
-   immediately preceding User ID packet and the initial Public-Key
-    packet.*)
-    (* TODo (followed by zero or more signature packets) -- we fail if there are unsigned Uids - design feature? *)
-    let validate_uid_signature (root_pk:Public_key_packet.t) (uid:packet_type) signature =
-      (* set up hashing with this signature: *)
-      let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
-      (* TODO handle version V3 *)
-      hash_packet V4 hash_cb (Public_key_packet root_pk) >>= fun () ->
-      hash_packet V4 hash_cb uid >>= fun () ->
-      hash_packet V4 hash_cb (Signature_type signature) >>= fun () ->
-
-      (* Check that the root key has not expired with this UID *)
-      public_key_not_expired current_time root_pk signature >>= fun () ->
-
-      check_signature current_time [root_pk] hash_final signature
-      |> log_failed (fun m -> m "signature check failed on a uid sig")
-    in
-    let take_and_validate_certifications packet_tag (validation_callback : Public_key_packet.t -> packet_type -> Signature_packet.t -> ('ok,'error) result) sig_types packets =
-       let rec inner_loop (acc : (packet_type * Signature_packet.t list) list) packets =
-       let (objects, (packets:(packet_type*Cs.t)list)) =
-         list_take_leading (pair_must_be packet_tag) packets |> R.get_ok
-        in
+    (* TODO make validation callback take a list of valid signing PKs*)
+    let rec inner_loop
+        (acc : (packet_type * Signature_packet.t list) list) packets =
+      let (objects, (packets:(packet_type*Cs.t)list)) =
+        list_take_leading (pair_must_be packet_tag) packets |> R.get_ok in
       if objects = [] then
         (* Return from loop: *)
         Ok (List.rev acc , packets)
@@ -611,7 +597,7 @@ struct
       let valid_certifications =
         certifications |> List.filter
         (fun certification ->
-         match validation_callback root_pk obj certification with
+         match validation_cb obj certification with
          | Ok `Good_signature -> true
          | _ -> false
         )
@@ -622,9 +608,42 @@ struct
       end else
          inner_loop ((obj, valid_certifications)::acc) packets
       in inner_loop [] packets
-    in
-    (* TODO verify that primary key has key flags "certify" ? *)
-    packets |> take_and_validate_certifications Uid_tag (validate_uid_signature)
+
+  let transferable_of_packets ~current_time
+    (packets : ((packet_type * Cs.t) list) as 'packets)
+    (take_root_key_cb : 'packets ->((Public_key_packet.t * 'root_key * 'packets)
+                                    ,'error) result)
+    (take_subkeys_cb  : Public_key_packet.t -> (* root pk *)
+                        'packets ->
+                        (('subkey list * 'packets), 'error) result)
+    (finalize_key     : 'packets -> 'root_key -> uid list -> 'subkey list ->
+        (('transferable_key *'packets), 'error) result)
+  : ('transferable_key * 'packets,
+     [>  `Incomplete_packet | `Msg of string ] as 'error) result
+  =
+  let debug_if_any s = begin function
+      | [] -> () | lst -> Logs.debug (fun m -> m ("%s: %d") s (List.length lst))
+  end in
+
+  take_root_key_cb packets >>= fun (root_pk, root_key, packets) ->
+    (* TODO extract version from the root_pk and make sure the remaining packets use the same version *)
+
+  (* RFC 4880: Zero or more revocation signatures: *)
+  take_signatures_of_types [Key_revocation_signature] packets
+  >>= fun (revocation_signatures , packets) ->
+
+  (* revocation keys are detailed here:
+     https://tools.ietf.org/html/rfc4880#section-5.2.3.15 *)
+  (* TODO check revocation signatures *)
+    (* RFC 4880: - One or more User ID packets: *)
+    (* Immediately following each User ID packet, there are zero or more
+   Signature packets.  Each Signature packet is calculated on the
+   immediately preceding User ID packet and the initial Public-Key
+    packet.*)
+    (* TODo (followed by zero or more signature packets) -- we fail if there are unsigned Uids - design feature? *)
+  (* TODO verify that primary key has key flags "certify" ? *)
+    packets |> take_and_validate_certifications Uid_tag
+        (validate_uid_certification ~current_time root_pk)
         (* We treat these four completely equally: *)
         [ Generic_certification_of_user_id_and_public_key_packet
         ; Persona_certification_of_user_id_and_public_key_packet
@@ -644,10 +663,109 @@ struct
       error_msg (fun m -> m "validation of user attribute sig not implemented")
     in
     packets |> take_and_validate_certifications User_attribute_tag
-      (validate_user_attribute_signature) []
+      (validate_user_attribute_signature root_pk) []
     >>= fun (verified_user_attributes, packets) ->
 
-    let rec find_subkeys_and_their_sigs acc =
+    Logs.debug (fun m -> m "About to look for subkeys") ;
+
+    take_subkeys_cb root_pk packets >>= fun (subkey_list, packets) ->
+    true_or_error (List.length subkey_list < 500)
+      (fun m -> m "Encountered more than 500 subkeys; this is probably not a legitimate public key") >>= fun () ->
+    debug_if_any "subkeys" subkey_list ;
+    (* TODO consider putting this stuff above, and implementing a counter for DoS prevention *)
+
+    (* transform this stuff into either a private or public key*)
+    finalize_key packets root_key verified_uids subkey_list
+
+  let root_sk_of_packets ~current_time packets
+    : (transferable_secret_key * 'datatype
+      , [> `Msg of string | `Incomplete_packet]) result =
+    let take_root_key = function
+      | (Secret_key_packet sk, _)::tl ->Ok (sk.Public_key_packet.public, sk, tl)
+      | _ -> R.error (`Msg "Transferable secret  key does not start with an SK")
+    in
+    let take_subkeys root_pk packets =
+    (* TODO this is a bit of copy-pasted from root_pk_of_packets; should find a
+            way to merge the two *)
+      let check_subkey_and_sigs
+          ({binding_signatures; revocations; secret_key} as subkey) =
+        binding_signatures |> result_filter
+          (fun t -> check_subkey_binding_signature ~current_time root_pk secret_key.public t
+                    |> log_failed (fun m -> m "Skipping subkey binding due to sigfail")
+          ) >>= fun binding_signatures ->
+        true_or_error (binding_signatures <> [])
+          (fun m -> m "No valid binding signatures on this subkey")
+        >>| fun () ->
+        (* TODO handle revocations *)
+        {subkey with binding_signatures
+                   ; revocations = []}
+      in
+      let rec find_subkeys_and_their_sigs acc =
+        begin function
+        | (Secret_key_subpacket subkey, _)::tl ->
+          Logs.debug (fun m -> m "got a subkey") ;
+          tl |> take_signatures_of_types
+            [ Subkey_binding_signature
+            ; Subkey_revocation_signature
+            (* TODO Embedded Sigs: ; Primary_key_binding_signature *)
+               (* TODO wtf gnupg -- for now ignore this: *)
+            ;  Generic_certification_of_user_id_and_public_key_packet
+            ]
+          >>= fun (sigs, non_sig_tl) ->
+          let filter_sig sig_type =
+            List.filter (fun t -> t.signature_type = sig_type) sigs in
+          let subkey : private_subkey =
+            { secret_key = subkey
+            ; binding_signatures = filter_sig Subkey_binding_signature
+            ; revocations = filter_sig Subkey_revocation_signature
+            }
+          in
+          find_subkeys_and_their_sigs (subkey::acc) non_sig_tl
+        | tl -> Ok (List.rev acc, tl)
+        end
+      in
+      find_subkeys_and_their_sigs [] packets
+    in
+
+    let finalize_key packets root_key uids secret_subkeys =
+      ( {root_key ; uids; secret_subkeys}
+      , packets) |> R.ok
+    in
+    transferable_of_packets ~current_time packets
+      take_root_key
+      take_subkeys
+      finalize_key
+
+  let root_pk_of_packets (* TODO aka root_key_of_packets *)
+    ~current_time
+    (packets : ((packet_type * Cs.t) list) as 'packets)
+  : (transferable_public_key * 'packets,
+     [>  `Incomplete_packet | `Msg of string ] as 'error) result
+    =
+  (* RFC 4880: 11.1 Transferable Public Keys *)
+  (* this function imports the output of gpg --export *)
+
+  (* RFC 4880: - One Public-Key packet: *)
+    let take_root_key = begin function
+      | (Public_key_packet pk, _) :: tl -> Ok (pk, pk, tl)
+      | _ -> R.error (`Msg "Transferable public key does not start with a PK")
+    end in
+
+    let take_subkeys root_pk packets =
+      let check_subkey_and_sigs
+          ({binding_signatures; revocations; key} as subkey) =
+        binding_signatures |> result_filter
+          (fun t -> check_subkey_binding_signature ~current_time root_pk key t
+                    |> log_failed (fun m -> m "Skipping subkey binding due to sigfail")
+          ) >>= fun binding_signatures ->
+        true_or_error (binding_signatures <> [])
+          (fun m -> m "No valid binding signatures on this subkey")
+        >>| fun () ->
+        (* TODO handle revocations *)
+        {subkey with binding_signatures
+                   ; revocations = []}
+      in
+      let rec find_subkeys_and_their_sigs acc =
       begin function
         | (Public_key_subpacket subkey, _)::tl ->
           Logs.debug (fun m -> m "got a subkey") ;
@@ -667,42 +785,29 @@ struct
             ; revocations = filter_sig Subkey_revocation_signature
             }
           in
-          find_subkeys_and_their_sigs (subkey::acc) non_sig_tl
+          begin match check_subkey_and_sigs subkey with
+          | Ok subkey -> find_subkeys_and_their_sigs (subkey::acc) non_sig_tl
+          | Error _   -> find_subkeys_and_their_sigs acc non_sig_tl (*skip bad*)
+          end
         | tl -> Ok (List.rev acc, tl)
       end
+      in
+      find_subkeys_and_their_sigs [] packets
     in
-    Logs.debug (fun m -> m "About to look for subkeys") ;
-    find_subkeys_and_their_sigs [] packets
-    >>= fun ((subkey_list : subkey list) , packets) ->
-    true_or_error (List.length subkey_list < 500)
-      (fun m -> m "Encountered more than 500 subkeys; this is probably not a legitimate public key")
-    >>= fun () ->
 
-    debug_if_any "subkeys" subkey_list ;
-    (* TODO consider putting this stuff above, and implementing a counter for DoS prevention *)
-    let check_subkey_and_sigs
-      ({binding_signatures; revocations; key} as subkey) =
-      binding_signatures |> result_filter
-        (fun t -> check_subkey_binding_signature ~current_time root_pk key t
-           |> log_failed (fun m -> m "Skipping subkey binding due to sigfail")
-        ) >>= fun binding_signatures ->
-        true_or_error (binding_signatures <> [])
-          (fun m -> m "No valid binding signatures on this subkey")
-        >>| fun () ->
-          (* TODO handle revocations *)
-        {subkey with binding_signatures
-                   ; revocations = []}
-    in
-    subkey_list |> result_filter check_subkey_and_sigs
-    >>| fun verified_subkeys ->
-
-    ( { root_key = root_pk
+    let finalize_key packets root_pk verified_uids verified_subkeys =
+    Ok ( { root_key = root_pk
       ; revocations = [] (* TODO *)
       ; uids = verified_uids
       ; user_attributes = [] (* TODO *)
       ; subkeys = verified_subkeys
       }
       , packets)
+    in
+    transferable_of_packets ~current_time packets
+      take_root_key
+      take_subkeys
+      finalize_key
 end
 
 let armored_or_not ?armored armor_type cs =
@@ -725,6 +830,12 @@ let decode_public_key_block ~current_time ?armored cs
   Signature.root_pk_of_packets ~current_time pub_cs
   |> R.reword_error Types.msg_of_error)
 
+let decode_secret_key_block ~current_time ?armored cs
+  =
+  armored_or_not ?armored Ascii_private_key_block cs
+  >>= (fun sec_cs -> parse_packets sec_cs)
+  >>= (fun sec_cs -> Signature.root_sk_of_packets ~current_time sec_cs )
+
 let decode_detached_signature ?armored cs =
   armored_or_not ?armored Ascii_signature cs
   >>= (fun sig_cs -> parse_packets sig_cs |> R.reword_error Types.msg_of_error)
@@ -741,20 +852,21 @@ let decode_secret_key_block ?armored cs =
   >>= (fun key_cs -> parse_packets key_cs |> R.reword_error Types.msg_of_error)
   (*  TODO  *)
 
-let new_transferable_public_key
+let new_transferable_secret_key
     ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t)
     version
     (root_key : Public_key_packet.private_key)
       (* TODO revocations *)
-    (uids : Uid_packet.t list) (* TODO revocations*)
+    (uncertified_uids : Uid_packet.t list) (* TODO revocations*)
     (* TODO user_attributes *)
     (priv_subkeys : Public_key_packet.private_key list) (* TODO revocations*)
-  : (Signature.transferable_public_key, [>]) result =
+  : (Signature.transferable_secret_key, [>]) result =
   if version <> V4 then error_msg (fun x -> x "wrong version %d" 3)
   else
   let () = Logs.debug (fun m -> m "trying to certify UIDs") in
   (* TODO create relevant signature subpackets *)
-  uids |> result_ok_list_or_error (fun uid ->
+  uncertified_uids
+  |> result_ok_list_or_error (fun uid ->
       Signature.certify_uid ~g ~current_time root_key uid
       >>| fun certification ->
       { Signature.uid ; certifications = [certification] }
@@ -765,19 +877,38 @@ let new_transferable_public_key
     error_msg (fun m ->m "No UIDs given. Need at least one.")
   else
   priv_subkeys |> result_ok_list_or_error
-        (fun subkey ->
-        let subkey_pk = Public_key_packet.public_of_private subkey in
-        Signature.certify_subkey ~g ~current_time root_key subkey
-        >>| fun certification ->
-        {Signature.key = subkey_pk
-        ; binding_signatures = [certification] ; revocations = [] }
-      )
-  >>| fun certified_subkeys ->
-  { Signature.revocations = []
-  ; root_key = root_key.Public_key_packet.public
-  ; uids
-  ; user_attributes = []
-  ; subkeys = certified_subkeys}
+    (fun subkey ->
+       Signature.certify_subkey ~g ~current_time root_key subkey
+       >>| fun certification -> {Signature.secret_key = subkey
+                                ; binding_signatures = [certification]
+                                ; revocations = [] }
+    ) >>| fun certified_subkeys ->
+  ({ Signature.root_key
+   ; uids
+   ; secret_subkeys = certified_subkeys
+   } : Signature.transferable_secret_key)
+
+let serialize_uid_certifications (uids: Signature.uid list) =
+  uids |>
+  result_ok_list_or_error (fun {Signature.uid;certifications} ->
+      serialize_packet V4 (Uid_packet uid) >>= fun uid_cs ->
+      certifications |> result_ok_list_or_error (fun s ->
+          serialize_packet V4 (Signature_type s))
+      >>| fun certs_cs -> Cs.concat (uid_cs::certs_cs))
+
+let serialize_transferable_secret_key version {Signature.root_key ; uids ; secret_subkeys} =
+  let buf = Cs.W.create 2000 in
+  serialize_packet version (Secret_key_packet root_key) >>| Cs.W.cs buf >>= fun () ->
+  serialize_uid_certifications uids >>| Cs.concat >>| Cs.W.cs buf >>= fun () ->
+  secret_subkeys |> result_ok_list_or_error
+    (fun {Signature.secret_key;binding_signatures;revocations} ->
+       serialize_packet V4 (Secret_key_subpacket secret_key) >>= fun key_cs ->
+       (binding_signatures @ revocations)
+       |> result_ok_list_or_error
+         (fun s -> serialize_packet V4 (Signature_type s))
+       >>| List.cons key_cs >>| Cs.concat
+    ) >>| Cs.concat >>| Cs.W.cs buf >>= fun () ->
+  Ok (Cs.W.to_cs buf)
 
 let serialize_transferable_public_key (pk : Signature.transferable_public_key) =
   let open Signature in
@@ -787,13 +918,7 @@ let serialize_transferable_public_key (pk : Signature.transferable_public_key) =
   >>| Cs.concat >>= fun revocations ->
 
   (* serialize UIDs and certifications: *)
-  pk.uids |> result_ok_list_or_error (fun {uid;certifications} ->
-      serialize_packet V4 (Uid_packet uid) >>= fun uid_cs ->
-      certifications |> result_ok_list_or_error (fun s ->
-          serialize_packet V4 (Signature_type s))
-      >>| fun certs_cs -> Cs.concat (uid_cs::certs_cs)
-    ) >>| Cs.concat
-  >>= fun uids_cs ->
+  serialize_uid_certifications pk.uids >>| Cs.concat >>= fun uids_cs ->
 
   let user_attributes = Cs.create 0 in (* TODO serialize user attributes*)
 

@@ -18,9 +18,15 @@ module Signature : sig
   type t
   type uid = { uid : Uid_packet.t ; certifications : Signature_packet.t list}
   type user_attribute = { certifications : Signature_packet.t list }
+  (* TODO figure out abstractions for public/private keys that let them
+          share data structures (only "key" and "root_key" and "subkeys" below
+          actually differ in <type subkey> / <type transferable_public_key> *)
   type subkey = { key : Public_key_packet.t
                 ; binding_signatures : Signature_packet.t list
                 ; revocations : Signature_packet.t list }
+  type private_subkey = { secret_key : Public_key_packet.private_key
+                        ; binding_signatures : Signature_packet.t list
+                        ; revocations : Signature_packet.t list }
   type transferable_public_key =
     {
       root_key : Public_key_packet.t
@@ -34,6 +40,23 @@ module Signature : sig
     ; subkeys : subkey list
       (** Zero or more subkey packets *)
     }
+
+  type transferable_secret_key =
+    {
+      root_key : Public_key_packet.private_key
+      (* ; revocations : Signature_packet.t list TODO *)
+    ; uids : uid list
+    (*; user_attributes : user_attribute list *)
+    ; secret_subkeys : private_subkey list
+    }
+
+  val serialize : t -> (Cs.t, [> `Msg of string ]) result
+
+  val root_sk_of_packets :
+    current_time:Ptime.t ->
+    ((packet_type * Cs.t) list as 't) ->
+    ( transferable_secret_key * 't
+    , [> `Msg of string | `Incomplete_packet]) result
 
   val root_pk_of_packets : current_time : Ptime.t ->
     ((packet_type * Cs.t) list as 't) ->
@@ -64,7 +87,17 @@ module Signature : sig
          (Cstruct.t option, [> `Msg of string ] as 'a
          ) Result.result) ->
      (t, 'a) Result.result
+
+  val sign_detached_cs :
+           g:Nocrypto.Rng.g ->
+           current_time:Ptime.t ->
+           Public_key_packet.private_key ->
+           Types.hash_algorithm ->
+           Cs.t -> (t, [> `Msg of string ]) Result.result
 end with type t = Signature_packet.t
+
+val serialize_packet : Types.openpgp_version ->
+  packet_type -> (Cstruct.t, [> `Msg of string ]) Result.result
 
 val packet_tag_of_packet : packet_type -> packet_tag_type
 
@@ -100,21 +133,31 @@ val decode_public_key_block :
   ( Signature.transferable_public_key * (packet_type * Cs.t) list
   , [> `Msg of string ]) Rresult.result
 
+val decode_secret_key_block :
+           ?armored:bool ->
+           Cs.t ->
+           ((packet_type * Cs.t) list, [> `Msg of string ]) Result.result
+
 val decode_detached_signature :
   (** TODO doc string*)
   ?armored:bool ->
   Cs.t -> (Signature.t, [> `Msg of string])result
 
-val new_transferable_public_key :
+val new_transferable_secret_key :
   g:Nocrypto.Rng.g ->
   current_time:Ptime.t ->
   Types.openpgp_version ->
   Public_key_packet.private_key ->
   Uid_packet.t list ->
   Public_key_packet.private_key list ->
-  (Signature.transferable_public_key, [> `Msg of string ]) result
+  (Signature.transferable_secret_key, [> `Msg of string ]) result
 
 val serialize_transferable_public_key :
   Signature.transferable_public_key ->
   (Cstruct.t,
-    [> `Msg of string]) result
+   [> `Msg of string]) result
+
+val serialize_transferable_secret_key :
+  Types.openpgp_version ->
+  Signature.transferable_secret_key ->
+  (Cstruct.t, [> `Msg of string ]) Result.result

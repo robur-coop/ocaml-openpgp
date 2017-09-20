@@ -279,6 +279,7 @@ module W : sig
   val char : t -> char -> unit
   val cs : t -> ?offset:int -> ?len:int -> Cstruct.t -> unit
   val str : t -> ?offset:int -> ?len:int -> string -> unit
+  val uint16 : t -> Usane.Uint16.t -> unit
   val e_ptime32 : 'error -> t -> Ptime.t -> (t, 'error) result
   val e_ptimespan32 : 'error -> t -> Ptime.Span.t -> (t, 'error) result
   (** add a char to [t] *)
@@ -312,6 +313,8 @@ end = struct
   let cs t ?(offset=0) ?len src =
     let src_len = min_len (`Cs src) len in
     Cstruct.blit src offset !t (increase t src_len) src_len
+
+  let uint16 t i = cs t (BE.create_uint16 i)
 
   let str t ?(offset=0) ?len src =
     let src_len = min_len (`Str src) len in

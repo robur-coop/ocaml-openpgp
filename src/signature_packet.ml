@@ -308,7 +308,7 @@ and cs_of_signature_subpacket pkt =
   Cs.concat [ signature_subpacket_tag_of_signature_subpacket pkt
               |> cs_of_signature_subpacket_tag
             ; cs]
-  |> log_msg (fun m -> m "serialized subpacket: @[%a@,%a@]"
+  |> log_msg (fun m -> m "serialized subpacket: @[%a@ %a@]"
                 pp_signature_subpacket pkt Cstruct.hexdump_pp cs)
 
 

@@ -28,11 +28,14 @@ let file_cb filename : unit -> ('a,'b)result =
     |> R.reword_error (fun e -> Printf.printf "whatt\n";e) |> R.get_ok
     *)
 
-let do_verify _ current_time pk_file detached_file target_file : (unit, [ `Msg of string ]) Result.result =
+let do_verify _ current_time pk_file detached_file target_file
+  : (unit, [ `Msg of string ]) Result.result =
   let res =
   cs_of_file pk_file >>= fun pk_content ->
   cs_of_file detached_file >>= fun detached_content ->
-  Logs.info (fun m -> m "Going to verify that '%S' is a signature on '%S' using key '%S'" detached_file target_file pk_file);
+  Logs.info
+  (fun m -> m "Going to verify that '%S' is a signature on '%S' using key '%S'"
+      detached_file target_file pk_file) ;
 
   Openpgp.decode_public_key_block ~current_time pk_content
   >>= fun (root_pk, extra) ->
@@ -48,19 +51,15 @@ let do_verify _ current_time pk_file detached_file target_file : (unit, [ `Msg o
   end
   in res |> R.reword_error Types.msg_of_error
 
-
 let do_genkey _ g current_time uid =
   (* TODO output private key too ; right now only a transferable public key is serialized *)
-  let res =
   Public_key_packet.generate_new ~current_time ~g Types.DSA >>= fun root_key ->
-  Openpgp.new_transferable_public_key ~g ~current_time Types.V4
+  Openpgp.new_transferable_secret_key ~g ~current_time Types.V4
     root_key [uid] []
-  >>= Openpgp.serialize_transferable_public_key
-  >>= fun key_cs ->
-  let encoded_pk = Openpgp.encode_ascii_armor Types.Ascii_public_key_block key_cs in
-  Logs.app (fun m -> m "%s" (Cs.to_string encoded_pk)) ;
-  Ok ()
-  in res |> R.reword_error Types.msg_of_error
+  >>= Openpgp.serialize_transferable_secret_key Types.V4
+  >>| fun key_cs ->
+  let encoded_pk = Openpgp.encode_ascii_armor Types.Ascii_private_key_block key_cs in
+  Logs.app (fun m -> m "%s" (Cs.to_string encoded_pk))
 
 let do_list_packets _ target =
   Logs.info (fun m -> m "Listing packets in ascii-armored structure in %s" target) ;
@@ -90,10 +89,24 @@ let do_list_packets _ target =
   in
   res |> R.reword_error Types.msg_of_error
 
+let do_sign _ g current_time secret_file target_file =
+  (
+  cs_of_file secret_file >>= Openpgp.decode_secret_key_block >>= fun sk_cs ->
+  cs_of_file target_file >>= fun target_content ->
+  Openpgp.Signature.root_sk_of_packets ~current_time sk_cs
+  >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (sk,_) ->
+  Openpgp.Signature.sign_detached_cs ~g ~current_time sk.root_key
+    Types.SHA384 target_content >>= fun sig_t ->
+  Openpgp.serialize_packet V4 (Signature_type sig_t)
+  >>| Openpgp.encode_ascii_armor Types.Ascii_signature
+  >>| Cs.to_string >>= fun encoded ->
+  Logs.app (fun m -> m "%s" encoded) ; Ok ()
+  )|> R.reword_error Types.msg_of_error
+
 let setup_log style_renderer level =
   Fmt_tty.setup_std_outputs ?style_renderer ();
   Logs.set_level level;
-  Logs.set_reporter (Logs_fmt.reporter ~dst:Format.std_formatter ())
+  Logs.set_reporter (Logs_fmt.reporter ())
 
 open Cmdliner
 
@@ -193,12 +206,18 @@ let list_packets_cmd =
   Term.(term_result (const do_list_packets $ setup_log $ target)),
   Term.info "list-packets" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
 
+let sign_cmd =
+  let doc = "TODO" in
+  let man = [] in
+  Term.(term_result (const do_sign $ setup_log $ rng_seed $ override_timestamp $ pk $ target)),
+  Term.info "sign" ~doc ~sdocs:Manpage.s_common_options ~exits:Term.default_exits ~man
+
 (*in
   Term.(pure cli_main $ pk),
   Term.info "opgp" ~version:"%%VERSION_NUM%%" ~doc ~man
 *)
 
-let cmds = [verify_cmd ; genkey_cmd; list_packets_cmd]
+let cmds = [verify_cmd ; genkey_cmd; list_packets_cmd; sign_cmd]
 
 let () =
   Nocrypto_entropy_unix.initialize () ;
