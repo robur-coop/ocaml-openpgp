@@ -406,14 +406,13 @@ struct
            signature that has the "sign data" flag is stating that the
            certification is for that use. *)
         if t.subpacket_data |> List.for_all (function
-           | Key_usage_flags { certify_keys = false;
-                               sign_data = false; _ }  -> true
+           | Key_usage_flags { certify_keys = false; _ }  -> true
            | Key_usage_flags _ -> false
            | _ -> true
         ) then begin
           Logs.debug (fun m -> m "Accepting subkey binding without %s @[<v>%s@]"
                                  "embedded signature because the key flags have"
-                                " { certify_keys = false@ ; sign_data=false }");
+                                " { certify_keys = false }");
           R.ok ()
         end else
            (* Subkeys that can be used for signing must accept inclusion by
