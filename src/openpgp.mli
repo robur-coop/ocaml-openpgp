@@ -77,6 +77,10 @@ module Signature : sig
        ([> `Msg of string] as 'err)) result) ->
     ([> `Good_signature ], 'err ) result
 
+  val verify_detached_cs :
+    current_time : Ptime.t -> transferable_public_key ->
+    t -> Cs.t -> ([> `Good_signature ], [> `Msg of string] ) result
+
   val sign_detached_cb :
      g:Nocrypto.Rng.g -> (* PRNG *)
      current_time:Ptime.t ->

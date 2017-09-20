@@ -331,17 +331,27 @@ struct
       (signature:t) (cb:(unit -> (Cs.t option, [> `Msg of string]) result))
   : ('ok, [> `Msg of string]) result =
     (* TODO check pk is valid *)
-    if signature.signature_type <> Signature_of_binary_document then
-      error_msg (fun m -> m "TODO not implemented: we do not handle the newline-normalized@,(->\\r\\n) signature_type.Signature_of_canonical_text_document")
-    else
+    true_or_error (signature.signature_type = Signature_of_binary_document)
+      (fun m -> m "TODO not implemented: we do not handle the newline-normalized@,(->\\r\\n) signature_type.Signature_of_canonical_text_document") >>= fun () ->
     let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
-    Logs.debug (fun m -> m "hashing detached signature...");
+    Logs.debug (fun m -> m "hashing detached signature with callback...");
     let rec hash_loop () =
       cb () >>= function
       | None -> Ok signature
       | Some data -> hash_cb data ; hash_loop ()
     in hash_loop ()
     >>= fun _ -> hash_packet V4 hash_cb (Signature_type signature) >>= fun () ->
+    Logs.debug (fun m -> m "Checking detached signature");
+    check_signature_transferable current_time pk hash_final signature
+
+  let verify_detached_cs ~current_time pk signature cs =
+    let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
+    true_or_error (signature.signature_type = Signature_of_binary_document)
+      (fun m -> m "TODO not implemented: we do not handle the newline-normalized@,(->\\r\\n) signature_type.Signature_of_canonical_text_document") >>= fun () ->
+    let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
+    Logs.debug (fun m -> m "hashing detached signature with Cs.t ...");
+    hash_cb cs ;
+    hash_packet V4 hash_cb (Signature_type signature) >>= fun () ->
     Logs.debug (fun m -> m "Checking detached signature");
     check_signature_transferable current_time pk hash_final signature
 

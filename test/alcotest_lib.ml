@@ -24,10 +24,21 @@ let test_gnupg_maintainer_key () =
   >>= Openpgp.decode_public_key_block ~current_time ~armored:true
   |> R.reword_error (function `Msg s -> failwith s) in ()
 
-let test_gnupg_key () =
+let test_gnupg_key_001 () =
   ignore ((cs_of_file "test/keys/gnupg.test.001.pk.asc"
   >>= Openpgp.decode_public_key_block ~current_time)
   |> R.reword_error (function `Msg s -> failwith s)) ; ()
+
+let test_gnupg_key_002 () =
+  ignore (
+    (cs_of_file "test/keys/gnupg.test.002.pk.asc"
+     >>= Openpgp.decode_public_key_block ~current_time) >>| fst >>= fun pk ->
+     cs_of_file "test/keys/message.001.txt.sig"
+     >>= Openpgp.decode_detached_signature  >>= fun detach_sig ->
+     cs_of_file "test/keys/message.001.txt" >>= fun msg ->
+     Openpgp.Signature.verify_detached_cs ~current_time pk detach_sig msg
+     |> R.reword_error (function `Msg s -> failwith s)
+  ) ; ()
 
 let tests =
   [
@@ -38,7 +49,8 @@ let tests =
   ; "cstruct wrapper module", Alcotest_cs.tests
   ; "Parsing keys",
     [ "GnuPG maintainer key (4F25E3B6)", `Slow, test_gnupg_maintainer_key
-    ; "GnuPG RSA-SC + RSA-E (001)", `Slow, test_gnupg_key
+    ; "GnuPG RSA-SC + RSA-E (001)", `Slow, test_gnupg_key_001
+    ; "GnuPG RSA-SC + RSA-S (002)", `Slow, test_gnupg_key_002
     ]
   ;
   ]
