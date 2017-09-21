@@ -44,10 +44,7 @@ let do_verify _ current_time pk_file detached_file target_file
   begin match Openpgp.Signature.verify_detached_cb ~current_time root_pk detached_sig (file_cb target_file) with
     | Ok `Good_signature ->
       Logs.app (fun m -> m "Good signature!"); Ok ()
-    | (Error _ as err) ->
-      Logs.err (fun m -> m "BAD signature!") ;
-      Printf.eprintf "pk:\n%s\nsig:\n%s\n\n%!" (Cs.to_string pk_content) (Cs.to_string detached_content);
-      err
+    | (Error (`Msg err)) -> Types.error_msg (fun m -> m "BAD signature: %s" err)
   end
   in res |> R.reword_error Types.msg_of_error
 
@@ -125,21 +122,22 @@ let sk =
   Arg.(required & opt (some string) None & info ["sk";"secret"] ~docs ~doc)
 let signature =
   let doc = "Path to a file containing a detached signature" in
-  Arg.(required & opt (some string) None & info ["sig";"signature"] ~docs ~doc)
+  Arg.(required & opt (some string) None & info ["signature"] ~docs ~doc)
 
 let rng_seed : Nocrypto.Rng.g Cmdliner.Term.t =
-  let doc = "Manually supply a hex-encoded seed for the pseudo-random number generator. Used for debugging; SHOULD NOT be used for generating real-world keys" in
-  let random_seed seed_hex =
-     (Cs.of_hex seed_hex |> R.reword_error
-       (fun _ -> "rng-seed: invalid hex string") >>| fun seed ->
-     Logs.warn (fun m -> m "PRNG from seed %a" Cstruct.hexdump_pp seed );
-     Nocrypto.Rng.generator := Nocrypto.Rng.create ~seed
-         (module Nocrypto.Rng.Generators.Fortuna)
-     ; !Nocrypto.Rng.generator
-     ) |> R.to_presult
+  let doc = {|Manually supply a hex-encoded seed for the pseudo-random number
+              generator. Used for debugging; SHOULD NOT be used for generating
+              real-world keys!" |} in
+  let random_seed : Nocrypto.Rng.g Cmdliner.Arg.parser = fun seed_hex ->
+    (Cs.of_hex seed_hex |> R.reword_error
+        (fun _ -> Fmt.strf "--rng-seed: invalid hex string: %S" seed_hex)
+      >>| fun seed ->
+     let()=Logs.warn (fun m -> m "PRNG from seed %a" Cstruct.hexdump_pp seed)in
+     Nocrypto.Rng.create ~seed (module Nocrypto.Rng.Generators.Fortuna)
+    ) |> R.to_presult
   in
-  Arg.(value & opt (random_seed, (fun fmt _ -> Format.fprintf fmt "RNG-SEED"))
-       !Nocrypto.Rng.generator & info ["rng-seed"] ~docs ~doc)
+  Arg.(value & opt (random_seed, (fun fmt _ -> Format.fprintf fmt "OS PRNG"))
+       (!Nocrypto.Rng.generator:Nocrypto.Rng.g) & info ["rng-seed"] ~docs ~doc)
 
 let override_timestamp : Ptime.t Cmdliner.Term.t =
   let doc = "Manually override the current timestamp (useful for reproducible debugging)" in
@@ -164,7 +162,7 @@ let uid =
   Arg.(required & opt (some string) None & info ["uid"] ~docs ~doc)
 
 let pk_algo : Types.public_key_algorithm Cmdliner.Term.t =
-  let doc = "Public key algorithm (either \"RSA\" or \"DSA\")" in
+  let doc = "Public key algorithm (either $(b,RSA) or $(b,DSA))" in
   let convert s = s |> Types.public_key_algorithm_of_string
                   |> function Ok x -> `Ok x | Error (`Msg x) -> `Error x in
   Arg.(value & opt (convert, Types.pp_public_key_algorithm) (Types.DSA)
@@ -178,10 +176,11 @@ let secret =
     Arg.(required & opt (some string) None & info ["public"] ~docs ~doc)
 
 let genkey_cmd =
-  let doc = "Generate a new keypair" in
+  let doc = "Generate a new secret key" in
   let man = [
-    `S "USAGE" ;
-    `P "$(tname) --uid 'My name'" ;
+    `S "SYNOPSIS" ;
+    `P "$(mname) $(tname) $(b,--uid) $(i,'My name') [$(i,OPTIONS)]" ;
+    (*^TODO this is aworkaround https://github.com/dbuenzli/cmdliner/issues/82*)
     ]
   in
   Term.(term_result (const do_genkey $ setup_log $ rng_seed $ override_timestamp
@@ -191,10 +190,12 @@ let genkey_cmd =
 let verify_cmd =
   let doc = "Verify a detached signature on a file" in
   let man = [
+    `S Manpage.s_synopsis ;
+    `P {|$(tname) [$(i,OPTIONS)] $(b,--pk) $(i,public-key.asc) $(b,--sig)
+                   $(i,detached-signature.asc) $(i,FILE) |} ;
     `S Manpage.s_description ;
-    `P "Verify that the [signature] is a signature on [target] issued by [pk].";
-    `S "USAGE" ;
-    `P "$(tname) --pk public-key.asc --sig detached-signature.asc FILE" ;
+    `P {|Verify that the $(i,signature) is a signature on $(i,FILE) issued
+         by $(i,pk). |};
     ]
   in
   Term.(term_result (const do_verify $ setup_log $ override_timestamp $ pk
@@ -204,7 +205,7 @@ let verify_cmd =
     ~man_xrefs:[`Cmd "sign"]
 
 let list_packets_cmd =
-  let doc = "Pretty-print the packets contained in FILE" in
+  let doc = "Pretty-print the packets contained in a file" in
   let man = [] in
   Term.(term_result (const do_list_packets $ setup_log $ target)),
   Term.info "list-packets" ~doc ~sdocs
@@ -213,13 +214,13 @@ let list_packets_cmd =
 let sign_cmd =
   let doc = "Produce a detached signature on a file" in
   let man = [
+    `S Manpage.s_synopsis ;
+    `P {| $(mname) $(tname) [$(i,OPTIONS)] $(b,--sk) $(i,secret-key.asc FILE)|};
     `S Manpage.s_description ;
-    `P ( "Takes a secret key and a target file as arguments and outputs an "
-         ^ "ASCII-armored signature that can be used with the corresponding "
-         ^ "public key to verify the authenticity of the target file.") ;
-    `P "This is similar to GnuPG's --detach-sign" ;
-    `S "USAGE" ;
-    `P "$(mname) $(tname) --sk secret-key.asc FILE_TO_SIGN" ;
+    `P {|Takes a $(i,secret key) and a $(i,FILE) as arguments and outputs an
+         ASCII-armored signature that can be used with the corresponding
+         public key to verify the authenticity of the target $(i,FILE). |} ;
+    `P "This is similar to GnuPG's $(b,--detach-sign)" ;
     ]
   in
   Term.(term_result (const do_sign $ setup_log $ rng_seed $ override_timestamp
@@ -228,23 +229,45 @@ let sign_cmd =
                    ~man_xrefs:[`Cmd "verify"]
 
 let help_cmd =
-  let doc = "$(tname) is a commandline interface to the Ocaml OpenPGP library." in
+  let doc = {| $(mname) is a commandline interface to the OCaml-OpenPGP
+               library. |} in
   let man =
-[ `S "EXAMPLES" ;
-  `P "# $(mname) genkey --uid 'Abbot Hoffman' > abbie.priv" ;
-  `P "# $(mname) sign --sk abbie.priv MKULTRA.DOC > MKULTRA.DOC.asc" ;
-  `P "# gpg2 --import abbie.priv ; gpg --export 'Abbot Hoffman' > abbie.pub";
+[
+  `S "DESCRIPTION" ;
+  `P {|This application aims to be a memory-safe language alternative to the
+       functionality provided by GnuPG's $(b,gpg2) command.
+       $(mname) implements the parts of the OpenPGP standard (RFC 4880) that
+       concerns  cryptographic signing.
+       It $(i,does not handle encryption or web-of-trust), and was originally inspired by the
+       wish to be able to verify PGP signatures from software authors.|} ;
+  `S "USAGE" ;
+  `P {|Note that you only have to type out a unique prefix for the subcommands.
+       That means that $(mname) $(b,l) is an alias for
+       $(mname) $(b,list-packets) ;
+       That $(mname) $(b,v) is an alias for $(mname) $(b,verify) and so forth.|}
+ ;`P {|The same is the case for options,
+       so $(b,--rng) is an alias for $(b,--rng-seed) ;|} ;
+  `Noblank ;
+  `P {|$(mname) $(b,v) $(b,--sig) $(i,file.asc) is equivalent to
+       $(mname) $(b,verify) $(b,--signature) $(i,file.asc) |} ;
+  `S "EXAMPLES" ;
+  `P "# $(mname) $(b,genkey --uid) 'Abbot Hoffman' $(b,>) abbie.priv" ;
+  `P "# $(mname) $(b,sign --sk) abbie.priv MKULTRA.DOC $(b,>) MKULTRA.DOC.asc" ;
+  `P "# $(b,gpg2 --import) abbie.priv " ; `Noblank ;
   `P "gpg: key 6EF4BA2AC8028106: public key \"Abbot Hoffman\" imported" ;
-  `P "gpg: key 6EF4BA2AC8028106: secret key imported" ;
-  `P "gpg: Total number processed: 1" ;
-  `P "gpg:               imported: 1" ;
-  `P "gpg:       secret keys read: 1" ;
+     `Noblank ;
+  `P "gpg: key 6EF4BA2AC8028106: secret key imported" ; `Noblank;
+  `P "gpg: Total number processed: 1" ; `Noblank ;
+  `P "gpg:               imported: 1" ; `Noblank ;
+  `P "gpg:       secret keys read: 1" ; `Noblank ;
   `P "gpg:   secret keys imported: 1" ;
-  `P "# $(mname) verify --sig MKULTRA.DOC.asc --pk abbie.pub  MKULTRA.DOC" ;
-  `P "opgp: [ERROR] Failed decoding ASCII armor ASCII public key block," ;
-  `P "              parsing as raw instead" ;
+  `P {|# $(b,gpg2 --export) 'Abbot Hoffman' $(b,>) abbie.pub |};
+  `P {|# $(mname) $(b,verify --sig) MKULTRA.DOC.asc $(b,--pk) abbie.pub
+                   MKULTRA.DOC |} ; `Noblank ;
+  `Pre {|opgp: [ERROR] Failed decoding ASCII armor ASCII public key block,
+              parsing as raw instead|} ; `Noblank ;
   `P "Good signature!" ;
-  `P "# echo $?" ;
+  `P {|# $(b,echo \$?) |}; `Noblank ;
   `P "0" ;
   `S Manpage.s_bugs;
   `P ( "Please report bugs on the issue tracker at "
