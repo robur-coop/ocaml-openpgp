@@ -415,10 +415,9 @@ struct
            who is making the statement -- for example, a certification
            signature that has the "sign data" flag is stating that the
            certification is for that use. *)
-        if t.subpacket_data |> List.for_all (function
-           | Key_usage_flags { certify_keys = false; _ }  -> true
-           | Key_usage_flags _ -> false
-           | _ -> true
+        if SubpacketMap.get_opt Key_usage_flags t.subpacket_data |> (function
+           | Some (Key_usage_flags { certify_keys = false; _ })  -> true
+           | _ -> false (* fail if certify_keys = false or if there are no KUF*)
         ) then begin
           Logs.debug (fun m -> m "Accepting subkey binding without %s @[<v>%s@]"
                                  "embedded signature because the key flags have"
@@ -427,23 +426,19 @@ struct
         end else
            (* Subkeys that can be used for signing must accept inclusion by
               embedding a signature on the root key (made using the subkey)*)
-           let rec loop = function
-           | [] ->
-             error_msg (fun m ->
-                m "no embedded signature subpacket in subkey binding signature")
-           | [Embedded_signature embedded_sig] ->
-               check_embedded_signature current_time root_pk
-                 embedded_sig {key = subkey
-                              ; revocations = []; binding_signatures=[]}
-           | _::tl -> loop tl
-           in
-           loop t.subpacket_data
+           SubpacketMap.get Embedded_signature t.subpacket_data
+           |> log_failed (fun m ->
+               m "no embedded signature subpacket in subkey binding signature")
+           >>= fun (Embedded_signature embedded_sig) ->
+           check_embedded_signature current_time root_pk
+             embedded_sig { key = subkey
+                          ; revocations = []; binding_signatures=[]}
            >>= fun `Good_signature -> R.ok ()
       end
 
   let sign ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t) signature_type
       (sk : Public_key_packet.private_key)
-      (signature_subpackets : signature_subpacket list)
+      (signature_subpackets : signature_subpacket SubpacketMap.t)
       hash_algorithm (hash_cb,digest_finalizer) (* TODO def cb type with algo *)
     =
     let pk = Public_key_packet.public_of_private sk in
@@ -453,19 +448,19 @@ struct
          pk.Public_key_packet.algorithm_specific_data) (* TODO *)
     in
     (* add Signature_creation_time with [current_time] if no creation time: *)
-    let signature_subpackets =
-      (if signature_subpackets |>
-         List.exists (function Signature_creation_time _ -> true | _ -> false)
-      then signature_subpackets
-      else (Signature_creation_time current_time)::signature_subpackets
-     ) |> List.cons (Issuer_fingerprint (V4,pk.v4_fingerprint))
-          (* GnuPG won't accept keys unless they have this: *)
-       |> List.cons (Issuer_keyid (Cs.sub pk.v4_fingerprint 12 8))
+    let signature_subpackets :signature_subpacket SubpacketMap.t =
+      let v4_fp = pk.Public_key_packet.v4_fingerprint in
+      SubpacketMap.upsert Issuer_fingerprint (Issuer_fingerprint (V4,v4_fp))
+        signature_subpackets
+      |> SubpacketMap.upsert Issuer_keyid (Issuer_keyid (Cs.sub v4_fp 12 8))
+      |> SubpacketMap.add_if_empty Signature_creation_time
+        (Signature_creation_time current_time)
     in
     Logs.debug (fun m -> m "sign: constructing signature tbh") ;
     Signature_packet.construct_to_be_hashed_cs_manual V4
       signature_type public_key_algorithm
-      hash_algorithm signature_subpackets >>| hash_cb >>= fun () ->
+      hash_algorithm (SubpacketMap.to_list signature_subpackets)
+    >>| hash_cb >>= fun () ->
     Logs.debug (fun m -> m "sign: computing digest") ;
 
     let digest = digest_finalizer () in
@@ -497,11 +492,11 @@ struct
       | Some data -> hash_cb data ; io_loop ()
     in
     io_loop () >>= fun () ->
-    let subpackets = [] in
+    let subpackets = SubpacketMap.empty in
     sign ~g ~current_time Signature_of_binary_document sk subpackets hash_algo hash_tuple
 
   let sign_detached_cs ~g ~current_time secret_key hash_algo target_cs =
-    let subpackets = [ (* TODO support expiry time *) ] in
+    let subpackets = SubpacketMap.empty (* TODO support expiry time *) in
     let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
     hash_cb target_cs ;
     sign ~g ~current_time
@@ -517,12 +512,14 @@ struct
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA384 in
-    let subpackets : signature_subpacket list =
-      [ Key_usage_flags { certify_keys = true ; unimplemented = '\000'
+    let subpackets : signature_subpacket SubpacketMap.t =
+      SubpacketMap.empty |>
+      SubpacketMap.upsert Key_usage_flags
+        (Key_usage_flags { certify_keys = true ; unimplemented = '\000'
                         ; sign_data = true ; encrypt_communications = false
-                        ; encrypt_storage = false ; authentication = false }
-      ; Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365)
-      ]
+                        ; encrypt_storage = false ; authentication = false })
+      |> SubpacketMap.upsert Key_expiration_time
+        (Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365))
     in
     let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
@@ -542,7 +539,7 @@ struct
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA384 in
-    let subpackets = [ ] in
+    let subpackets = SubpacketMap.empty in
     let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
     hash_packet V4 hash_cb (Public_key_packet
        (Public_key_packet.public_of_private priv_key)) >>= fun () ->
@@ -555,12 +552,15 @@ struct
       priv_key subpackets
       hash_algo hash_tuple
 
+  let filter_signature_types sig_types sigs =
+    List.filter (fun t -> List.mem t.signature_type sig_types) sigs
+
   let take_signatures_of_types sig_types (packets:'datatype) =
       packets |> list_take_leading
         (function
           | (Signature_type signature, _) ->
-             e_true (`Msg "wrong sig type in packet")
-               (List.exists (fun t -> t = signature.signature_type) sig_types)
+            e_true (`Msg "wrong sig type in packet")
+              (filter_signature_types sig_types [signature] <> [])
                >>| fun () -> signature
           | _ -> Error (`Msg "no signature in packet list")
         )
@@ -714,24 +714,20 @@ struct
       let rec find_subkeys_and_their_sigs acc =
         begin function
         | (Secret_key_subpacket subkey, _)::tl ->
-          Logs.debug (fun m -> m "got a subkey") ;
+          Logs.debug (fun m -> m "got a secret subkey") ;
           tl |> take_signatures_of_types
-            [ Subkey_binding_signature
-            ; Subkey_revocation_signature
-            (* TODO Embedded Sigs: ; Primary_key_binding_signature *)
-               (* TODO wtf gnupg -- for now ignore this: *)
-            ;  Generic_certification_of_user_id_and_public_key_packet
-            ]
+            [ Subkey_binding_signature ; Subkey_revocation_signature ]
           >>= fun (sigs, non_sig_tl) ->
-          let filter_sig sig_type =
-            List.filter (fun t -> t.signature_type = sig_type) sigs in
+          let binding_signatures, revocations =
+            sigs |> List.partition
+              (fun t -> t.signature_type = Subkey_binding_signature) in
           let subkey : private_subkey =
-            { secret_key = subkey
-            ; binding_signatures = filter_sig Subkey_binding_signature
-            ; revocations = filter_sig Subkey_revocation_signature
-            }
+            { secret_key = subkey ; binding_signatures ; revocations }
           in
-          find_subkeys_and_their_sigs (subkey::acc) non_sig_tl
+          begin match check_subkey_and_sigs subkey with
+          | Ok subkey -> find_subkeys_and_their_sigs (subkey::acc) non_sig_tl
+          | Error _   -> find_subkeys_and_their_sigs acc non_sig_tl (*skip bad*)
+          end
         | tl -> Ok (List.rev acc, tl)
         end
       in
@@ -779,22 +775,15 @@ struct
       let rec find_subkeys_and_their_sigs acc =
       begin function
         | (Public_key_subpacket subkey, _)::tl ->
-          Logs.debug (fun m -> m "got a subkey") ;
+          Logs.debug (fun m -> m "got a public subkey") ;
           tl |> take_signatures_of_types
-            [ Subkey_binding_signature
-            ; Subkey_revocation_signature
-            (* TODO Embedded Sigs: ; Primary_key_binding_signature *)
-               (* TODO wtf gnupg -- for now ignore this: *)
-            ;  Generic_certification_of_user_id_and_public_key_packet
-            ]
+            [ Subkey_binding_signature ; Subkey_revocation_signature ]
           >>= fun (sigs, non_sig_tl) ->
-          let filter_sig sig_type =
-            List.filter (fun t -> t.signature_type = sig_type) sigs in
+          let binding_signatures, revocations =
+            sigs |> List.partition
+              (fun t -> t.signature_type = Subkey_binding_signature) in
           let subkey : subkey =
-            { key = subkey
-            ; binding_signatures = filter_sig Subkey_binding_signature
-            ; revocations = filter_sig Subkey_revocation_signature
-            }
+            { key = subkey ; binding_signatures ; revocations }
           in
           begin match check_subkey_and_sigs subkey with
           | Ok subkey -> find_subkeys_and_their_sigs (subkey::acc) non_sig_tl

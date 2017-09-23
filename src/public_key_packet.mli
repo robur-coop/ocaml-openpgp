@@ -25,6 +25,7 @@ type private_key = {
 
 val pp : Format.formatter -> t -> unit
 val pp_secret : Format.formatter -> private_key -> unit
+val pp_pk_asf : Format.formatter -> public_key_asf -> unit
 
 val hash_public_key : t -> (Cs.t -> unit) -> unit
 

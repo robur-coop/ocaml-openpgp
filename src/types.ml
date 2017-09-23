@@ -52,18 +52,25 @@ let result_filter f lst =
 let e_char_equal e c c2 = if c <> c2 then Error e else Ok c
 
 (* The polymorphic error type helps you define wrapper around error_msg: *)
-type ('a,'b,'c,'d,'err) msg_err =
-  ( ('a, Format.formatter, unit,'b) format4 -> 'c)
-  -> ('d,'err) result
-let error_msg (params : ('a,'b,'c,'d,[>`Msg of string]) msg_err) =
+type ('a,'b,'c,'return) value_msg =
+  ( ('a, Format.formatter, unit,'b) format4 -> 'c) -> 'return
+type ('a,'b,'c,'return,'err) msg_err =
+  ('a,'b,'c,('return,
+             ([> `Msg of string] as 'err)
+            ) result ) value_msg
+
+let level_msg level (params : ('a,'b,'c,[>`Msg of string]) value_msg) =
+  params @@ Fmt.kstrf (fun a -> Logs.msg level (fun m -> m "%a" Fmt.text a) ;
+                       `Msg a)
+let err_msg_debug log = Error (level_msg Logs.Debug log)
+let error_msg log = Error (level_msg Logs.Error log)
   (* <error_msg (fun m -> m "foo:%d" 123)> is <Error (`Msg "foo:123")>*)
-  params @@ Fmt.kstrf (fun a -> Logs.err (fun m -> m "%a" Fmt.text a) ;
-                                Error (`Msg a) )
 let e_true e bool = if bool then Ok () else Error e
 let true_or_error bool f : (unit,'t)result = if bool then Ok () else
-    let e = error_msg f |> R.get_error in (Error e :> (unit,'polymagic) result)
+    Error (level_msg Logs.Error f)
 let log_msg log v = Logs.debug log ; v
 let log_failed log = R.reword_error (log_msg log)
+let replace_error log v = R.reword_error (fun _ -> level_msg Logs.Error log) v
 
 let msg_of_error err =
   `Msg
@@ -76,7 +83,8 @@ let msg_of_error err =
 let pp_mpi = Z.pp_print
 
 let msg_of_invalid_mpi_parameters mpi_list : [> `Msg of string ]=
-  `Msg (Fmt.strf "%a" Fmt.(list ~sep:(unit "; ") pp_mpi) mpi_list)
+  `Msg (Fmt.strf "Invalid MPIs:@[<v>%a@]" Fmt.(list ~sep:(unit "; ") pp_mpi)
+                                          mpi_list)
 
 let pp_error ppf err =
   match msg_of_error err with
@@ -327,7 +335,7 @@ type signature_subpacket_tag =
   | Key_expiration_time
   | Preferred_symmetric_algorithms
   | Revocation_key
-  | Issuer
+  | Issuer_keyid
   | Notation_data
   | Preferred_hash_algorithms
   | Preferred_compression_algorithms
@@ -335,7 +343,7 @@ type signature_subpacket_tag =
   | Preferred_key_server
   | Primary_user_id
   | Policy_URI
-  | Key_flags (* TODO should be renamed Key_usage_flags *)
+  | Key_usage_flags
   | Signers_user_id
   | Reason_for_revocation
   | Features
@@ -358,7 +366,7 @@ let pp_signature_subpacket_tag ppf = function
     | Key_expiration_time -> "Key expiration time"
     | Preferred_symmetric_algorithms -> "Preferred_symmetric_algorithms"
     | Revocation_key -> "Revocation_key"
-    | Issuer -> "Issuer key ID"
+    | Issuer_keyid -> "Issuer key ID"
     | Notation_data -> "Notation_data"
     | Preferred_hash_algorithms -> "Preferred_hash_algorithms"
     | Preferred_compression_algorithms -> "Preferred_compression_algorithms"
@@ -366,7 +374,7 @@ let pp_signature_subpacket_tag ppf = function
     | Preferred_key_server -> "Preferred_key_server"
     | Primary_user_id -> "Primary_user_id"
     | Policy_URI -> "Policy_URI"
-    | Key_flags -> "Key_flags"
+    | Key_usage_flags -> "Key_usage_flags"
     | Signers_user_id -> "Signers_user_id"
     | Reason_for_revocation -> "Reason_for_revocation"
     | Features -> "Features"
@@ -387,7 +395,7 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
   ; '\009', Key_expiration_time
   ; '\011', Preferred_symmetric_algorithms
   ; '\012', Revocation_key
-  ; '\016', Issuer (* TODO I think this is the 64-bit keyid of the PK *)
+  ; '\016', Issuer_keyid
   ; '\020', Notation_data
   ; '\021', Preferred_hash_algorithms
   ; '\022', Preferred_compression_algorithms
@@ -395,7 +403,7 @@ let signature_subpacket_tag_enum = (*in gnupg this is enum sigsubpkttype_t *)
   ; '\024', Preferred_key_server
   ; '\025', Primary_user_id
   ; '\026', Policy_URI
-  ; '\027', Key_flags
+  ; '\027', Key_usage_flags
   ; '\028', Signers_user_id
   ; '\029', Reason_for_revocation
   ; '\030', Features
@@ -607,6 +615,7 @@ let consume_mpi buf : (mpi * Cs.t, [> `Incomplete_packet ]) result =
   let bytelen = (bitlen + 7) / 8 in
   Logs.debug (fun m -> m "going to read %d:@.%a" bytelen Cstruct.hexdump_pp buf) ;
   Cs.e_split ~start:2 `Incomplete_packet buf bytelen >>= fun (this_mpi, tl) ->
+  Logs.debug (fun m -> m "splitmpi");
   R.ok (mpi_of_cs_no_header this_mpi, tl)
 
 let crc24 (buf : Cs.t) : Cstruct.t =
@@ -849,7 +858,8 @@ let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
     | 1024 , 160 ,(SHA1|SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | 2048 , 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | (2048|3072), 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
-    | _ , _ , _ -> Error mpi_error
+    | _ , _ , _ ->  Logs.debug (fun m -> m "failing dsa param checks") ;
+                    Error mpi_error
   end >>= fun () ->
 
   (* - q : q < p *)

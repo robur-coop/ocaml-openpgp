@@ -5,6 +5,68 @@ type signature_asf =
   | RSA_sig_asf of { m_pow_d_mod_n : mpi } (* PKCS1-*)
   | DSA_sig_asf of { r: mpi; s: mpi; }
 
+let pp_signature_asf fmt sig_asf =
+  Fmt.pf fmt "%s" @@ match sig_asf with
+  | RSA_sig_asf _ -> "RSA signature"
+  | DSA_sig_asf _ -> "DSA signature"
+
+module SubpacketMap : sig
+  type 'element t (* TODO s/'element/signature_subpacket/g *)
+  type tag = signature_subpacket_tag
+  val empty : 'a t
+  val cardinality : 'a t -> int
+  val add_if_empty : tag -> 'element -> 'element t -> 'element t
+  val upsert : tag -> 'element -> 'element t -> 'element t
+  val to_list : 'element t -> 'element list
+  val get_opt : tag -> 'element t -> 'element option
+  val get : tag -> 'element t -> ('element,[>`Msg of string]) result
+end = struct
+  type tag = signature_subpacket_tag
+  type 'element value = {index: int ; tag: tag; element : 'element}
+  type 'element t = {count : int ; lst : 'element value list}
+
+  let empty = {count = 0 ; lst = []}
+  let exists ntag t =
+    t.lst |> List.exists (function
+        | {tag; _ } when ntag = tag -> true
+        | _ -> false )
+
+  let cardinality {count; _ } = count
+  let append tag element t =
+    let count = succ t.count in
+    {count ; lst = {index = count ; tag ; element}::t.lst}
+
+  let add_if_empty (tag:tag) (element:'element) (t:'element t) =
+    if exists tag t then t else append tag element t
+
+  let upsert (tag:tag) (element:'element) (t:'element t) =
+    if exists tag t
+    then
+      let lst =
+      t.lst |> List.fold_left (fun acc ->
+        fun ({index; _} as e) ->
+          if e.tag = tag then
+            {index; tag; element}::acc
+          else e::acc) [] |> List.rev
+       in {t with lst}
+    else
+      append tag element t
+
+  let to_list t = List.rev_map (fun {element;_} -> element) t.lst
+
+  let get_opt tag t =
+    begin try
+        Some (t.lst |> List.find (fun {tag = needle;_} -> tag = needle)
+             |> fun {element ; _} -> element
+             )
+    with Not_found -> None end
+
+  let get tag t =
+    match get_opt tag t with
+    | Some e -> Ok e
+    | None -> err_msg_debug (fun m -> m "not found")
+end
+
 (* [t] and [signature_subpacket] are mutually recursive
    due to Embedded_signature containing [t] *)
 type t = {
@@ -14,7 +76,7 @@ type t = {
   hash_algorithm : hash_algorithm ;
   (* This implementation ignores "unhashed subpacket data",
      so we only store "hashed subpacket data": *)
-  subpacket_data : signature_subpacket list ;
+  subpacket_data : signature_subpacket SubpacketMap.t ;
   algorithm_specific_data : signature_asf;
 }
 
@@ -35,12 +97,12 @@ let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_
   | Signature_creation_time _ -> Signature_creation_time
   | Signature_expiration_time _ -> Signature_expiration_time
   | Key_expiration_time _ -> Key_expiration_time
-  | Key_usage_flags _ -> Key_flags
+  | Key_usage_flags _ -> Key_usage_flags
   | Issuer_fingerprint _ -> Issuer_fingerprint
   | Preferred_hash_algorithms _ -> Preferred_hash_algorithms
   | Embedded_signature _ -> Embedded_signature
   | Key_server_preferences _ -> Key_server_preferences
-  | Issuer_keyid _ -> Issuer
+  | Issuer_keyid _ -> Issuer_keyid
   | Unimplemented_subpacket (tag,_) -> tag
 
 (* [pp] and [pp_signature_subpacket] are mutually recursive because a [t] can
@@ -54,9 +116,9 @@ let rec pp ppf t =
          list ~sep:(unit "")
            (prefix cut @@ hvbox ~indent:2 @@
               pp_signature_subpacket))
-      t.subpacket_data
+      (SubpacketMap.to_list t.subpacket_data)
 
-and pp_signature_subpacket ppf pkt =
+and pp_signature_subpacket ppf (pkt) =
   let tag = signature_subpacket_tag_of_signature_subpacket pkt in
   let pp_tag = pp_signature_subpacket_tag in
   () |> Fmt.pf ppf "(%a: %a)" pp_tag tag @@ fun fmt () ->
@@ -94,8 +156,8 @@ let public_key_not_expired (current_time : Ptime.t)
     {Public_key_packet.timestamp;_} (t:t) =
   (* Verify that the creation timestamp of
      [pk] plus the [t].Key_expiration_time is ahead of [current_time] *)
-  match filter_subpacket_tag Key_expiration_time t.subpacket_data with
-  | [Key_expiration_time expiry] ->
+  match SubpacketMap.get_opt Key_expiration_time t.subpacket_data with
+  | Some (Key_expiration_time expiry) ->
     e_log_ptime_plus_span_is_smaller
       (fun m -> m "public_key_not_expired: EXPIRED: %a > %a from %a"
                      Ptime.pp current_time
@@ -104,30 +166,26 @@ let public_key_not_expired (current_time : Ptime.t)
     Logs.debug (fun m -> m "public_key_not_expired: Good: %a < %a from %a"
                  Ptime.pp current_time
                  Ptime.Span.pp expiry Ptime.pp timestamp )
-  | [] ->
+  | (None | Some _) ->
     Logs.debug (fun m -> m "public_key_not_expired: No expiration timestamp") ;
     Ok ()
-  | _ -> error_msg (fun m -> m "Multiple expiration timestamps found in sig TODO")
 
 let signature_expiration_date_is_valid (current_time : Ptime.t) (t : t) =
     (* must have a Signature_creation_time to be valid: *)
-    match filter_subpacket_tag Signature_creation_time t.subpacket_data with
-    | [] -> error_msg (fun m -> m "Missing signature creation time")
-    | [Signature_creation_time base] ->
-        begin match filter_subpacket_tag Signature_expiration_time t.subpacket_data with
-        | [] -> Ok ()
-        | [Signature_expiration_time expiry] ->
-          e_log_ptime_plus_span_is_smaller
-            (fun m -> m "Bad time: %a > %a + %a"
-               Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base )
-            (base,expiry) current_time >>| fun () ->
-              Logs.debug (fun m -> m "Good time: %a < %a + %a"
-                    Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base )
-        | _ ->
-          error_msg (fun m -> m "Multiple signature expiration times")
-        end
-    | _ ->
-      error_msg (fun m -> m "Multiple signature creation times")
+  SubpacketMap.get Signature_creation_time t.subpacket_data
+  |> replace_error (fun m -> m "Missing signature creation time")
+  >>= function
+  | (Signature_creation_time base) ->
+  begin match SubpacketMap.get_opt Signature_expiration_time t.subpacket_data with
+    | Some (Signature_expiration_time expiry) ->
+      e_log_ptime_plus_span_is_smaller
+        (fun m -> m "Bad time: %a > %a + %a"
+            Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base )
+        (base,expiry) current_time >>| fun () ->
+      Logs.debug (fun m -> m "Good time: %a < %a + %a"
+                     Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base )
+    | (None | Some _) -> Ok ()
+  end | _ -> failwith "TODO SubpacketMap.get"
 
 let check_signature (current_time : Ptime.t)
     (public_keys : Public_key_packet.t list)
@@ -148,16 +206,43 @@ let check_signature (current_time : Ptime.t)
    evaluator SHOULD consider the signature to be in error.
   *)
   let digest = digest_finalizer () in
+  let issuer_fp = SubpacketMap.get_opt Issuer_fingerprint t.subpacket_data in
+  let issuer_keyid = SubpacketMap.get_opt Issuer_keyid t.subpacket_data in
   let rec loop (pks : Public_key_packet.t list) =
-    match pks with
+    let candidate_pks , fp_mismatched =
+      pks |> List.partition (fun pk ->
+          let pk_fp = pk.Public_key_packet.v4_fingerprint in
+          let pk_keyid = Cs.sub pk_fp 12 8 in
+          (* TODO should check that [pk] has Key_usage_flags {signing=true;_}*)
+          begin match issuer_fp, issuer_keyid with
+          (* Try pk that has fp = SHA1 from t.Issuer_fingerprint: *)
+          | Some(Issuer_fingerprint (V4,sig_fp)),_ when Cs.equal sig_fp pk_fp ->
+            true
+          (* Try pk that has fp = truncated SHA1 from t.Issuer_keyid: *)
+          | _, Some (Issuer_keyid sig_id) when Cs.equal sig_id pk_keyid -> true
+          (* Try pk if [t] does not have Issuer_fingerprint nor Issuer_keyid *)
+          | None, None -> true
+          | _ , _-> false
+          end
+        )
+    in
+    Logs.debug (fun m ->
+        m "@[<v>candidate PK: %d@[<v 4>@,%a@]@,irrelevant PK: %d@[<v 4>@,%a@]@]"
+          (List.length candidate_pks)
+            Fmt.(list ~sep:(unit "@,") Public_key_packet.pp) candidate_pks
+          (List.length fp_mismatched)
+          Fmt.(list ~sep:(unit "@,") Public_key_packet.pp) fp_mismatched
+      ) ;
+    if candidate_pks = [] && fp_mismatched <> [] then
+      error_msg (fun m ->
+          m {|This %a signature references the keyid of a signing key, but
+that keyid does not belong to the public key provided.
+The signature was not signed by this public key.|}
+            pp_signature_type t.signature_type
+      )
+    else
+    match candidate_pks with
     | [] -> Error `Invalid_signature
-    | pk::remaining_keys when t.subpacket_data |> List.exists (function
-        (* Skip pk that has fp <> SHA1 from t.Issuer_fingerprint *)
-        | Issuer_fingerprint (V4,fp) when
-            not @@ Cs.equal fp pk.Public_key_packet.v4_fingerprint -> true
-        (* | Issuer keyid when TODO check for 64-bit keyid also? *)
-        | _ -> false
-      ) -> loop remaining_keys
     | pk::remaining_keys ->
     let res =
     signature_expiration_date_is_valid current_time t
@@ -190,9 +275,13 @@ let check_signature (current_time : Ptime.t)
           (PKCS.verify_cs ~key:pub ~digest (cs_of_mpi_no_header m_pow_d_mod_n))
         |> log_failed (fun m -> m "RSA signature validation failed")
         >>| fun () -> `Good_signature
-    | _ , _ ->
+    | pk_asf , sig_asf ->
       error_msg
-        (fun m -> m "Not implemented: Validating signatures with this pk type")
+        (fun m -> m {|@[<v>%s@ PK type: %a@ %a@]|}
+            {|Not implemented: Validating signatures with|}
+            Public_key_packet.pp_pk_asf pk_asf
+            pp_signature_asf sig_asf
+        )
     end)
     in
     begin match res with
@@ -260,7 +349,7 @@ and serialize_hashed_manual version sig_type pk_algo hash_algo subpacket_data =
 and serialize_hashed version {signature_type ; public_key_algorithm
                                  ; hash_algorithm ; subpacket_data;_ } =
   serialize_hashed_manual version signature_type
-    public_key_algorithm hash_algorithm subpacket_data
+    public_key_algorithm hash_algorithm (SubpacketMap.to_list subpacket_data)
 
 and construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
     subpacket_data =
@@ -283,7 +372,7 @@ and construct_to_be_hashed_cs t : ('ok,'error) result =
   (* This is a helper function to be used on [t]s for verification purposes *)
   construct_to_be_hashed_cs_manual V4 t.signature_type
     t.public_key_algorithm t.hash_algorithm
-    t.subpacket_data
+    (SubpacketMap.to_list t.subpacket_data)
 
 and cs_of_signature_subpacket pkt =
   begin match pkt with
@@ -347,7 +436,7 @@ let parse_subpacket ~allow_embedded_signatures buf
     (Cs.to_hex data)
   ) ;
   begin match tag with
-  | Key_flags when Cs.len data = 1 ->
+  | Key_usage_flags when Cs.len data = 1 ->
       Ok (Some (
         Key_usage_flags (key_usage_flags_of_char @@ Cstruct.get_char data 0)))
   (* Parse timestamps. Note that OpenPGP stores the expiration as an offset from
@@ -394,15 +483,17 @@ let parse_subpacket ~allow_embedded_signatures buf
           Unimplemented_subpacket (tag,data)
 
 let parse_subpacket_data ~allow_embedded_signatures buf
-  : (signature_subpacket list, [> `Msg of string ]) result =
-  let rec loop (packets: signature_subpacket list) buf =
-    if 0 = Cs.len buf then R.ok (List.rev packets) else
+  : (signature_subpacket SubpacketMap.t, [> `Msg of string ]) result =
+  let rec loop (packets: signature_subpacket SubpacketMap.t) buf =
+    if 0 = Cs.len buf then R.ok packets else
     consume_packet_length None buf >>= fun (pkt, extra) ->
     parse_subpacket ~allow_embedded_signatures pkt
-    >>| (fun tuple -> tuple::packets)
+    >>| (fun subpkt -> SubpacketMap.upsert
+            (signature_subpacket_tag_of_signature_subpacket subpkt)
+               subpkt packets)
     >>= fun packets -> loop packets extra
   in
-  loop [] buf
+  loop SubpacketMap.empty buf
 
 let parse_packet ?(allow_embedded_signatures=false) buf : (t, 'error) result =
   (* 0: 1: '\x04' *)
