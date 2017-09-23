@@ -50,6 +50,9 @@ module Signature : sig
     ; secret_subkeys : private_subkey list
     }
 
+  val transferable_public_key_of_transferable_secret_key
+    : transferable_secret_key -> transferable_public_key
+
   val serialize : t -> (Cs.t, [> `Msg of string ]) result
 
   val root_sk_of_packets :

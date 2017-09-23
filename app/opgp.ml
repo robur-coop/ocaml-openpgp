@@ -48,6 +48,16 @@ let do_verify _ current_time pk_file detached_file target_file
   end
   in res |> R.reword_error Types.msg_of_error
 
+let do_convert _ current_time secret_file =
+ (cs_of_file secret_file
+  >>= Openpgp.decode_secret_key_block
+  >>= Openpgp.Signature.root_sk_of_packets ~current_time >>| fst
+  >>| Openpgp.Signature.transferable_public_key_of_transferable_secret_key
+  >>= Openpgp.serialize_transferable_public_key >>|
+  Openpgp.encode_ascii_armor Types.Ascii_public_key_block >>| fun cs ->
+  Logs.app (fun m -> m "%s" (Cs.to_string cs))
+ )|> R.reword_error Types.msg_of_error
+
 let do_genkey _ g current_time uid pk_algo =
   (* TODO output private key too ; right now only a transferable public key is serialized *)
   Public_key_packet.generate_new ~current_time ~g pk_algo >>= fun root_key ->
@@ -178,14 +188,37 @@ let secret =
 let genkey_cmd =
   let doc = "Generate a new secret key" in
   let man = [
-    `S "SYNOPSIS" ;
+    `S Manpage.s_synopsis ;
     `P "$(mname) $(tname) $(b,--uid) $(i,'My name') [$(i,OPTIONS)]" ;
+    `S Manpage.s_description ;
+    `P {|This command generate a new secret key.
+         The secret key can issues signature using $(mname) $(b,sign).
+         The corresponding public key can be exported using $(mname)
+         $(b,convert).|} ;
     (*^TODO this is aworkaround https://github.com/dbuenzli/cmdliner/issues/82*)
     ]
   in
   Term.(term_result (const do_genkey $ setup_log $ rng_seed $ override_timestamp
                                      $ uid $ pk_algo)),
   Term.info "genkey" ~doc ~sdocs ~exits:Term.default_exits ~man
+    ~man_xrefs:[`Cmd "convert"]
+
+let convert_cmd =
+  let doc = "Convert a secret/private key to a public key" in
+  let man = [
+    `S Manpage.s_synopsis ;
+    `P "$(mname) $(tname) $(i,FILE) [$(i,OPTIONS)]" ;
+    `S Manpage.s_description ;
+    `P {|This command can be used to export a public key contained in a secret
+         key $(i,FILE) to a public key that is usable with the $(mname)
+         $(b,verify) command, and for giving to other people.
+         This is useful after generating a key using $(mname) $(b,genkey).|} ;
+  ]
+  in
+  Term.(term_result (const do_convert $ setup_log $ override_timestamp
+                                      $ target)),
+  Term.info "convert" ~doc ~sdocs ~exits:Term.default_exits ~man
+    ~man_xrefs:[`Cmd "verify"; `Cmd "genkey"]
 
 let verify_cmd =
   let doc = "Verify a detached signature on a file" in
@@ -253,15 +286,7 @@ let help_cmd =
   `S "EXAMPLES" ;
   `P "# $(mname) $(b,genkey --uid) 'Abbot Hoffman' $(b,>) abbie.priv" ;
   `P "# $(mname) $(b,sign --sk) abbie.priv MKULTRA.DOC $(b,>) MKULTRA.DOC.asc" ;
-  `P "# $(b,gpg2 --import) abbie.priv " ; `Noblank ;
-  `P "gpg: key 6EF4BA2AC8028106: public key \"Abbot Hoffman\" imported" ;
-     `Noblank ;
-  `P "gpg: key 6EF4BA2AC8028106: secret key imported" ; `Noblank;
-  `P "gpg: Total number processed: 1" ; `Noblank ;
-  `P "gpg:               imported: 1" ; `Noblank ;
-  `P "gpg:       secret keys read: 1" ; `Noblank ;
-  `P "gpg:   secret keys imported: 1" ;
-  `P {|# $(b,gpg2 --export) 'Abbot Hoffman' $(b,>) abbie.pub |};
+  `P "# $(mname) $(b,convert) abbie.priv $(b,>) abbie.pub" ;
   `P {|# $(mname) $(b,verify --sig) MKULTRA.DOC.asc $(b,--pk) abbie.pub
                    MKULTRA.DOC |} ; `Noblank ;
   `Pre {|opgp: [ERROR] Failed decoding ASCII armor ASCII public key block,
@@ -278,7 +303,7 @@ let help_cmd =
   Term.info "opgp" ~version:(Manpage.escape "%%VERSION_NUM%%") ~man ~doc ~sdocs
 
 
-let cmds = [verify_cmd ; genkey_cmd; list_packets_cmd; sign_cmd]
+let cmds = [verify_cmd ; genkey_cmd; convert_cmd; list_packets_cmd; sign_cmd]
 
 let () =
   Nocrypto_entropy_unix.initialize () ;

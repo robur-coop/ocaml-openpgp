@@ -321,6 +321,21 @@ struct
     ; secret_subkeys : private_subkey list
     }
 
+  let transferable_public_key_of_transferable_secret_key
+      (sk:transferable_secret_key) =
+    let subkeys =
+      sk.secret_subkeys |> List.map
+        (fun ss -> { key = ss.secret_key.Public_key_packet.public
+                   ; binding_signatures = ss.binding_signatures
+                   ; revocations = ss.revocations})
+    in
+   { root_key = Public_key_packet.public_of_private sk.root_key
+   ; revocations = [] (*TODO*)
+   ; uids = sk.uids
+   ; user_attributes = [] (*TODO*)
+   ; subkeys
+   }
+
   let check_signature_transferable current_time (pk:transferable_public_key)
                                    hash_final signature  =
     let pks = pk.root_key :: (pk.subkeys |> List.map (fun k -> k.key)) in
