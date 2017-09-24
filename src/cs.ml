@@ -27,7 +27,7 @@ let dup {Cstruct.buffer ; len ; off} =
 let wrap_invalid_argument f : ('ok , [> `Msg of string ]) result =
   begin try R.ok @@ f () with
     | Invalid_argument s ->
-      Error (`Msg "Cstruct.invalid_argument")
+      Error (`Msg ("Cstruct.invalid_argument: " ^ s))
     | Out_of_memory ->
       Error (`Msg "Cstruct.out_of_memory")
   end

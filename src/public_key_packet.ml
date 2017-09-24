@@ -199,7 +199,7 @@ let parse_secret_elgamal_asf (_:'pk) buf =
   consume_mpi buf >>| fun (x, tl) ->
   Elgamal_privkey_asf {x}, tl
 
-let parse_secret_rsa_asf ({Nocrypto.Rsa.e; _}:Nocrypto.Rsa.pub) buf
+let parse_secret_rsa_asf ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
   : (private_key_asf * Cs.t, [> `Msg of string]) result =
   (* Algorithm-Specific Fields for RSA secret keys:
      - multiprecision integer (MPI) of RSA secret exponent d.
@@ -210,18 +210,20 @@ let parse_secret_rsa_asf ({Nocrypto.Rsa.e; _}:Nocrypto.Rsa.pub) buf
   consume_mpi buf >>= fun (p, buf) ->
   consume_mpi buf >>= fun (q, buf) ->
   consume_mpi buf >>= fun (check_q', tl) -> (* "u" aka Nocrypto.Rsa.priv.q' *)
-  (* TODO validate key parameters; check "d" and "u" *)
+  (* TODO the spec says to check that p < q -- not sure it worked *)
   mpis_are_prime [e;q;p] >>= fun () ->
-  begin match Z.compare p q ,
-              Nocrypto.Rsa.priv_of_primes ~e ~q ~p with
+  begin match Nocrypto.Rsa.priv_of_primes ~e ~q ~p with
   | exception _ -> Error (msg_of_invalid_mpi_parameters [e;p;q])
-  | -1 , sk ->
+  | sk -> (*TODO comparison p < q*)
     let open Nocrypto.Rsa in
-    true_or_error (check_d = sk.d && check_q' = sk.q')
-    (fun m -> m "Inconsistent RSA secret key parameters read (d;q';d;q'): {%a}"
-       Fmt.(list ~sep:(unit "; ") pp_mpi) [check_d;check_q';sk.d;sk.q])
-     >>| fun () -> (RSA_privkey_asf sk, tl)
-  | _ , _ -> Error (msg_of_invalid_mpi_parameters [p;q])
+    (* validate key parameters; check "d" and "u"; "n"="p"*"q" *)
+    true_or_error (check_d = sk.d && check_q' = sk.q' && n = sk.n)
+    (fun m -> m {|Inconsistent RSA secret key parameters read (d;q';d;q'):
+{%a}
+{pk.n = %a ; sk.p*s.q = %a } |}
+        Fmt.(list ~sep:(unit "; ") pp_mpi) [check_d;check_q';sk.d;sk.q]
+        pp_mpi n pp_mpi sk.n)
+    >>| fun () -> (RSA_privkey_asf sk, tl)
   end
 
 let parse_packet_return_extraneous_data buf
@@ -256,8 +258,8 @@ let parse_packet_return_extraneous_data buf
 
 let parse_packet buf =
   parse_packet_return_extraneous_data buf >>= fun (pk,buf_tl) ->
-  Cs.e_is_empty (`Msg "Public key contains extraneous data") buf_tl >>| fun () ->
-  pk
+  Cs.e_is_empty (`Msg "Public key contains extraneous data") buf_tl
+  >>| fun () -> pk
 
 let parse_secret_packet buf : (private_key, 'error) result =
   parse_packet_return_extraneous_data buf >>= fun (public,buf) ->
@@ -319,5 +321,4 @@ let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
              v4_fingerprint = v4_fingerprint temp }
             ; priv_asf}
 
-let public_of_private (priv_key : private_key) : t =
-  priv_key.public
+let public_of_private (priv_key : private_key) : t = priv_key.public

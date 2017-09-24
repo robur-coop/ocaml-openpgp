@@ -53,8 +53,8 @@ let do_convert _ current_time secret_file =
   >>= Openpgp.decode_secret_key_block
   >>= Openpgp.Signature.root_sk_of_packets ~current_time >>| fst
   >>| Openpgp.Signature.transferable_public_key_of_transferable_secret_key
-  >>= Openpgp.serialize_transferable_public_key >>|
-  Openpgp.encode_ascii_armor Types.Ascii_public_key_block >>| fun cs ->
+  >>= Openpgp.serialize_transferable_public_key
+  >>| Openpgp.encode_ascii_armor Types.Ascii_public_key_block >>| fun cs ->
   Logs.app (fun m -> m "%s" (Cs.to_string cs))
  )|> R.reword_error Types.msg_of_error
 
