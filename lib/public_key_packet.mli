@@ -1,4 +1,4 @@
-type public_key_asf =
+type public_key_asf = private
   | DSA_pubkey_asf of Nocrypto.Dsa.pub
   | Elgamal_pubkey_asf of {p: Types.mpi ; g: Types.mpi; y: Types.mpi}
   | RSA_pubkey_sign_asf of Nocrypto.Rsa.pub
@@ -7,18 +7,18 @@ type public_key_asf =
 
 val public_key_algorithm_of_asf : public_key_asf -> Types.public_key_algorithm
 
-type t = {
+type t = private {
   timestamp : Ptime.t ; (** Key creation timestamp *)
   algorithm_specific_data : public_key_asf ;
   v4_fingerprint : Cs.t (** SHA1 hash of the public key *)
 }
 
-type private_key_asf =
+type private_key_asf = private
   | DSA_privkey_asf of Nocrypto.Dsa.priv
   | RSA_privkey_asf of Nocrypto.Rsa.priv
   | Elgamal_privkey_asf of { x: Types.mpi}
 
-type private_key = {
+type private_key = private {
   public : t ;
   priv_asf : private_key_asf
 }
