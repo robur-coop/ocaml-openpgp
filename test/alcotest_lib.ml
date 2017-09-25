@@ -46,7 +46,6 @@ let tests =
       [ "self-check", `Quick, test_packet_length_selfcheck ]
   ; "constants",
       [ "signature subpacket", `Slow, test_signature_subpacket_char ]
-  ; "cstruct wrapper module", Alcotest_cs.tests
   ; "Parsing keys",
     [ "GnuPG maintainer key (4F25E3B6)", `Slow, test_gnupg_maintainer_key
     ; "GnuPG RSA-SC + RSA-E (001)", `Slow, test_gnupg_key_001

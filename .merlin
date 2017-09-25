@@ -1,7 +1,7 @@
 S src
 B _build/src
 
-PKG cstruct rresult nocrypto usane hex logs
+PKG cs cstruct rresult nocrypto usane hex logs
 PKG oUnit
 PKG topkg
 

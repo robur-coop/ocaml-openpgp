@@ -1,3 +1,7 @@
+#require "cstruct"
+#require "cs"
+open Cs;;
+#require "hex"
 #require "logs.top"
 #require "fmt.top"
 #require "ptime.clock.os.top"
@@ -6,8 +10,6 @@
 #require "nocrypto.unix"
 #require "rresult.top"
 open Rresult;;
-#require "hex"
-#mod_use "src/cs.ml"
 #mod_use "src/types.ml"
 #mod_use "src/uid_packet.ml"
 #mod_use "src/public_key_packet.ml"

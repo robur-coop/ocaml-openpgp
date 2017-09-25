@@ -33,6 +33,7 @@ depends: [
   "rresult"
   "fmt"
   "ptime"
+  "cs"
 ]
 
 depopts: [
