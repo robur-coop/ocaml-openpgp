@@ -16,18 +16,19 @@ type packet_type =
 
 module Signature : sig
   type t
-  type uid = { uid : Uid_packet.t ; certifications : Signature_packet.t list}
-  type user_attribute = { certifications : Signature_packet.t list }
+  type uid = private { uid : Uid_packet.t
+                     ; certifications : Signature_packet.t list}
+  type user_attribute = private { certifications : Signature_packet.t list }
   (* TODO figure out abstractions for public/private keys that let them
           share data structures (only "key" and "root_key" and "subkeys" below
           actually differ in <type subkey> / <type transferable_public_key> *)
-  type subkey = { key : Public_key_packet.t
-                ; binding_signatures : Signature_packet.t list
-                ; revocations : Signature_packet.t list }
-  type private_subkey = { secret_key : Public_key_packet.private_key
+  type subkey = private { key : Public_key_packet.t
                         ; binding_signatures : Signature_packet.t list
                         ; revocations : Signature_packet.t list }
-  type transferable_public_key =
+  type private_subkey = private { secret_key : Public_key_packet.private_key
+                                ; binding_signatures : Signature_packet.t list
+                                ; revocations : Signature_packet.t list }
+  type transferable_public_key = private
     {
       root_key : Public_key_packet.t
       (** One Public-Key packet *)
@@ -41,7 +42,7 @@ module Signature : sig
       (** Zero or more subkey packets *)
     }
 
-  type transferable_secret_key =
+  type transferable_secret_key = private
     {
       root_key : Public_key_packet.private_key
       (* ; revocations : Signature_packet.t list TODO *)
@@ -127,6 +128,11 @@ val parse_packets :
     , [> `Incomplete_packet | `Msg of string ]) result
 
 val decode_public_key_block :
+  current_time:Ptime.t ->
+  ?armored:bool ->
+  Cs.t ->
+  ( Signature.transferable_public_key * (packet_type * Cs.t) list
+  , [> `Msg of string ]) Rresult.result
   (** [decode_public_key_block ~current_time ?armored blob] decode and validates
       the RFC 4880 transferable public key contained in [blob] using
       [current_time] to check expiry timestamps.
@@ -134,19 +140,15 @@ val decode_public_key_block :
       If [?armored] is [Some false] the key must be in raw binary format.
       If [?armored] is [None], both ASCII-armored and binary are attempted.
   *)
-  current_time:Ptime.t ->
-  ?armored:bool -> (** None: *)
-  Cs.t -> (* the public key blob *)
-  ( Signature.transferable_public_key * (packet_type * Cs.t) list
-  , [> `Msg of string ]) Rresult.result
 
 val decode_secret_key_block :
+           current_time:Ptime.t ->
            ?armored:bool ->
            Cs.t ->
-           ((packet_type * Cs.t) list, [> `Msg of string ]) Result.result
+           (Signature.transferable_secret_key * (packet_type * Cs.t) list
+           , [> Public_key_packet.parse_error ]) result
 
 val decode_detached_signature :
-  (** TODO doc string*)
   ?armored:bool ->
   Cs.t -> (Signature.t, [> `Msg of string])result
 

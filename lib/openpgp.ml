@@ -297,6 +297,7 @@ struct
   type private_subkey = { secret_key : Public_key_packet.private_key
                         ; binding_signatures : Signature_packet.t list
                         ; revocations : Signature_packet.t list }
+
   let public_subkey_of_private {secret_key;binding_signatures;revocations} =
     { key = secret_key.Public_key_packet.public
     ; binding_signatures; revocations }
@@ -323,18 +324,12 @@ struct
 
   let transferable_public_key_of_transferable_secret_key
       (sk:transferable_secret_key) =
-    let subkeys =
-      sk.secret_subkeys |> List.map
-        (fun ss -> { key = ss.secret_key.Public_key_packet.public
-                   ; binding_signatures = ss.binding_signatures
-                   ; revocations = ss.revocations})
-    in
-   { root_key = Public_key_packet.public_of_private sk.root_key
-   ; revocations = [] (*TODO*)
-   ; uids = sk.uids
-   ; user_attributes = [] (*TODO*)
-   ; subkeys
-   }
+    { root_key = Public_key_packet.public_of_private sk.root_key
+    ; revocations = [] (*TODO*)
+    ; uids = sk.uids
+    ; user_attributes = [] (*TODO*)
+    ; subkeys = sk.secret_subkeys |> List.map public_subkey_of_private
+    }
 
   let check_signature_transferable current_time (pk:transferable_public_key)
                                    hash_final signature  =
@@ -363,7 +358,6 @@ struct
     let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
     true_or_error (signature.signature_type = Signature_of_binary_document)
       (fun m -> m "TODO not implemented: we do not handle the newline-normalized@,(->\\r\\n) signature_type.Signature_of_canonical_text_document") >>= fun () ->
-    let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
     Logs.debug (fun m -> m "hashing detached signature with Cs.t ...");
     hash_cb cs ;
     hash_packet V4 hash_cb (Signature_type signature) >>= fun () ->
@@ -716,8 +710,9 @@ struct
       let check_subkey_and_sigs
           ({binding_signatures; revocations; secret_key} as subkey) =
         binding_signatures |> result_filter
-          (fun t -> check_subkey_binding_signature ~current_time root_pk secret_key.public t
-                    |> log_failed (fun m -> m "Skipping subkey binding due to sigfail")
+          (fun t -> check_subkey_binding_signature ~current_time root_pk
+                      secret_key.Public_key_packet.public t
+            |> log_failed (fun m -> m "Skipping subkey binding due to sigfail")
           ) >>= fun binding_signatures ->
         true_or_error (binding_signatures <> [])
           (fun m -> m "No valid binding signatures on this subkey")
@@ -849,8 +844,7 @@ let decode_public_key_block ~current_time ?armored cs
   Signature.root_pk_of_packets ~current_time pub_cs
   |> R.reword_error Types.msg_of_error)
 
-let decode_secret_key_block ~current_time ?armored cs
-  =
+let decode_secret_key_block ~current_time ?armored cs =
   armored_or_not ?armored Ascii_private_key_block cs
   >>= (fun sec_cs -> parse_packets sec_cs)
   >>= (fun sec_cs -> Signature.root_sk_of_packets ~current_time sec_cs )
@@ -865,11 +859,6 @@ let decode_detached_signature ?armored cs =
                       pp_packet (fst first_packet))
       | [] -> error_msg (fun m -> m "No packets found in supposed detached sig")
       )
-
-let decode_secret_key_block ?armored cs =
-  armored_or_not ?armored Ascii_private_key_block cs
-  >>= (fun key_cs -> parse_packets key_cs |> R.reword_error Types.msg_of_error)
-  (*  TODO  *)
 
 let new_transferable_secret_key
     ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t)

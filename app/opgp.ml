@@ -50,8 +50,7 @@ let do_verify _ current_time pk_file detached_file target_file
 
 let do_convert _ current_time secret_file =
  (cs_of_file secret_file
-  >>= Openpgp.decode_secret_key_block
-  >>= Openpgp.Signature.root_sk_of_packets ~current_time >>| fst
+  >>= Openpgp.decode_secret_key_block ~current_time >>| fst
   >>| Openpgp.Signature.transferable_public_key_of_transferable_secret_key
   >>= Openpgp.serialize_transferable_public_key
   >>| Openpgp.encode_ascii_armor Types.Ascii_public_key_block >>| fun cs ->
@@ -98,12 +97,12 @@ let do_list_packets _ target =
 
 let do_sign _ g current_time secret_file target_file =
   (
-  cs_of_file secret_file >>= Openpgp.decode_secret_key_block >>= fun sk_cs ->
+  cs_of_file secret_file >>= fun sk_cs ->
   cs_of_file target_file >>= fun target_content ->
-  Openpgp.Signature.root_sk_of_packets ~current_time sk_cs
+  Openpgp.decode_secret_key_block ~current_time sk_cs
   >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (sk,_) ->
-  Openpgp.Signature.sign_detached_cs ~g ~current_time sk.root_key
-    Types.SHA384 target_content >>= fun sig_t ->
+  Openpgp.Signature.sign_detached_cs ~g ~current_time
+    sk.Openpgp.Signature.root_key Types.SHA384 target_content >>= fun sig_t ->
   Openpgp.serialize_packet Types.V4 (Openpgp.Signature_type sig_t)
   >>| Openpgp.encode_ascii_armor Types.Ascii_signature
   >>| Cs.to_string >>= fun encoded ->
