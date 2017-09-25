@@ -13,8 +13,7 @@ let () =
 *)
   Pkg.describe "openpgp" @@ fun _c ->
   Ok [ Pkg.lib "pkg/META"
-     ; Pkg.mllib "src/openpgp.mllib"
-(*     ; Pkg.test "test/test_lib"*)
+     ; Pkg.mllib "lib/openpgp.mllib"
      ; Pkg.test "test/alcotest_lib"
      ; Pkg.bin "app/opgp" ]
 (*
