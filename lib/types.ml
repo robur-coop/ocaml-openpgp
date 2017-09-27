@@ -552,7 +552,7 @@ let mpi_len buf : (Uint16.t, 'error) result =
     if byte_offset = Cs.len buf then
       R.ok Uint16.(of_int 0)
     else
-      Cs.(get_uint8_result buf byte_offset) >>= fun c ->
+      Cs.(get_uint8 buf byte_offset) >>= fun c ->
       let rec bits_not_set = function
           | i when 0 <> (c land (1 lsl i)) -> Some (7-i)
           | 0 -> None
@@ -733,7 +733,7 @@ let v4_packet_length_of_cs (e:'e) (buf : Cs.t)
   match first_c with
   | ('\000'..'\191') -> Ok (1 , Uint32.of_int first)
   | ('\192'..'\223') ->
-      Cs.get_uint8_result buf 1 |> R.reword_error (function _ -> e)
+      Cs.get_uint8 buf 1 |> R.reword_error (function _ -> e)
       >>| fun second ->
       (2 , Uint32.of_int @@ ((first - 192) lsl 8) + second + 192)
   | ('\224'..'\254') -> Error (`Msg "Unimplemented feature: partial_length")

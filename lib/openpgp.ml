@@ -461,7 +461,8 @@ struct
       let v4_fp = pk.Public_key_packet.v4_fingerprint in
       SubpacketMap.upsert Issuer_fingerprint (Issuer_fingerprint (V4,v4_fp))
         signature_subpackets
-      |> SubpacketMap.upsert Issuer_keyid (Issuer_keyid (Cs.sub v4_fp 12 8))
+      |> SubpacketMap.upsert Issuer_keyid
+        (Issuer_keyid (Cs.sub_unsafe v4_fp 12 8))
       |> SubpacketMap.add_if_empty Signature_creation_time
         (Signature_creation_time current_time)
     in

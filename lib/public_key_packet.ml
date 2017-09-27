@@ -282,7 +282,7 @@ let parse_secret_packet buf : (private_key, 'error) result =
   (* The "(sum octets) mod 65536" checksum: *)
   Cs.e_split `Incomplete_packet checksum_tl 2 >>= fun (csum, buf_tl) ->
   let computed_sum =
-      let asf_portion = Cs.sub asf_cs 0 (Cs.len asf_cs - Cs.len checksum_tl) in
+      let asf_portion = Cs.sub_unsafe asf_cs 0 (Cs.len asf_cs - Cs.len checksum_tl) in
       two_octet_checksum asf_portion
   in
   true_or_error (Cs.equal computed_sum csum)

@@ -1,9 +1,16 @@
+(** OpenPGP RFC 4880 *)
+
 open Types
 
 val encode_ascii_armor : ascii_packet_type -> Cs.t -> Cs.t
+(** [encode_ascii_armor typ buf] encodes the ASCII-armored representation of
+    [buf], with the header and footer lines determined by [typ]. *)
+
 
 val decode_ascii_armor : Cs.t -> (ascii_packet_type * Cs.t,
                                   [> `Msg of string ]) result
+(** [decode_ascii_armor buf] attempt to decode [buf] and returns the type of
+    the header ("PGP PUBLIC KEY BLOCK", etc.) along with the decoded bytes. *)
 
 type packet_type =
   | Signature_type of Signature_packet.t
@@ -91,7 +98,7 @@ module Signature : sig
      Public_key_packet.private_key ->
      Types.hash_algorithm ->
      (Cstruct.t -> unit) * (unit -> Cstruct.t) -> (*hash_cb,hash_finalize*)
-     (unit -> (* io callback for reading the data to sign *)
+     (unit -> (** io callback for reading the data to sign *)
          (Cstruct.t option, [> `Msg of string ] as 'a
          ) Result.result) ->
      (t, 'a) Result.result

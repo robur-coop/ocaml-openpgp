@@ -212,7 +212,7 @@ let check_signature (current_time : Ptime.t)
     let candidate_pks , fp_mismatched =
       pks |> List.partition (fun pk ->
           let pk_fp = pk.Public_key_packet.v4_fingerprint in
-          let pk_keyid = Cs.sub pk_fp 12 8 in
+          let pk_keyid = Cs.sub_unsafe pk_fp 12 8 in
           (* TODO should check that [pk] has Key_usage_flags {signing=true;_}*)
           begin match issuer_fp, issuer_keyid with
           (* Try pk that has fp = SHA1 from t.Issuer_fingerprint: *)
@@ -404,8 +404,8 @@ and cs_of_signature_subpacket pkt =
 and serialize t =
   (* TODO handle V3 *)
   serialize_hashed V4 t >>= fun hashed ->
-  compute_digest t.hash_algorithm hashed >>| (fun digest -> Cs.sub digest 0 2)
-  >>= fun two_octet_checksum ->
+  compute_digest t.hash_algorithm hashed
+  >>| (fun digest -> Cs.sub_unsafe digest 0 2) >>= fun two_octet_checksum ->
   serialize_asf t.algorithm_specific_data >>| fun asf_cs ->
   Cs.concat [ hashed
               (* length of unhashed subpackets (which we don't support): *)
@@ -456,7 +456,7 @@ let parse_subpacket ~allow_embedded_signatures buf
       >>= begin function
         | V4 when Cs.len data = 1 + Nocrypto.Hash.SHA1.digest_size ->
           Ok (Some (Issuer_fingerprint (V4,
-                      Cs.(sub data 1 Nocrypto.Hash.SHA1.digest_size))))
+                      Cs.(sub_unsafe data 1 Nocrypto.Hash.SHA1.digest_size))))
         | V3 (*TODO don't think Issuer_fingerprint was a thing in V3? *)
         | V4 -> error_msg (fun m -> m "Invalid issuer fingerprint packet: %a"
                               Cstruct.hexdump_pp data)
