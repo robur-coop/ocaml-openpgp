@@ -12,10 +12,11 @@ let () =
   let lwt = Conf.with_pkg ~default:true "lwt" in
 *)
   Pkg.describe "openpgp" @@ fun _c ->
+  let cli = Conf.value _c cli in
   Ok [ Pkg.lib "pkg/META"
      ; Pkg.mllib "lib/openpgp.mllib"
      ; Pkg.test "test/alcotest_lib"
-     ; Pkg.bin "app/opgp" ]
+     ; Pkg.bin ~cond:cli "app/opgp" ]
 (*
   let mirage = Conf.value c mirage in
   let lwt = Conf.value c lwt in
