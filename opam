@@ -9,11 +9,11 @@ bug-reports: "https://github.com/cfcs/ocaml-openpgp/issues"
 available: [ ocaml-version >= "4.04.0" & os != "windows" ]
 
 build: [
-  [ "ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "false"
+  [ "ocaml" "pkg/pkg.ml" "build" "--dev-pkg" "%{pinned}%" "--tests" "false"
     "--with-cli" "%{cmdliner+bos+fpath:installed}%" ]
 ]
 build-test: [
-  [ "ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "true"
+  [ "ocaml" "pkg/pkg.ml" "build" "--dev-pkg" "%{pinned}%" "--tests" "true"
     "--with-cli" "%{cmdliner+bos+fpath:installed}%" ]
   ["ocaml" "pkg/pkg.ml" "test" ]
 ]
