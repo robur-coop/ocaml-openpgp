@@ -49,7 +49,7 @@ type private_key =
 
 let pp ppf t =
   (* TODO vbox / hbox *)
-  Fmt.pf ppf "[ Created: %a@,; %a@,; SHA1 fingerprint: %s@,]"
+  Fmt.pf ppf "[ Created: %a@,; %a@,; SHA1 fingerprint: %s ]"
     Ptime.pp t.timestamp
     pp_pk_asf t.algorithm_specific_data
     (Cs.to_hex t.v4_fingerprint)
@@ -300,15 +300,17 @@ let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
     let priv = Nocrypto.Dsa.generate ~g `Fips2048 in
     let pub  = Nocrypto.Dsa.pub_of_priv priv in
     Ok (DSA_privkey_asf priv, DSA_pubkey_asf pub)
-  | RSA_sign_only ->
+  | RSA_sign_only -> (* TODO warn about deprecated*)
+    Logs.warn (fun m -> m "Generate sign-only RSA key deprecated in RFC 4880");
     let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
     Ok (RSA_privkey_asf priv, RSA_pubkey_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
   | RSA_encrypt_or_sign ->
     let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
-    Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_asf (Nocrypto.Rsa.pub_of_priv priv))
-  | RSA_encrypt_only ->
-    let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
     Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_or_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
+  | RSA_encrypt_only ->
+    Logs.warn (fun m -> m "Generate enc-only RSA key deprecated in RFC 4880");
+    let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
+    Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_asf (Nocrypto.Rsa.pub_of_priv priv))
   | Elgamal_encrypt_only ->
     error_msg (fun m -> m "Elgamal key generation not supported")
   end
@@ -322,3 +324,8 @@ let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
             ; priv_asf}
 
 let public_of_private (priv_key : private_key) : t = priv_key.public
+
+let can_sign t =
+  match public_key_algorithm_of_asf t.algorithm_specific_data with
+  | RSA_sign_only | RSA_encrypt_or_sign | DSA -> true
+  | Elgamal_encrypt_only | RSA_encrypt_only -> false

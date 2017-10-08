@@ -42,6 +42,11 @@ val serialize_secret : Types.openpgp_version -> private_key ->
 
 val v4_key_id : t -> string
 
+val can_sign : t -> bool
+  (** [can_sign pk] is true if the algorithm is capable of signing.
+      You should still check if the certification's Key_usage_flags
+      allow signing.*)
+
 val generate_new : g:Nocrypto.Rng.g ->
   current_time:Ptime.t ->
   Types.public_key_algorithm ->

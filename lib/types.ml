@@ -138,7 +138,7 @@ type public_key_algorithm =
 
 let public_key_algorithm_of_string algo =
   match String.lowercase_ascii algo with
-  | "rsa" -> Ok RSA_sign_only
+  | "rsa" -> Ok RSA_encrypt_or_sign
   | "dsa" -> Ok DSA
   | _ -> error_msg (fun m -> m "of_string: unknown pk algorithm: \"%S\"" algo)
 
@@ -296,6 +296,10 @@ type key_usage_flags = (* RFC 4880: 5.2.3.21 Key Flags *)
   ; unimplemented : char
   }
 
+let empty_key_usage_flags =
+  { certify_keys = false; sign_data = false; encrypt_communications = false;
+    encrypt_storage = false; authentication = false; unimplemented = '\000'; }
+
 let key_usage_flags_of_char needle =
   let n = Char.code needle in
   let bit place = 0 <> n land (1 lsl place) in
@@ -419,6 +423,14 @@ let e_log_ptime_plus_span_is_smaller err_cb (base,span) current_time =
   >>= fun comp ->
   true_or_error (-1 = comp) err_cb
 
+let poly_variant_of_hash_algorithm = function
+  | MD5 -> `MD5
+  | SHA1 -> `SHA1
+  | SHA224 -> `SHA224
+  | SHA256 -> `SHA256
+  | SHA384 -> `SHA384
+  | SHA512 -> `SHA512
+
 let nocrypto_module_of_hash_algorithm : hash_algorithm ->
   (module Nocrypto.Hash.S) = function
   | MD5 -> (module Nocrypto.Hash.MD5)
@@ -428,33 +440,22 @@ let nocrypto_module_of_hash_algorithm : hash_algorithm ->
   | SHA384 -> (module Nocrypto.Hash.SHA384)
   | SHA512 -> (module Nocrypto.Hash.SHA512)
 
-type digest_finalizer = unit -> Cs.t
+type digest_finalizer = unit -> Nocrypto.Hash.digest
 type digest_feeder = (Cs.t -> unit) * digest_finalizer
 
 let digest_callback hash_algo: digest_feeder =
   let module H = (val (nocrypto_module_of_hash_algorithm hash_algo)) in
-  let t = H.init () in
-  let feeder cs = H.feed t cs
+  let t = ref H.empty in
+  let feeder cs = (t := H.feed !t cs)
                   |> log_msg (fun m -> m "%a hashing %d bytes: %a\n"
                                  pp_hash_algorithm hash_algo
                                  (Cs.len cs) Cstruct.hexdump_pp cs)
   in (feeder,
-      (fun () -> H.dup t |> H.get))
+      (fun () -> H.get !t))
 
 let compute_digest hash_algo to_be_hashed =
   let (feed , get) = digest_callback hash_algo in
   feed to_be_hashed ; Ok (get ())
-
-let nocrypto_pkcs_module_of_hash_algorithm : hash_algorithm ->
-  (module Nocrypto.Rsa.PKCS1.S) =
-  let open Nocrypto.Rsa.PKCS1 in
-  function
-  | MD5 -> (module MD5)
-  | SHA1 -> (module SHA1)
-  | SHA224 -> (module SHA224)
-  | SHA256 -> (module SHA256)
-  | SHA384 -> (module SHA384)
-  | SHA512 -> (module SHA512)
 
 let hash_algorithm_enum =
   [ '\001', MD5

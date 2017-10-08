@@ -64,7 +64,7 @@ end = struct
   let get tag t =
     match get_opt tag t with
     | Some e -> Ok e
-    | None -> err_msg_debug (fun m -> m "not found")
+    | None -> err_msg_debug (fun m -> m "SubpacketMap.get: not found")
 end
 
 (* [t] and [signature_subpacket] are mutually recursive
@@ -205,7 +205,7 @@ let check_signature (current_time : Ptime.t)
    marked critical but is unknown to the evaluating software, the
    evaluator SHOULD consider the signature to be in error.
   *)
-  let digest = digest_finalizer () in
+  let digest = digest_finalizer () in (* TODO take Hash.S.t instead *)
   let issuer_fp = SubpacketMap.get_opt Issuer_fingerprint t.subpacket_data in
   let issuer_keyid = SubpacketMap.get_opt Issuer_keyid t.subpacket_data in
   let rec loop (pks : Public_key_packet.t list) =
@@ -214,12 +214,13 @@ let check_signature (current_time : Ptime.t)
           let pk_fp = pk.Public_key_packet.v4_fingerprint in
           let pk_keyid = Cs.sub_unsafe pk_fp 12 8 in
           (* TODO should check that [pk] has Key_usage_flags {signing=true;_}*)
+          Public_key_packet.can_sign pk &&
           begin match issuer_fp, issuer_keyid with
           (* Try pk that has fp = SHA1 from t.Issuer_fingerprint: *)
           | Some(Issuer_fingerprint (V4,sig_fp)),_ when Cs.equal sig_fp pk_fp ->
             true
           (* Try pk that has fp = truncated SHA1 from t.Issuer_keyid: *)
-          | _, Some (Issuer_keyid sig_id) when Cs.equal sig_id pk_keyid -> true
+          | _ , Some (Issuer_keyid sig_id) when Cs.equal sig_id pk_keyid -> true
           (* Try pk if [t] does not have Issuer_fingerprint nor Issuer_keyid *)
           | None, None -> true
           | _ , _-> false
@@ -263,16 +264,19 @@ The signature was not signed by this public key.|}
       >>| fun () -> `Good_signature
     | ( Public_key_packet.RSA_pubkey_sign_asf pub
       | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf pub), RSA_sig_asf {m_pow_d_mod_n} ->
-        (* TODO validate parameters? *)
+      (* TODO validate parameters? *)
+      let hash_algo = poly_variant_of_hash_algorithm t.hash_algorithm in
         let()= Logs.debug (fun m ->
-            m "Trying to verify computed digest\n%s\n against an RSA signature %s"
+          m "Trying to verify computed %a digest\n%s\n against an RSA signature %s"
+            pp_hash_algorithm t.hash_algorithm
               (Cs.to_hex digest)
               (Cs.to_hex (cs_of_mpi_no_header m_pow_d_mod_n)))
-        in
-        let module PKCS : Nocrypto.Rsa.PKCS1.S =
-              (val (nocrypto_pkcs_module_of_hash_algorithm t.hash_algorithm)) in
+      in
         e_true `Invalid_signature
-          (PKCS.verify_cs ~key:pub ~digest (cs_of_mpi_no_header m_pow_d_mod_n))
+          (Nocrypto.Rsa.PKCS1.verify
+             ~hash:hash_algo
+             ~signature:(cs_of_mpi_no_header m_pow_d_mod_n)
+             ~key:pub (`Digest digest))
         |> log_failed (fun m -> m "RSA signature validation failed")
         >>| fun () -> `Good_signature
     | pk_asf , sig_asf ->

@@ -294,6 +294,12 @@ struct
     ; revocations : Signature_packet.t list
     }
 
+  let pp_subkey fmt key =
+    Fmt.pf fmt "subkey {  @[<v>key: @[%a@]@,binding: [@[%a@]]@,revocations: [@[%a@]]@]}"
+      Public_key_packet.pp key.key
+      Fmt.(list ~sep:(unit "@,|  ") Signature_packet.pp) key.binding_signatures
+      Fmt.(list ~sep:(unit "@,|  ") Signature_packet.pp) key.revocations
+
   type private_subkey = { secret_key : Public_key_packet.private_key
                         ; binding_signatures : Signature_packet.t list
                         ; revocations : Signature_packet.t list }
@@ -384,7 +390,15 @@ struct
     let designated_keys =
       match t.signature_type with
       | Primary_key_binding_signature -> [subkey.key]
-      | _ -> [root_pk]
+      | Subkey_binding_signature -> [root_pk]
+      | Signature_directly_on_key
+      | Key_revocation_signature
+      | Subkey_revocation_signature ->
+        Logs.warn (fun m -> m "check_signature_on_root_and_subkey: not \
+                      implemented: %a" pp_signature_type t.signature_type); []
+      | _ -> Logs.debug (fun m -> m "check_signature_on_root_and_subkey: \
+                                     Unable to verify signature of type %a"
+                            pp_signature_type t.signature_type); []
     in
     check_signature current_time designated_keys hash_final t
     |> log_failed (fun m -> m "Rejecting bad signature on (root & subkey)")
@@ -414,7 +428,8 @@ struct
         primary key and subkey: *)
     begin match subkey.Public_key_packet.algorithm_specific_data with
     | Public_key_packet.RSA_pubkey_encrypt_asf _
-    | Public_key_packet.Elgamal_pubkey_asf _ -> Ok ()
+    | Public_key_packet.Elgamal_pubkey_asf _ ->
+      Ok () (* no binding sig required for encryption keys *)
     | Public_key_packet.RSA_pubkey_sign_asf _
     | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf _
     | Public_key_packet.DSA_pubkey_asf _ ->
@@ -456,6 +471,8 @@ struct
       (Public_key_packet.public_key_algorithm_of_asf
          pk.Public_key_packet.algorithm_specific_data) (* TODO *)
     in
+    true_or_error (public_key_algorithm <> RSA_encrypt_only)
+      (fun m -> m "can't sign with rsa_encrypt_only") >>= fun () ->
     (* add Signature_creation_time with [current_time] if no creation time: *)
     let signature_subpackets :signature_subpacket SubpacketMap.t =
       let v4_fp = pk.Public_key_packet.v4_fingerprint in
@@ -482,10 +499,11 @@ struct
                       ; s = mpi_of_cs_no_header s})
     | Public_key_packet.RSA_privkey_asf key ->
       Logs.debug (fun m -> m "sign: signing digest with RSA key") ;
-      let module PKCS : Nocrypto.Rsa.PKCS1.S =
-        (val (nocrypto_pkcs_module_of_hash_algorithm hash_algorithm)) in
+
       Ok (RSA_sig_asf { m_pow_d_mod_n =
-                          PKCS.sign_cs ~mask:(`Yes_with g) ~key ~digest
+                          Nocrypto.Rsa.PKCS1.sign ~mask:(`Yes_with g)
+                          ~hash:(poly_variant_of_hash_algorithm hash_algorithm)
+                          ~key (`Digest digest)
                           |> mpi_of_cs_no_header
                       })
     | Public_key_packet.Elgamal_privkey_asf _ ->
@@ -549,7 +567,12 @@ struct
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA384 in
-    let subpackets = SubpacketMap.empty in
+    let subpackets =
+      SubpacketMap.empty |>
+      SubpacketMap.upsert Key_usage_flags
+        (Key_usage_flags {empty_key_usage_flags with
+         sign_data = Public_key_packet.(can_sign @@ public_of_private subkey);})
+    in
     let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
     hash_packet V4 hash_cb (Public_key_packet
        (Public_key_packet.public_of_private priv_key)) >>= fun () ->
@@ -796,6 +819,8 @@ struct
           let subkey : subkey =
             { key = subkey ; binding_signatures ; revocations }
           in
+          Logs.debug (fun m -> m "@[<v>find_subkeys_and_their sigs:@ %a@]"
+                     pp_subkey subkey) ;
           begin match check_subkey_and_sigs subkey with
           | Ok subkey -> find_subkeys_and_their_sigs (subkey::acc) non_sig_tl
           | Error _   -> find_subkeys_and_their_sigs acc non_sig_tl (*skip bad*)
