@@ -267,10 +267,11 @@ The signature was not signed by this public key.|}
       (* TODO validate parameters? *)
       let hash_algo = poly_variant_of_hash_algorithm t.hash_algorithm in
         let()= Logs.debug (fun m ->
-          m "Trying to verify computed %a digest\n%s\n against an RSA signature %s"
+          m "Trying to verify computed %a digest\n%s\n against \
+             an RSA signature %s"
             pp_hash_algorithm t.hash_algorithm
-              (Cs.to_hex digest)
-              (Cs.to_hex (cs_of_mpi_no_header m_pow_d_mod_n)))
+            (Cs.to_hex digest)
+            (Cs.to_hex (cs_of_mpi_no_header m_pow_d_mod_n)))
       in
         e_true `Invalid_signature
           (Nocrypto.Rsa.PKCS1.verify
@@ -323,7 +324,8 @@ and serialize_hashed_manual version sig_type pk_algo hash_algo subpacket_data =
   let subpackets_len = Cs.len serialized_subpackets in
 
   ((true_or_error (subpackets_len < 0xffff))
-   (fun m -> m "TODO better error, but failing because subpackets are longer than it's possible to sign (0xFF_FF < %d: %s)"
+   (fun m -> m "TODO better error, but failing because subpackets are longer \
+                than it is possible to sign (0xFF_FF < length %d: %s)"
         (subpackets_len)
         (Cs.to_hex serialized_subpackets)))
   >>| fun () ->

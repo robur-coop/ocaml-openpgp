@@ -3,20 +3,22 @@
 #require "topkg"
 open Topkg
 
-let cli = Conf.with_pkg ~default:false "cli"
+let _cli= Conf.with_pkg "cli"
+
 (* TODO generate man file, see opam config list | grep man*)
+
+let opams = [Pkg.opam_file ~lint_deps_excluding:(Some ["odoc"]) "opam"]
 
 let () =
 (*
   let mirage = Conf.with_pkg ~default:false "mirage" in
   let lwt = Conf.with_pkg ~default:true "lwt" in
 *)
-  Pkg.describe "openpgp" @@ fun _c ->
-  let cli = Conf.value _c cli in
-  Ok [ Pkg.lib "pkg/META"
-     ; Pkg.mllib "lib/openpgp.mllib"
-     ; Pkg.test "test/alcotest_lib"
-     ; Pkg.bin ~cond:cli "app/opgp" ]
+  Pkg.describe "openpgp" ~opams @@ fun c ->
+  let cli = Conf.value c _cli in
+  Ok [ Pkg.mllib ~api:["Openpgp"] "lib/openpgp.mllib";
+       Pkg.test "test/alcotest_lib";
+       Pkg.bin ~cond:cli "app/opgp"; ]
 (*
   let mirage = Conf.value c mirage in
   let lwt = Conf.value c lwt in

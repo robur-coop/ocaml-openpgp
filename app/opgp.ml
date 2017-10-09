@@ -125,13 +125,13 @@ let setup_log =
 
 let pk =
   let doc = "Path to a file containing a public key" in
-  Arg.(required & opt (some string) None & info ["pk"] ~docs ~doc)
+  Arg.(required & opt (some non_dir_file) None & info ["pk"] ~docs ~doc)
 let sk =
   let doc = "Path to a file containing a secret/private key" in
-  Arg.(required & opt (some string) None & info ["sk";"secret"] ~docs ~doc)
+  Arg.(required & opt (some non_dir_file) None & info ["sk";"secret"] ~docs ~doc)
 let signature =
   let doc = "Path to a file containing a detached signature" in
-  Arg.(required & opt (some string) None & info ["signature"] ~docs ~doc)
+  Arg.(required & opt (some non_dir_file) None & info ["signature"] ~docs ~doc)
 
 let rng_seed : Nocrypto.Rng.g Cmdliner.Term.t =
   let doc = {|Manually supply a hex-encoded seed for the pseudo-random number
@@ -164,7 +164,7 @@ let override_timestamp : Ptime.t Cmdliner.Term.t =
 
 let target =
   let doc = "Path to target file" in
-  Arg.(required & pos 0 (some string) None & info [] ~docv:"FILE" ~docs ~doc)
+  Arg.(required & pos 0 (some non_dir_file) None & info [] ~docv:"FILE" ~docs ~doc)
 
 let uid =
   let doc = "User ID text string (name and/or email, the latter enclosed in <brackets>)" in
@@ -176,13 +176,6 @@ let pk_algo : Types.public_key_algorithm Cmdliner.Term.t =
                   |> function Ok x -> `Ok x | Error (`Msg x) -> `Error x in
   Arg.(value & opt (convert, Types.pp_public_key_algorithm) (Types.DSA)
              & info ["algo";"pk-algo"] ~docs ~doc)
-
-let secret =
-    let doc = "Filename to write the new secret key to" in
-    Arg.(required & opt (some string) None & info ["secret"] ~docs ~doc)
-  and public =
-    let doc = "Filename to write the new public key to" in
-    Arg.(required & opt (some string) None & info ["public"] ~docs ~doc)
 
 let genkey_cmd =
   let doc = "Generate a new secret key" in
@@ -300,7 +293,6 @@ let help_cmd =
   let help _ = `Help (`Pager, None) in
   Term.(ret (const help $ setup_log)),
   Term.info "opgp" ~version:(Manpage.escape "%%VERSION_NUM%%") ~man ~doc ~sdocs
-
 
 let cmds = [verify_cmd ; genkey_cmd; convert_cmd; list_packets_cmd; sign_cmd]
 

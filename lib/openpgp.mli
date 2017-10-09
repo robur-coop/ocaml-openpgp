@@ -1,4 +1,4 @@
-(** OpenPGP RFC 4880 *)
+(** OpenPGP RFC 4880 library version %%VERSION%% *)
 
 open Types
 
@@ -98,7 +98,7 @@ module Signature : sig
      Public_key_packet.private_key ->
      Types.hash_algorithm ->
      (Cstruct.t -> unit) * (unit -> Cstruct.t) -> (*hash_cb,hash_finalize*)
-     (unit -> (** io callback for reading the data to sign *)
+     (unit (** io callback for reading the data to sign *) ->
          (Cstruct.t option, [> `Msg of string ] as 'a
          ) Result.result) ->
      (t, 'a) Result.result

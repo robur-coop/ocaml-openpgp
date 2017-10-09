@@ -15,7 +15,7 @@ build: [
 build-test: [
   [ "ocaml" "pkg/pkg.ml" "build" "--dev-pkg" "%{pinned}%" "--tests" "true"
     "--with-cli" "%{cmdliner+bos+fpath:installed}%" ]
-  ["ocaml" "pkg/pkg.ml" "test" ]
+  [ "ocaml" "pkg/pkg.ml" "test" ]
 ]
 
 depends: [
@@ -23,17 +23,15 @@ depends: [
   "ocamlfind" {build}
   "topkg" {build}
   "odoc" {build & doc}
-  "qcheck" {test}
   "alcotest" {test}
   "logs"
-  "cstruct"
+  "cs"
   "usane"
   "hex"
   "nocrypto"
   "rresult"
   "fmt"
   "ptime"
-  "cs"
 ]
 
 depopts: [
