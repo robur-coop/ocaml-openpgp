@@ -12,6 +12,28 @@ let test_signature_subpacket_char () =
   Alcotest.(check char) "same char" 'a'
     (signature_subpacket_tag_of_char 'a' |> char_of_signature_subpacket_tag)
 
+let test_signature_subpacket_map () =
+  let open Signature_packet in
+  let open SubpacketMap in
+  let t1 = add_if_empty Key_expiration_time 0 empty in
+  let t2 = add_if_empty Key_expiration_time 1 t1 in
+  let t3 = upsert Features 3 t2 in
+  let t4 = add_if_empty Key_usage_flags 8 t3 in
+  let t5 = upsert Primary_user_id 2 t4 in
+  let t6 = upsert Features 4 t5 in
+  Alcotest.(check int) "cardinality of empty" 0 (cardinality empty) ;
+  Alcotest.(check int) "cardinality" 3 (cardinality t4);
+  Alcotest.(check int) "cardinality after upsert insert" 4 (cardinality t6) ;
+  Alcotest.(check @@ option int) "get_opt upsert insert"
+    (get_opt Primary_user_id t6) (Some 2) ;
+  Alcotest.(check @@ option int) "get_opt upsert replace"
+    (get_opt Features t6) (Some 4) ;
+  Alcotest.(check @@ option int) "get_opt add_if_empty insert"
+    (get_opt Key_usage_flags t6) (Some 8) ;
+  Alcotest.(check @@ option int) "get_opt add_if_empty doesn't replace"
+    (get_opt Key_expiration_time t6) (Some 0) ;
+  Alcotest.(check @@ list int) "to_list keeps ordering" [0;4;8;2] (to_list t6)
+
 let cs_of_file name =
   Fpath.of_string name >>= Bos.OS.File.read >>| Cs.of_string
 
@@ -27,13 +49,14 @@ let key_has_subkeys n tpk =
   true_or_error (n = count)
     (fun m -> m "Expected %d subkeys, got %d" n count)
 
-let test_gnupg_maintainer_key () =
+let test_broken_gnupg_maintainer_key () =
+  (* This is not a valid transferable public key *)
   let _ =
   (  cs_of_file "test/keys/4F25E3B6.asc"
     |> R.reword_error (fun _ -> failwith "can't open file for reading")
     >>= Openpgp.decode_public_key_block ~current_time ~armored:true
     >>| fst >>= fun tpk ->
-    key_has_uids 1 tpk >>= fun () -> key_has_subkeys 1 tpk
+    key_has_uids 1 tpk >>= fun () -> key_has_subkeys 0 tpk
  ) |> R.reword_error (function `Msg s -> failwith s) in ()
 
 let test_gnupg_key_001 () =
@@ -92,12 +115,15 @@ let test_integrity_rsa () = test_integrity_with_algo RSA_encrypt_or_sign
 
 let tests =
   [
-    "packet length encoding",
-      [ "self-check", `Quick, test_packet_length_selfcheck ]
+    "utilities",
+    [ "packet length self-check", `Quick, test_packet_length_selfcheck ;
+      "signature subpacket map", `Quick, test_signature_subpacket_map ;
+    ]
   ; "constants",
       [ "signature subpacket", `Quick, test_signature_subpacket_char ]
   ; "Parsing keys",
-    [ "GnuPG maintainer key (4F25E3B6)", `Quick, test_gnupg_maintainer_key
+    [ "Fail broken GnuPG maintainer key (4F25E3B6)", `Quick,
+          test_broken_gnupg_maintainer_key
     ; "GnuPG RSA-SC + RSA-E (001)", `Quick, test_gnupg_key_001
     ; "GnuPG RSA-SC + RSA-S (002)", `Quick, test_gnupg_key_002
     ]

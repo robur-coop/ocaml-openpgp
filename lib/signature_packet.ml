@@ -42,13 +42,10 @@ end = struct
   let upsert (tag:tag) (element:'element) (t:'element t) =
     if exists tag t
     then
-      let lst =
-      t.lst |> List.fold_left (fun acc ->
-        fun ({index; _} as e) ->
-          if e.tag = tag then
-            {index; tag; element}::acc
-          else e::acc) [] |> List.rev
-       in {t with lst}
+      {t with
+         lst = t.lst |> List.map
+                 (function| e when e.tag <> tag -> e
+                          | e -> {e with tag; element}) }
     else
       append tag element t
 
