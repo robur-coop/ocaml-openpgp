@@ -39,3 +39,8 @@ depopts: [
   "bos"
   "fpath"
 ]
+
+messages: [
+  "To install the command-line application 'opgp', also install:"
+  "opam install cmdliner bos fpath"
+]
