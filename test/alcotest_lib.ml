@@ -85,16 +85,15 @@ let test_gnupg_key_002 () =
 let test_integrity_with_algo algo =
   let uid = "My name goes here" in
   let message_cs = Cstruct.of_string "my message" in
-  let g = Nocrypto_entropy_unix.initialize() ; !Nocrypto.Rng.generator in
   (
-  Public_key_packet.generate_new ~current_time ~g algo >>= fun root_sk ->
-  Public_key_packet.generate_new ~current_time ~g algo >>= fun subkey_sk ->
-  Openpgp.Signature.sign_detached_cs ~current_time ~g root_sk Types.SHA384
+  Public_key_packet.generate_new ~current_time algo >>= fun root_sk ->
+  Public_key_packet.generate_new ~current_time algo >>= fun subkey_sk ->
+  Openpgp.Signature.sign_detached_cs ~current_time root_sk Types.SHA384
     message_cs
   >>= (fun sig_t -> Openpgp.serialize_packet Types.V4
                       (Openpgp.Signature_type sig_t)
       )>>| Openpgp.encode_ascii_armor Types.Ascii_signature >>= fun sig_cs ->
-  Openpgp.new_transferable_secret_key ~g ~current_time Types.V4 root_sk
+  Openpgp.new_transferable_secret_key ~current_time Types.V4 root_sk
                                       [uid] [subkey_sk] >>= fun sk ->
 
   Openpgp.serialize_transferable_secret_key Types.V4 sk
@@ -134,6 +133,7 @@ let tests =
   ]
 
 let () =
+  Nocrypto_entropy_unix.initialize() ;
   Logs.set_reporter @@ Logs_fmt.reporter ~dst:Format.std_formatter () ;
   Logs.(set_level @@ Some Debug);
   Alcotest.run "ocaml-openpgp test suite" tests
