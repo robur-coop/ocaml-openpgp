@@ -47,7 +47,7 @@ val can_sign : t -> bool
       You should still check if the certification's Key_usage_flags
       allow signing.*)
 
-val generate_new : g:Nocrypto.Rng.g ->
+val generate_new : ?g:Nocrypto.Rng.g ->
   current_time:Ptime.t ->
   Types.public_key_algorithm ->
   (private_key, [> `Msg of string ]) Result.result
