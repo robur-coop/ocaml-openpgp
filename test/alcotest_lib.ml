@@ -90,8 +90,7 @@ let test_integrity_with_algo algo target_hashes : unit =
                      |> function Some time -> time | None -> failwith "x" in
   let g = let seed = Cs.of_string "a deterministic seed 9e5cbce8"in
     Nocrypto.Rng.create ~seed (module Nocrypto.Rng.Generators.Fortuna) in
-  ( Nocrypto_entropy_unix.initialize () ; (*TODO document somewhere that this is required *)
-  Public_key_packet.generate_new ~current_time ~g algo >>= fun root_sk ->
+  (Public_key_packet.generate_new ~current_time ~g algo >>= fun root_sk ->
   Public_key_packet.generate_new ~current_time ~g algo >>= fun subkey_sk ->
   Openpgp.Signature.sign_detached_cs ~current_time root_sk Types.SHA384
     message_cs
