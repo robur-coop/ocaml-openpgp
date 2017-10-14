@@ -60,7 +60,7 @@ let do_convert _ current_time secret_file =
 let do_genkey _ g current_time uid pk_algo =
   (* TODO output private key too ; right now only a transferable public key is serialized *)
   Public_key_packet.generate_new ~current_time ?g pk_algo >>= fun root_key ->
-  Openpgp.new_transferable_secret_key ?g ~current_time Types.V4
+  Openpgp.new_transferable_secret_key ~current_time Types.V4
     root_key [uid] []
   >>= Openpgp.serialize_transferable_secret_key Types.V4
   >>| fun key_cs ->
@@ -95,13 +95,13 @@ let do_list_packets _ target =
   in
   res |> R.reword_error Types.msg_of_error
 
-let do_sign _ g current_time secret_file target_file =
+let do_sign _ current_time secret_file target_file =
   (
   cs_of_file secret_file >>= fun sk_cs ->
   cs_of_file target_file >>= fun target_content ->
   Openpgp.decode_secret_key_block ~current_time sk_cs
   >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (sk,_) ->
-  Openpgp.Signature.sign_detached_cs ?g ~current_time
+  Openpgp.Signature.sign_detached_cs ~current_time
     sk.Openpgp.Signature.root_key Types.SHA384 target_content >>= fun sig_t ->
   Openpgp.serialize_packet Types.V4 (Openpgp.Signature_type sig_t)
   >>| Openpgp.encode_ascii_armor Types.Ascii_signature
@@ -248,7 +248,7 @@ let sign_cmd =
     `P "This is similar to GnuPG's $(b,--detach-sign)" ;
     ]
   in
-  Term.(term_result (const do_sign $ setup_log $ rng_seed $ override_timestamp
+  Term.(term_result (const do_sign $ setup_log $ override_timestamp
                                    $ sk $ target)),
   Term.info "sign" ~doc ~exits:Term.default_exits ~man ~sdocs
                    ~man_xrefs:[`Cmd "verify"]
