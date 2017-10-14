@@ -89,7 +89,7 @@ let test_integrity_with_algo algo =
   (
   Public_key_packet.generate_new ~current_time ~g algo >>= fun root_sk ->
   Public_key_packet.generate_new ~current_time ~g algo >>= fun subkey_sk ->
-  Openpgp.Signature.sign_detached_cs ~current_time ~g root_sk Types.SHA384
+  Openpgp.Signature.sign_detached_cs ~current_time root_sk Types.SHA384
     message_cs
   >>= (fun sig_t -> Openpgp.serialize_packet Types.V4
                       (Openpgp.Signature_type sig_t)
