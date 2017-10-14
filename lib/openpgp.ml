@@ -460,7 +460,7 @@ struct
            >>= fun `Good_signature -> R.ok ()
       end
 
-  let sign ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t) signature_type
+  let sign ?g ~(current_time : Ptime.t) signature_type
       (sk : Public_key_packet.private_key)
       (signature_subpackets : signature_subpacket SubpacketMap.t)
       hash_algorithm (hash_cb,digest_finalizer) (* TODO def cb type with algo *)
@@ -492,16 +492,17 @@ struct
 
     let digest = digest_finalizer () in
     Logs.debug (fun m -> m "sign: got digest %s" (Cs.to_hex digest)) ;
+    let mask = match g with None -> `Yes | Some g -> `Yes_with g in
     begin match sk.Public_key_packet.priv_asf with
     | Public_key_packet.DSA_privkey_asf key ->
-      let (r,s) = Nocrypto.Dsa.sign ~mask:(`Yes_with g) ~key digest in
+      let (r,s) = Nocrypto.Dsa.sign ~mask ~key digest in
       Ok (DSA_sig_asf {r = Types.mpi_of_cs_no_header r
                       ; s = mpi_of_cs_no_header s})
     | Public_key_packet.RSA_privkey_asf key ->
       Logs.debug (fun m -> m "sign: signing digest with RSA key") ;
 
       Ok (RSA_sig_asf { m_pow_d_mod_n =
-                          Nocrypto.Rsa.PKCS1.sign ~mask:(`Yes_with g)
+                          Nocrypto.Rsa.PKCS1.sign ~mask
                           ~hash:(poly_variant_of_hash_algorithm hash_algorithm)
                           ~key (`Digest digest)
                           |> mpi_of_cs_no_header
@@ -513,7 +514,7 @@ struct
        { signature_type ; public_key_algorithm ; hash_algorithm
        ; algorithm_specific_data ; subpacket_data = signature_subpackets}
 
-  let sign_detached_cb ~g ~current_time sk hash_algo ((hash_cb, _) as hash_tuple) io_cb =
+  let sign_detached_cb ?g ~current_time sk hash_algo ((hash_cb, _) as hash_tuple) io_cb =
     let rec io_loop () =
       io_cb () >>= function
       | None -> Ok ()
@@ -521,19 +522,19 @@ struct
     in
     io_loop () >>= fun () ->
     let subpackets = SubpacketMap.empty in
-    sign ~g ~current_time Signature_of_binary_document sk subpackets hash_algo hash_tuple
+    sign ?g ~current_time Signature_of_binary_document sk subpackets hash_algo hash_tuple
 
-  let sign_detached_cs ~g ~current_time secret_key hash_algo target_cs =
+  let sign_detached_cs ?g ~current_time secret_key hash_algo target_cs =
     let subpackets = SubpacketMap.empty (* TODO support expiry time *) in
     let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
     hash_cb target_cs ;
-    sign ~g ~current_time
+    sign ?g ~current_time
       Signature_of_binary_document
       secret_key subpackets
       hash_algo hash_tuple
 
   let certify_uid
-      ~(g : Nocrypto.Rng.g)
+      ?g
       ~(current_time : Ptime.t)
       (priv_key : Public_key_packet.private_key) uid
     : (Signature_packet.t, [>]) result =
@@ -556,12 +557,12 @@ struct
     Logs.debug (fun m -> m "certify_uid: hashing UID packet") ;
     hash_packet V4 hash_cb (Uid_packet uid) >>= fun () ->
     Logs.debug (fun m -> m "certify_uid: producing signature") ;
-    sign ~g ~current_time
+    sign ?g ~current_time
       Positive_certification_of_user_id_and_public_key_packet
       priv_key subpackets
       hash_algo hash_tuple
 
-  let certify_subkey ~g ~current_time
+  let certify_subkey ?g ~current_time
                      (priv_key:Public_key_packet.private_key) subkey
     : (Signature_packet.t, [>]) result =
     (* TODO handle V3 *)
@@ -580,7 +581,7 @@ struct
             or certifying other keys *)
     hash_packet V4 hash_cb (Public_key_packet
       (Public_key_packet.public_of_private subkey)) >>= fun () ->
-    sign ~g ~current_time
+    sign ?g ~current_time
       Subkey_binding_signature
       priv_key subpackets
       hash_algo hash_tuple
@@ -887,7 +888,7 @@ let decode_detached_signature ?armored cs =
       )
 
 let new_transferable_secret_key
-    ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t)
+    ?g ~(current_time : Ptime.t)
     version
     (root_key : Public_key_packet.private_key)
       (* TODO revocations *)
@@ -901,7 +902,7 @@ let new_transferable_secret_key
   (* TODO create relevant signature subpackets *)
   uncertified_uids
   |> result_ok_list_or_error (fun uid ->
-      Signature.certify_uid ~g ~current_time root_key uid
+      Signature.certify_uid ?g ~current_time root_key uid
       >>| fun certification ->
       { Signature.uid ; certifications = [certification] }
   )
@@ -912,7 +913,7 @@ let new_transferable_secret_key
   else
   priv_subkeys |> result_ok_list_or_error
     (fun subkey ->
-       Signature.certify_subkey ~g ~current_time root_key subkey
+       Signature.certify_subkey ?g ~current_time root_key subkey
        >>| fun certification -> {Signature.secret_key = subkey
                                 ; binding_signatures = [certification]
                                 ; revocations = [] }

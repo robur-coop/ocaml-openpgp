@@ -59,8 +59,8 @@ let do_convert _ current_time secret_file =
 
 let do_genkey _ g current_time uid pk_algo =
   (* TODO output private key too ; right now only a transferable public key is serialized *)
-  Public_key_packet.generate_new ~current_time ~g pk_algo >>= fun root_key ->
-  Openpgp.new_transferable_secret_key ~g ~current_time Types.V4
+  Public_key_packet.generate_new ~current_time ?g pk_algo >>= fun root_key ->
+  Openpgp.new_transferable_secret_key ?g ~current_time Types.V4
     root_key [uid] []
   >>= Openpgp.serialize_transferable_secret_key Types.V4
   >>| fun key_cs ->
@@ -101,7 +101,7 @@ let do_sign _ g current_time secret_file target_file =
   cs_of_file target_file >>= fun target_content ->
   Openpgp.decode_secret_key_block ~current_time sk_cs
   >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (sk,_) ->
-  Openpgp.Signature.sign_detached_cs ~g ~current_time
+  Openpgp.Signature.sign_detached_cs ?g ~current_time
     sk.Openpgp.Signature.root_key Types.SHA384 target_content >>= fun sig_t ->
   Openpgp.serialize_packet Types.V4 (Openpgp.Signature_type sig_t)
   >>| Openpgp.encode_ascii_armor Types.Ascii_signature
@@ -133,20 +133,20 @@ let signature =
   let doc = "Path to a file containing a detached signature" in
   Arg.(required & opt (some non_dir_file) None & info ["signature"] ~docs ~doc)
 
-let rng_seed : Nocrypto.Rng.g Cmdliner.Term.t =
+let rng_seed : Nocrypto.Rng.g option Cmdliner.Term.t =
   let doc = {|Manually supply a hex-encoded seed for the pseudo-random number
               generator. Used for debugging; SHOULD NOT be used for generating
               real-world keys!" |} in
-  let random_seed : Nocrypto.Rng.g Cmdliner.Arg.parser = fun seed_hex ->
+  let random_seed : Nocrypto.Rng.g option Cmdliner.Arg.parser = fun seed_hex ->
     (Cs.of_hex seed_hex |> R.reword_error
         (fun _ -> Fmt.strf "--rng-seed: invalid hex string: %S" seed_hex)
       >>| fun seed ->
-     let()=Logs.warn (fun m -> m "PRNG from seed %a" Cstruct.hexdump_pp seed)in
-     Nocrypto.Rng.create ~seed (module Nocrypto.Rng.Generators.Fortuna)
+     Logs.warn (fun m -> m "PRNG from seed %a" Cstruct.hexdump_pp seed) ;
+     Some (Nocrypto.Rng.create ~seed (module Nocrypto.Rng.Generators.Fortuna))
     ) |> R.to_presult
   in
   Arg.(value & opt (random_seed, (fun fmt _ -> Format.fprintf fmt "OS PRNG"))
-       (!Nocrypto.Rng.generator:Nocrypto.Rng.g) & info ["rng-seed"] ~docs ~doc)
+       None & info ["rng-seed"] ~docs ~doc)
 
 let override_timestamp : Ptime.t Cmdliner.Term.t =
   let doc = "Manually override the current timestamp (useful for reproducible debugging)" in

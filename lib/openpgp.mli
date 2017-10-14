@@ -93,7 +93,7 @@ module Signature : sig
     t -> Cs.t -> ([> `Good_signature ], [> `Msg of string] ) result
 
   val sign_detached_cb :
-     g:Nocrypto.Rng.g -> (* PRNG *)
+     ?g:Nocrypto.Rng.g -> (* PRNG *)
      current_time:Ptime.t ->
      Public_key_packet.private_key ->
      Types.hash_algorithm ->
@@ -104,7 +104,7 @@ module Signature : sig
      (t, 'a) Result.result
 
   val sign_detached_cs :
-           g:Nocrypto.Rng.g ->
+           ?g:Nocrypto.Rng.g ->
            current_time:Ptime.t ->
            Public_key_packet.private_key ->
            Types.hash_algorithm ->
@@ -160,7 +160,7 @@ val decode_detached_signature :
   Cs.t -> (Signature.t, [> `Msg of string])result
 
 val new_transferable_secret_key :
-  g:Nocrypto.Rng.g ->
+  ?g:Nocrypto.Rng.g ->
   current_time:Ptime.t ->
   Types.openpgp_version ->
   Public_key_packet.private_key ->
