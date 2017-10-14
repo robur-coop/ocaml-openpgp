@@ -460,7 +460,7 @@ struct
            >>= fun `Good_signature -> R.ok ()
       end
 
-  let sign  ~(current_time : Ptime.t) signature_type
+  let sign ~(current_time : Ptime.t) signature_type
       (sk : Public_key_packet.private_key)
       (signature_subpackets : signature_subpacket SubpacketMap.t)
       hash_algorithm (hash_cb,digest_finalizer) (* TODO def cb type with algo *)
@@ -560,7 +560,7 @@ struct
       priv_key subpackets
       hash_algo hash_tuple
 
-  let certify_subkey ~g ~current_time
+  let certify_subkey ~current_time
                      (priv_key:Public_key_packet.private_key) subkey
     : (Signature_packet.t, [>]) result =
     (* TODO handle V3 *)
@@ -886,7 +886,7 @@ let decode_detached_signature ?armored cs =
       )
 
 let new_transferable_secret_key
-    ~(g : Nocrypto.Rng.g) ~(current_time : Ptime.t)
+    ~(current_time : Ptime.t)
     version
     (root_key : Public_key_packet.private_key)
       (* TODO revocations *)
@@ -911,7 +911,7 @@ let new_transferable_secret_key
   else
   priv_subkeys |> result_ok_list_or_error
     (fun subkey ->
-       Signature.certify_subkey ~g ~current_time root_key subkey
+       Signature.certify_subkey ~current_time root_key subkey
        >>| fun certification -> {Signature.secret_key = subkey
                                 ; binding_signatures = [certification]
                                 ; revocations = [] }

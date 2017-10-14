@@ -294,22 +294,22 @@ let parse_secret_packet buf : (private_key, 'error) result =
   Cs.e_is_empty (`Msg "Extraneous data after secret ASF") buf_tl >>| fun () ->
   {public ; priv_asf }
 
-let generate_new ~(g:Nocrypto.Rng.g) ~(current_time:Ptime.t) key_type =
+let generate_new ?g ~(current_time:Ptime.t) key_type =
   begin match key_type with
   | DSA ->
-    let priv = Nocrypto.Dsa.generate ~g `Fips2048 in
+    let priv = Nocrypto.Dsa.generate ?g `Fips2048 in
     let pub  = Nocrypto.Dsa.pub_of_priv priv in
     Ok (DSA_privkey_asf priv, DSA_pubkey_asf pub)
   | RSA_sign_only -> (* TODO warn about deprecated*)
     Logs.warn (fun m -> m "Generate sign-only RSA key deprecated in RFC 4880");
-    let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
+    let priv = Nocrypto.Rsa.generate ?g ~e:(Z.of_int 65537) 2048 in
     Ok (RSA_privkey_asf priv, RSA_pubkey_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
   | RSA_encrypt_or_sign ->
-    let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
+    let priv = Nocrypto.Rsa.generate ?g ~e:(Z.of_int 65537) 2048 in
     Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_or_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
   | RSA_encrypt_only ->
     Logs.warn (fun m -> m "Generate enc-only RSA key deprecated in RFC 4880");
-    let priv = Nocrypto.Rsa.generate ~g ~e:(Z.of_int 65537) 2048 in
+    let priv = Nocrypto.Rsa.generate ?g ~e:(Z.of_int 65537) 2048 in
     Ok (RSA_privkey_asf priv, RSA_pubkey_encrypt_asf (Nocrypto.Rsa.pub_of_priv priv))
   | Elgamal_encrypt_only ->
     error_msg (fun m -> m "Elgamal key generation not supported")
