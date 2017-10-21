@@ -348,8 +348,10 @@ struct
   : ('ok, [> `Msg of string]) result =
     (* TODO check pk is valid *)
     true_or_error (signature.signature_type = Signature_of_binary_document)
-      (fun m -> m "TODO not implemented: we do not handle the newline-normalized@,(->\\r\\n) signature_type.Signature_of_canonical_text_document") >>= fun () ->
-    let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
+      (fun m -> m "TODO not implemented: we do not handle the newline-\
+                   normalized @,(->\\r\\n) signature_type.Signature_of_canonic\
+                   al_text_document") >>= fun () ->
+    digest_callback signature.hash_algorithm >>= fun (hash_cb, hash_final) ->
     Logs.debug (fun m -> m "hashing detached signature with callback...");
     let rec hash_loop () =
       cb () >>= function
@@ -361,9 +363,11 @@ struct
     check_signature_transferable current_time pk hash_final signature
 
   let verify_detached_cs ~current_time pk signature cs =
-    let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
+     digest_callback signature.hash_algorithm >>= fun (hash_cb, hash_final) ->
     true_or_error (signature.signature_type = Signature_of_binary_document)
-      (fun m -> m "TODO not implemented: we do not handle the newline-normalized@,(->\\r\\n) signature_type.Signature_of_canonical_text_document") >>= fun () ->
+      (fun m -> m "TODO not implemented: we do not handle the newline-\
+                   normalized@,(->\\r\\n) signature_type.Signature_of_canon\
+                   ical_text_document") >>= fun () ->
     Logs.debug (fun m -> m "hashing detached signature with Cs.t ...");
     hash_cb cs ;
     hash_packet V4 hash_cb (Signature_type signature) >>= fun () ->
@@ -380,7 +384,7 @@ struct
     >>= fun () ->
 
     (* set up hashing with this signature: *)
-    let (hash_cb, hash_final) = digest_callback t.hash_algorithm in
+    digest_callback t.hash_algorithm >>= fun (hash_cb, hash_final) ->
 
     (* This signature is calculated directly on the
        primary key and subkey, and not on any User ID or other packets.*)
@@ -500,12 +504,13 @@ struct
     | Public_key_packet.RSA_privkey_asf key ->
       Logs.debug (fun m -> m "sign: signing digest with RSA key") ;
 
-      Ok (RSA_sig_asf { m_pow_d_mod_n =
+      nocrypto_poly_variant_of_hash_algorithm hash_algorithm >>| fun hash ->
+        (RSA_sig_asf { m_pow_d_mod_n =
                           Nocrypto.Rsa.PKCS1.sign ~mask:`Yes
-                          ~hash:(poly_variant_of_hash_algorithm hash_algorithm)
+                          ~hash
                           ~key (`Digest digest)
                           |> mpi_of_cs_no_header
-                      })
+                     })
     | Public_key_packet.Elgamal_privkey_asf _ ->
       error_msg (fun m -> m "Cannot sign with El-Gamal key")
     end
@@ -513,7 +518,8 @@ struct
        { signature_type ; public_key_algorithm ; hash_algorithm
        ; algorithm_specific_data ; subpacket_data = signature_subpackets}
 
-  let sign_detached_cb ~current_time sk hash_algo ((hash_cb, _) as hash_tuple) io_cb =
+  let sign_detached_cb ~current_time sk hash_algo ((hash_cb, _) as hash_tuple)
+      io_cb =
     let rec io_loop () =
       io_cb () >>= function
       | None -> Ok ()
@@ -521,11 +527,12 @@ struct
     in
     io_loop () >>= fun () ->
     let subpackets = SubpacketMap.empty in
-    sign ~current_time Signature_of_binary_document sk subpackets hash_algo hash_tuple
+    sign ~current_time Signature_of_binary_document sk subpackets
+         hash_algo hash_tuple
 
   let sign_detached_cs ~current_time secret_key hash_algo target_cs =
     let subpackets = SubpacketMap.empty (* TODO support expiry time *) in
-    let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
+    digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     hash_cb target_cs ;
     sign ~current_time
       Signature_of_binary_document
@@ -548,7 +555,7 @@ struct
       |> SubpacketMap.upsert Key_expiration_time
         (Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365))
     in
-    let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
+    digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
     hash_packet V4 hash_cb (Public_key_packet
       (Public_key_packet.public_of_private priv_key)) >>= fun () ->
@@ -572,7 +579,7 @@ struct
         (Key_usage_flags {empty_key_usage_flags with
          sign_data = Public_key_packet.(can_sign @@ public_of_private subkey);})
     in
-    let (hash_cb, _) as hash_tuple = digest_callback hash_algo in
+    digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     hash_packet V4 hash_cb (Public_key_packet
        (Public_key_packet.public_of_private priv_key)) >>= fun () ->
     (* TODO add Embedded_signature if the key can be used for signing
@@ -600,7 +607,7 @@ struct
   let validate_uid_certification ~current_time (root_pk:Public_key_packet.t)
       (uid:packet_type) signature =
     (* set up hashing with this signature: *)
-    let (hash_cb, hash_final) = digest_callback signature.hash_algorithm in
+    digest_callback signature.hash_algorithm >>= fun (hash_cb, hash_final) ->
     (* TODO handle version V3 *)
     hash_packet V4 hash_cb (Public_key_packet root_pk) >>= fun () ->
     hash_packet V4 hash_cb uid >>= fun () ->

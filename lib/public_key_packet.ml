@@ -130,7 +130,7 @@ let v4_fingerprint t : Cs.t =
    A V4 fingerprint is the 160-bit SHA-1 hash of the octet 0x99,
    followed by the two-octet packet length, followed by the entire
      Public-Key packet starting with the version field. *)
-  let feed, final = digest_callback SHA1 in
+  let feed, final = digest_callback SHA1 |> R.get_ok in
   hash_public_key t feed ; final ()
 
 let v4_key_id t : string  =

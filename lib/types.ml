@@ -113,21 +113,24 @@ let e_version_of_char e = function
 type hash_algorithm =
   (* RFC 4880: 9.4 Hash Algorithms *)
   | MD5
+  | RIPEMD160
   | SHA1
   | SHA256
   | SHA384
   | SHA512
   | SHA224
-  (* TODO RIPE-MD/160 *)
+  | Unknown_hash of char
 
 let pp_hash_algorithm ppf v =
   Fmt.string ppf @@ match v with
   | MD5 -> "MD5"
+  | RIPEMD160 -> "RIPE-MD/160"
   | SHA1 -> "SHA1"
   | SHA256 -> "SHA256"
   | SHA384 -> "SHA384"
   | SHA512 -> "SHA512"
   | SHA224 -> "SHA224"
+  | Unknown_hash c -> Format.sprintf "Unknown[%02x]" (Char.code c)
 
 type public_key_algorithm =
   | RSA_encrypt_or_sign
@@ -356,10 +359,8 @@ type signature_subpacket_tag =
   | Issuer_fingerprint
   | Unimplemented_signature_subpacket_tag of char
 
-let pp_signature_subpacket_tag ppf = function
-  | Unimplemented_signature_subpacket_tag c ->
-      Fmt.pf ppf "Unimplemented signature subpacket tag %02x" (Char.code c)
-  | v -> Fmt.string ppf @@
+let pp_signature_subpacket_tag ppf v =
+  Fmt.string ppf @@
     begin match v with
     | Signature_creation_time -> "Signature_creation_time"
     | Signature_expiration_time -> "Signature_expiration_time"
@@ -423,43 +424,50 @@ let e_log_ptime_plus_span_is_smaller err_cb (base,span) current_time =
   >>= fun comp ->
   true_or_error (-1 = comp) err_cb
 
-let poly_variant_of_hash_algorithm = function
-  | MD5 -> `MD5
-  | SHA1 -> `SHA1
-  | SHA224 -> `SHA224
-  | SHA256 -> `SHA256
-  | SHA384 -> `SHA384
-  | SHA512 -> `SHA512
+let nocrypto_poly_variant_of_hash_algorithm = function
+  | MD5 -> Error (`Msg "MD5 is deprecated and disabled for security reasons")
+  | SHA1 -> Ok `SHA1
+  | SHA224 -> Ok `SHA224
+  | SHA256 -> Ok `SHA256
+  | SHA384 -> Ok `SHA384
+  | SHA512 -> Ok `SHA512
+  | RIPEMD160 -> Error (`Msg "RIPE-MD/160 not implemented")
+  | Unknown_hash c -> error_msg (fun m -> m "can't give unimplemented hash \
+                                        algorithm %d to nocrypto" (Char.code c))
 
 let nocrypto_module_of_hash_algorithm : hash_algorithm ->
-  (module Nocrypto.Hash.S) = function
-  | MD5 -> (module Nocrypto.Hash.MD5)
-  | SHA1 -> (module Nocrypto.Hash.SHA1)
-  | SHA224 -> (module Nocrypto.Hash.SHA224)
-  | SHA256 -> (module Nocrypto.Hash.SHA256)
-  | SHA384 -> (module Nocrypto.Hash.SHA384)
-  | SHA512 -> (module Nocrypto.Hash.SHA512)
+  ((module Nocrypto.Hash.S),[> ]) result = function
+  | MD5 -> Ok (module Nocrypto.Hash.MD5)
+  | SHA1 -> Ok (module Nocrypto.Hash.SHA1)
+  | SHA224 -> Ok (module Nocrypto.Hash.SHA224)
+  | SHA256 -> Ok (module Nocrypto.Hash.SHA256)
+  | SHA384 -> Ok (module Nocrypto.Hash.SHA384)
+  | SHA512 -> Ok (module Nocrypto.Hash.SHA512)
+  | h -> err_msg_debug (fun m -> m "Nocrypto doesn't implement hash algo %a"
+                                   pp_hash_algorithm h)
 
 type digest_finalizer = unit -> Nocrypto.Hash.digest
 type digest_feeder = (Cs.t -> unit) * digest_finalizer
 
-let digest_callback hash_algo: digest_feeder =
-  let module H = (val (nocrypto_module_of_hash_algorithm hash_algo)) in
+let digest_callback hash_algo: (digest_feeder, [> ]) result =
+  nocrypto_module_of_hash_algorithm hash_algo >>= fun m ->
+  let module H = (val (m)) in
   let t = ref H.empty in
   let feeder cs = (t := H.feed !t cs)
                   |> log_msg (fun m -> m "%a hashing %d bytes: %a\n"
                                  pp_hash_algorithm hash_algo
                                  (Cs.len cs) Cstruct.hexdump_pp cs)
-  in (feeder,
-      (fun () -> H.get !t))
+  in Ok (feeder,
+        (fun () -> H.get !t))
 
 let compute_digest hash_algo to_be_hashed =
-  let (feed , get) = digest_callback hash_algo in
-  feed to_be_hashed ; Ok (get ())
+  digest_callback hash_algo >>= fun (feed, get) ->
+  (feed to_be_hashed ; Ok (get ()))
 
 let hash_algorithm_enum =
   [ '\001', MD5
   ; '\002', SHA1
+   (*\003 RIPE-MD160 *)
   ; '\008', SHA256
   ; '\009', SHA384
   ; '\010', SHA512
@@ -483,12 +491,14 @@ let rec find_enum_sumtype needle = function
 
 let hash_algorithm_of_char needle =
   find_enum_sumtype needle hash_algorithm_enum
-  |> log_failed (fun m -> m "Unimplemented hash algorithm: %02x" (Char.code needle))
-  |> R.reword_error (function _ -> `Msg "Unimplemented hash algorithm")
+  |> R.ignore_error ~use:(fun `Unmatched_enum_value ->
+         Logs.debug (fun m -> m "Unimplemented hash algorithm 0x%02x"
+               (Char.code needle));
+         Unknown_hash needle
+     )
 
 let hash_algorithm_of_cs_offset cs offset =
-  Cs.e_get_char `Incomplete_packet cs offset >>= fun hash_algo_c ->
-  hash_algorithm_of_char hash_algo_c
+  Cs.e_get_char `Incomplete_packet cs offset >>| hash_algorithm_of_char
 
 let char_of_hash_algorithm needle =
   find_enum_value needle hash_algorithm_enum |> R.get_ok

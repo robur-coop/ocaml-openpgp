@@ -262,7 +262,8 @@ The signature was not signed by this public key.|}
     | ( Public_key_packet.RSA_pubkey_sign_asf pub
       | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf pub), RSA_sig_asf {m_pow_d_mod_n} ->
       (* TODO validate parameters? *)
-      let hash_algo = poly_variant_of_hash_algorithm t.hash_algorithm in
+      nocrypto_poly_variant_of_hash_algorithm t.hash_algorithm
+      >>= fun hash_algo ->
         let()= Logs.debug (fun m ->
           m "Trying to verify computed %a digest\n%s\n against \
              an RSA signature %s"
@@ -465,8 +466,8 @@ let parse_subpacket ~allow_embedded_signatures buf
                               Cstruct.hexdump_pp data)
       end
   | Preferred_hash_algorithms ->
-    Cs.to_list data |> result_ok_list_or_error hash_algorithm_of_char
-      >>| fun lst -> Some (Preferred_hash_algorithms lst)
+    Ok (Cs.to_list data |> List.map hash_algorithm_of_char
+        |> fun lst -> Some (Preferred_hash_algorithms lst))
   | Embedded_signature when not allow_embedded_signatures ->
       error_msg (fun m -> m "Embedded signatures not allowed in this context")
   | _ when not is_critical -> Ok None
