@@ -636,20 +636,17 @@ struct
       >>= fun (obj, _) ->
       packets |> take_signatures_of_types sig_types
       >>= fun (certifications, packets) ->
-      (* The certifications can be made by anyone, we are only concerned with the ones made by the root_pk *)
-      let valid_certifications =
-        certifications |> List.filter
-        (fun certification ->
-         match validation_cb obj certification with
-         | Ok `Good_signature -> true
-         | _ -> false
-        )
-      in
-      if valid_certifications = [] then begin
-        error_msg (fun m -> m "Skipping %a due to lack of valid certifications"
-                      pp_packet obj )
-      end else
-         inner_loop ((obj, valid_certifications)::acc) packets
+      packets |> inner_loop
+        (certifications |> List.filter
+          (fun certification -> match validation_cb obj certification with
+            | Ok `Good_signature -> true | _ -> false
+             (* The certifications can be made by anyone,
+                we are only concerned with the ones made by the root_pk *)
+          ) |> begin function
+               | [] -> log_msg (fun m -> m "Skipping %a due to lack of valid \
+                                            certifications" pp_packet obj) acc
+               | valid_certifications -> ((obj, valid_certifications)::acc)
+        end)
       in inner_loop [] packets
 
   let transferable_of_packets ~current_time
