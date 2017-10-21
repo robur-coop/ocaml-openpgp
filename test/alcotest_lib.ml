@@ -51,35 +51,82 @@ let key_has_subkeys n tpk =
   true_or_error (n = count)
     (fun m -> m "Expected %d subkeys, got %d" n count)
 
+let exc_check_pk, exc_check_sk =
+  let inner check decode ~uids ~subkeys file =
+  match (cs_of_file file
+  |> R.reword_error (fun _ -> failwith "can't open file for reading")
+  >>= decode >>= fun pk -> check pk ~uids ~subkeys >>| fun _ -> pk) with
+  | Ok pk -> pk
+  | Error (`Msg s) -> failwith s
+  in
+  let check pk ~uids ~subkeys =
+    (key_has_uids uids pk >>= fun () -> key_has_subkeys subkeys pk) in
+  inner check (fun cs -> cs |> Openpgp.decode_public_key_block ~current_time
+                           ~armored:true >>| fst),
+  inner (fun sk -> check
+      (Openpgp.Signature.transferable_public_key_of_transferable_secret_key sk))
+    (fun cs -> Openpgp.decode_secret_key_block ~current_time ~armored:true cs
+      >>| fst |> R.reword_error (function
+            `Incomplete_packet -> `Msg "incomplete packet" | `Msg e -> `Msg e))
+
 let test_broken_gnupg_maintainer_key () =
   (* This is not a valid transferable public key *)
-  let _ =
-  (  cs_of_file "test/keys/4F25E3B6.asc"
-    |> R.reword_error (fun _ -> failwith "can't open file for reading")
-    >>= Openpgp.decode_public_key_block ~current_time ~armored:true
-    >>| fst >>= fun tpk ->
-    key_has_uids 1 tpk >>= fun () -> key_has_subkeys 0 tpk
- ) |> R.reword_error (function `Msg s -> failwith s) in ()
+  let _ = exc_check_pk "test/keys/4F25E3B6.asc" ~uids:1 ~subkeys:0 in ()
 
 let test_gnupg_key_001 () =
-  let _ =
-  (  cs_of_file "test/keys/gnupg.test.001.pk.asc"
-     >>= Openpgp.decode_public_key_block ~current_time
-     >>| fst >>= fun tpk ->
-     key_has_uids 1 tpk >>= fun () -> key_has_subkeys 1 tpk
-  )
-  |> R.reword_error (function `Msg s -> failwith s) in ()
+  let _= exc_check_pk "test/keys/gnupg.test.001.pk.asc" ~uids:1 ~subkeys:1 in()
 
 let test_gnupg_key_002 () =
   let _ =
-    (cs_of_file "test/keys/gnupg.test.002.pk.asc"
-     >>= Openpgp.decode_public_key_block ~current_time) >>| fst >>= fun pk ->
-     key_has_uids 1 pk >>= fun () -> key_has_subkeys 1 pk >>= fun () ->
+  (  let pk = exc_check_pk "test/keys/gnupg.test.002.pk.asc" ~uids:1 ~subkeys:1
+     in
      cs_of_file "test/keys/message.001.txt.sig"
      >>= Openpgp.decode_detached_signature  >>= fun detach_sig ->
      cs_of_file "test/keys/message.001.txt" >>= fun msg ->
      Openpgp.Signature.verify_detached_cs ~current_time pk detach_sig msg
-     |> R.reword_error (function `Msg s -> failwith s) in ()
+     |> R.reword_error (function `Msg s -> failwith s)) in ()
+
+let test_openpgpjs_001 () =
+  let _ = exc_check_pk "test/keys/openpgpjs.001.pk.asc" ~uids:1 ~subkeys:1 in()
+
+(* let test_openpgpjs_002 ... an encrypted secret key; we don't handle that *)
+let test_openpgpjs_002 () =
+  let _ = exc_check_sk "test/keys/openpgpjs.002.sk.asc" ~uids:1 ~subkeys:1 in ()
+
+let test_openpgpjs_003 () =
+  let _= exc_check_pk "test/keys/openpgpjs.003.pk.asc" ~uids:1 ~subkeys:1 in()
+
+let test_openpgpjs_key_001 () =
+  let _ = exc_check_pk "test/keys/openpgpjs.key.001.pk.asc" ~uids:1 ~subkeys:1
+  in () (* TODO this armored file really contains two transferable public keys.
+           API doesn't handle that atm.*)
+
+let test_openpgpjs_key_002 () = (* revoked *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.002.pk.asc" ~uids:0 ~subkeys:0
+  in ()
+
+let test_openpgpjs_key_003 () =
+  try ignore @@
+      exc_check_pk "test/keys/openpgpjs.key.003.pk.asc" ~uids:1 ~subkeys:1 ;
+      failwith "Should fail to parse v3"
+  with | _ -> ()
+
+let test_openpgpjs_key_004 () = (*RSA with revocations*)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.004.pk.asc" ~uids:1 ~subkeys:1
+  in ()
+
+let test_openpgpjs_key_005 () = (* priv_key_rsa *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.005.priv_key_rsa.pk.asc" ~uids:1
+      ~subkeys:0 in ()
+
+let test_openpgpjs_key_006 () = (* user_attr *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.006.user_attr_key.pk.asc"
+      ~uids:1 ~subkeys:0 in ()
+
+let test_openpgpjs_key_007 () = (* embedded signature *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.007.pgp_desktop_pub.pk.asc"
+      ~uids:1 ~subkeys:1 in ()
+
 
 (* TODO test that checks that we do not validate signatures with RSA_encrypt *)
 
@@ -144,6 +191,19 @@ let tests =
           test_broken_gnupg_maintainer_key
     ; "GnuPG RSA-SC + RSA-E (001)", `Quick, test_gnupg_key_001
     ; "GnuPG RSA-SC + RSA-S (002)", `Quick, test_gnupg_key_002
+    ]
+  ; "OpenPGP.js test suite",
+    [ "OpenPGP.js RSA-ESC + RSA-ES (001)", `Quick, test_openpgpjs_001
+    ; "OpenPGP.js (002)", `Quick, test_openpgpjs_002
+    ; "OpenPGP.js DSA + El-Gamal (003)", `Quick, test_openpgpjs_003
+    (* https://github.com/openpgpjs/openpgpjs/blob/master/test/general/key.js *)
+    ; "OpenPGP.js key.js (001)", `Quick, test_openpgpjs_key_001
+    ; "OpenPGP.js key.js (002)", `Quick, test_openpgpjs_key_002
+    ; "OpenPGP.js key.js, v3 pk (003)", `Quick, test_openpgpjs_key_003
+    ; "OpenPGP.js key.js, revocations (004)", `Quick, test_openpgpjs_key_004
+    ; "OpenPGP.js key.js, secret key (005)", `Quick, test_openpgpjs_key_005
+    ; "OpenPGP.js key.js, user attr tag (006)", `Quick, test_openpgpjs_key_006
+    ; "OpenPGP.js key.js, PGP Desktop pk (007)", `Quick, test_openpgpjs_key_007
     ]
   ; "Integrity checks",
     [ "DSA: generate; sign; convert; verify", `Slow, test_integrity_dsa ;
