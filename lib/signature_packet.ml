@@ -260,7 +260,8 @@ The signature was not signed by this public key.|}
       |> log_failed (fun m -> m "DSA signature validation failed")
       >>| fun () -> `Good_signature
     | ( Public_key_packet.RSA_pubkey_sign_asf pub
-      | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf pub), RSA_sig_asf {m_pow_d_mod_n} ->
+      | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf pub
+      ), RSA_sig_asf {m_pow_d_mod_n} ->
       (* TODO validate parameters? *)
       nocrypto_poly_variant_of_hash_algorithm t.hash_algorithm
       >>= fun hash_algo ->
@@ -289,10 +290,11 @@ The signature was not signed by this public key.|}
     in
     begin match res with
     | Error `Invalid_signature ->
-      let() = Logs.debug (fun m -> m "Failed to verify signature, trying next key (if any)") in
+      log_msg (fun m -> m "Failed to verify signature, trying next key")();
       loop remaining_keys
     | Ok _ -> (res |> log_msg (fun m -> m "Got a good signature!"))
-    | e -> log_failed (fun m -> m "Couldn't verify sig for some reason") e
+    | Error (`Msg e) as err ->
+      log_failed (fun m -> m "Couldn't verify sig: %s" e) err
     end
   in
   loop public_keys |> R.reword_error (function

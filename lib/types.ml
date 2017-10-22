@@ -432,19 +432,13 @@ let nocrypto_poly_variant_of_hash_algorithm = function
   | SHA384 -> Ok `SHA384
   | SHA512 -> Ok `SHA512
   | RIPEMD160 -> Error (`Msg "RIPE-MD/160 not implemented")
-  | Unknown_hash c -> error_msg (fun m -> m "can't give unimplemented hash \
-                                        algorithm %d to nocrypto" (Char.code c))
+  | Unknown_hash c ->
+    error_msg (fun m -> m "can't give unimplemented hash \
+                           algorithm %d to nocrypto" (Char.code c))
 
-let nocrypto_module_of_hash_algorithm : hash_algorithm ->
-  ((module Nocrypto.Hash.S),[> ]) result = function
-  | MD5 -> Ok (module Nocrypto.Hash.MD5)
-  | SHA1 -> Ok (module Nocrypto.Hash.SHA1)
-  | SHA224 -> Ok (module Nocrypto.Hash.SHA224)
-  | SHA256 -> Ok (module Nocrypto.Hash.SHA256)
-  | SHA384 -> Ok (module Nocrypto.Hash.SHA384)
-  | SHA512 -> Ok (module Nocrypto.Hash.SHA512)
-  | h -> err_msg_debug (fun m -> m "Nocrypto doesn't implement hash algo %a"
-                                   pp_hash_algorithm h)
+let nocrypto_module_of_hash_algorithm algo :
+  ((module Nocrypto.Hash.S),[> ]) result =
+  nocrypto_poly_variant_of_hash_algorithm algo >>| Nocrypto.Hash.module_of
 
 type digest_finalizer = unit -> Nocrypto.Hash.digest
 type digest_feeder = (Cs.t -> unit) * digest_finalizer
@@ -467,7 +461,7 @@ let compute_digest hash_algo to_be_hashed =
 let hash_algorithm_enum =
   [ '\001', MD5
   ; '\002', SHA1
-   (*\003 RIPE-MD160 *)
+  ; '\003', RIPEMD160
   ; '\008', SHA256
   ; '\009', SHA384
   ; '\010', SHA512
