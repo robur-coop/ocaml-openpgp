@@ -6,7 +6,7 @@ homepage: "https://github.com/cfcs/ocaml-openpgp"
 dev-repo: "https://github.com/cfcs/ocaml-openpgp.git"
 bug-reports: "https://github.com/cfcs/ocaml-openpgp/issues"
 
-available: [ ocaml-version >= "4.04.0" & os != "windows" ]
+available: [ ocaml-version >= "4.04.2" & os != "windows" ]
 
 build: [
   [ "ocaml" "pkg/pkg.ml" "build" "--dev-pkg" "%{pinned}%" "--tests" "false"
@@ -24,14 +24,14 @@ depends: [
   "topkg" {build}
   "odoc" {build & doc}
   "alcotest" {test}
-  "logs"
   "cs"
-  "usane"
-  "hex"
+  "fmt"       { >= "0.8.4" & < "0.9.0" }
+  "hex"       { >= "1.2.0" & < "1.3.0" }
+  "logs"      { >= "0.6.2" & < "0.7.0" }
   "nocrypto"
-  "rresult"
-  "fmt"
-  "ptime"
+  "ptime"     { >= "0.8.3" & < "0.9.0" }
+  "rresult"   { >= "0.5.0" & < "0.6.0" }
+  "usane"
 ]
 
 depopts: [
