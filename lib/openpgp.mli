@@ -20,12 +20,15 @@ type packet_type =
   | Secret_key_packet of Public_key_packet.private_key
   | Secret_key_subpacket of Public_key_packet.private_key
   | Trust_packet of Cs.t
+  | User_attribute_packet of User_attribute_packet.t
 
 module Signature : sig
   type t
   type uid = private { uid : Uid_packet.t
                      ; certifications : Signature_packet.t list}
-  type user_attribute = private { certifications : Signature_packet.t list }
+  type user_attribute = private { certifications : Signature_packet.t list ;
+                                  attributes : User_attribute_packet.t
+                                }
   (* TODO figure out abstractions for public/private keys that let them
           share data structures (only "key" and "root_key" and "subkeys" below
           actually differ in <type subkey> / <type transferable_public_key> *)

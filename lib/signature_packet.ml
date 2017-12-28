@@ -89,6 +89,48 @@ and signature_subpacket =
   | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
   | Unimplemented_subpacket of signature_subpacket_tag * Cs.t
 
+module Subpacket = struct
+
+type sig_creation_time = Tag1 of Ptime.t
+type sig_expiration_time = Ptime.Span.t
+type key_expiration_time = Ptime.Span.t
+type issuer_fingerprint = openpgp_version * Cs.t
+type preferred_hash_algorithms = Tag2 of hash_algorithm list
+type key_server_preferences = KSP of Cs.t
+type issuer_keyid = IK of Cs.t
+type unimplemented_subpacket = signature_subpacket_tag * Cs.t
+
+module Tag : sig
+  type 'a tag
+  type a type b type c type d type e type f
+end
+= struct
+  type a = A and b = B and c = C and d = D and e = E and f = F
+  type 'a tag =
+    | Sig_creation_time_tag : sig_creation_time tag
+    | A : a tag
+end
+
+open Tag
+type (_,_) subpacket =
+  | Sig_creation_time : sig_creation_time -> (a, sig_creation_time) subpacket
+  | Sig_expiration_time :
+      sig_expiration_time -> (b, sig_expiration_time) subpacket
+  | Key_expiration_time :
+      key_expiration_time -> (c, key_expiration_time) subpacket
+  | Key_usage_flags : key_usage_flags -> (d, key_usage_flags) subpacket
+  | MIssuer_fingerprint :
+      issuer_fingerprint -> (e, issuer_fingerprint) subpacket
+(*  | Preferred_hash_algorithms :
+      preferred_hash_algorithms -> preferred_hash_algorithms subpacket
+    | Embedded_signature : t -> t subpacket *)
+  | Key_server_preferences :
+      key_server_preferences -> (f, key_server_preferences) subpacket (*
+  | MIssuer_keyid : issuer_keyid -> issuer_keyid subpacket
+  | Unimplemented_subpacket :
+      (unimplemented_subpacket as 's) -> unimplemented_subpacket subpacket*)
+end
+
 let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
   match packet with
   | Signature_creation_time _ -> Signature_creation_time

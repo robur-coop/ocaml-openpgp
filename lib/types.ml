@@ -359,6 +359,34 @@ type signature_subpacket_tag =
   | Issuer_fingerprint
   | Unimplemented_signature_subpacket_tag of char
 
+type signature_subpacket_ptag =
+  [ `Signature_creation_time
+  | `Signature_expiration_time
+  | `Exportable_certification
+  | `Trust_signature
+  | `Regular_expression
+  | `Revocable
+  | `Key_expiration_time
+  | `Preferred_symmetric_algorithms
+  | `Revocation_key
+  | `Issuer_keyid
+  | `Notation_data
+  | `Preferred_hash_algorithms
+  | `Preferred_compression_algorithms
+  | `Key_server_preferences
+  | `Preferred_key_server
+  | `Primary_user_id
+  | `Policy_URI
+  | `Key_usage_flags
+  | `Signers_user_id
+  | `Reason_for_revocation
+  | `Features
+  | `Signature_target
+  | `Embedded_signature
+  | `Issuer_fingerprint
+  | `Unimplemented_signature_subpacket_tag of char
+  ]
+
 let pp_signature_subpacket_tag ppf v =
   Fmt.string ppf @@
     begin match v with

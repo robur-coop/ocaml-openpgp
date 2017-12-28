@@ -9,6 +9,7 @@ type packet_type =
   | Secret_key_packet of Public_key_packet.private_key
   | Secret_key_subpacket of Public_key_packet.private_key
   | Trust_packet of Cs.t
+  | User_attribute_packet of User_attribute_packet.t
 
 let packet_tag_of_packet = begin function
   | Signature_type _ -> Signature_tag
@@ -18,6 +19,7 @@ let packet_tag_of_packet = begin function
   | Secret_key_packet _ -> Secret_key_tag
   | Secret_key_subpacket _ -> Secret_subkey_tag
   | Trust_packet _ -> Trust_packet_tag
+  | User_attribute_packet _ -> User_attribute_tag
   end
 
 let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cstruct.t) =
@@ -181,8 +183,9 @@ let parse_packet_body packet_tag pkt_body
                            >>| fun pkt -> Secret_key_subpacket pkt
     | Trust_packet_tag -> Ok (Trust_packet pkt_body)
     | User_attribute_tag ->
-        error_msg
-          (fun m -> m "parse_packet_body: Unimplemented: User_attribute_tag")
+      User_attribute_packet.parse_packet
+        pkt_body >>| fun attr -> User_attribute_packet attr
+
   end
 
 let pp_packet ppf = begin function
@@ -199,7 +202,9 @@ let pp_packet ppf = begin function
   | Signature_type pkt ->
       Fmt.pf ppf "Signature: @[<v>%a@]" Signature_packet.pp pkt
   | Trust_packet cs ->
-      Fmt.pf ppf "Trust packet (ignored): @[%a@]" Cstruct.hexdump_pp cs
+    Fmt.pf ppf "Trust packet (ignored): @[%a@]" Cstruct.hexdump_pp cs
+  | User_attribute_packet pkt ->
+    Fmt.pf ppf "User attribute packet: %a" User_attribute_packet.pp pkt
   end
 
 let hash_packet version hash_cb = begin function
@@ -211,7 +216,8 @@ let hash_packet version hash_cb = begin function
       Ok (Public_key_packet.(hash_public_key pkt.public hash_cb))
   | Signature_type pkt -> Signature_packet.hash pkt hash_cb
   | Trust_packet _ ->
-      error_msg (fun m -> m "Should NOT be hashing Trust_packets!")
+    error_msg (fun m -> m "Should NOT be hashing Trust_packets!")
+  | User_attribute_packet pkt -> User_attribute_packet.hash pkt hash_cb version
   end
 
 let serialize_packet version (pkt:packet_type) =
@@ -223,6 +229,7 @@ let serialize_packet version (pkt:packet_type) =
     | Trust_packet cs -> Ok cs
     | Secret_key_packet pkt -> Public_key_packet.serialize_secret version pkt
     | Secret_key_subpacket pkt -> Public_key_packet.serialize_secret version pkt
+    | User_attribute_packet pkt -> User_attribute_packet.serialize pkt
   end >>= fun body_cs ->
 
   begin match version with
@@ -283,8 +290,8 @@ struct
     }
 
   type user_attribute =
-    { certifications : Signature_packet.t list
-      (* : User_attribute_packet.t *)
+    { certifications : Signature_packet.t list ;
+      attributes : User_attribute_packet.t
     }
 
   type subkey =
@@ -925,6 +932,16 @@ let new_transferable_secret_key
    ; secret_subkeys = certified_subkeys
    } : Signature.transferable_secret_key)
 
+let serialize_user_attributes (attrs : Signature.user_attribute list) =
+  attrs |>
+  result_ok_list_or_error (fun {Signature.certifications; attributes} ->
+      serialize_packet V4 (User_attribute_packet attributes) >>= fun attr_cs ->
+      certifications |> result_ok_list_or_error
+        (fun s -> serialize_packet V4 (Signature_type s)
+        ) >>| fun certs_cs ->
+      Cs.concat (attr_cs::certs_cs)
+    )
+
 let serialize_uid_certifications (uids: Signature.uid list) =
   uids |>
   result_ok_list_or_error (fun {Signature.uid;certifications} ->
@@ -957,7 +974,8 @@ let serialize_transferable_public_key (pk : Signature.transferable_public_key) =
   (* serialize UIDs and certifications: *)
   serialize_uid_certifications pk.uids >>| Cs.concat >>= fun uids_cs ->
 
-  let user_attributes = Cs.create 0 in (* TODO serialize user attributes*)
+  serialize_user_attributes pk.user_attributes >>| Cs.concat >>=
+  fun user_attributes_cs ->
 
   (* serialize subkeys, certifications, and optionally revocations *)
   pk.subkeys |> result_ok_list_or_error
@@ -969,8 +987,19 @@ let serialize_transferable_public_key (pk : Signature.transferable_public_key) =
        Cs.concat [key_cs ; sig_cs]
     ) >>| Cs.concat >>= fun subkeys_cs ->
 
+  (* Primary-Key
+       [Revocation Self Signature]
+       [Direct Key Signature...]
+        User ID [Signature ...]
+       [User ID [Signature ...] ...]
+       [User Attribute [Signature ...] ...]
+       [[Subkey [Binding-Signature-Revocation]
+               Primary-Key-Binding-Signature] ...]
+  *)
+
   serialize_packet V4 (Public_key_packet pk.root_key) >>| fun pk_cs ->
   (Cs.concat [ pk_cs
              ; revocations
              ; uids_cs
+             ; user_attributes_cs
              ; subkeys_cs ])

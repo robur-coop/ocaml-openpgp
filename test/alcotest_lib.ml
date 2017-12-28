@@ -53,11 +53,11 @@ let key_has_subkeys n tpk =
 
 let exc_check_pk, exc_check_sk =
   let inner check decode ~uids ~subkeys file =
-  match (cs_of_file file
-  |> R.reword_error (fun _ -> failwith "can't open file for reading")
-  >>= decode >>= fun pk -> check pk ~uids ~subkeys >>| fun _ -> pk) with
-  | Ok pk -> pk
-  | Error (`Msg s) -> failwith s
+    match (cs_of_file file
+           |> R.reword_error (fun _ -> failwith "can't open file for reading")
+           >>= decode >>= fun pk ->check pk ~uids ~subkeys >>| fun _ -> pk) with
+    | Ok pk -> pk
+    | Error (`Msg s) -> failwith s
   in
   let check pk ~uids ~subkeys =
     (key_has_uids uids pk >>= fun () -> key_has_subkeys subkeys pk) in
@@ -86,45 +86,50 @@ let test_gnupg_key_002 () =
      Openpgp.Signature.verify_detached_cs ~current_time pk detach_sig msg
      |> R.reword_error (function `Msg s -> failwith s)) in ()
 
+let test_openpgpjs_000 () =
+  let _ = exc_check_pk "test/keys/openpgpjs.000.pk.asc" ~uids:1 ~subkeys:1 in()
+
+let must_fail e f =
+  match f () with
+  | exception _ -> ()
+  | _ -> failwith e
+
 let test_openpgpjs_001 () =
-  let _ = exc_check_pk "test/keys/openpgpjs.001.pk.asc" ~uids:1 ~subkeys:1 in()
+  must_fail "test_openpgpjs_001: should fail since we do not parse encrypted \
+             secret keys."
+    (fun () -> exc_check_sk "test/keys/openpgpjs.001.sk.asc" ~uids:1 ~subkeys:1)
 
-(* let test_openpgpjs_002 ... an encrypted secret key; we don't handle that *)
 let test_openpgpjs_002 () =
-  let _ = exc_check_sk "test/keys/openpgpjs.002.sk.asc" ~uids:1 ~subkeys:1 in ()
+  let _= exc_check_pk "test/keys/openpgpjs.002.pk.asc" ~uids:1 ~subkeys:1 in()
 
-let test_openpgpjs_003 () =
-  let _= exc_check_pk "test/keys/openpgpjs.003.pk.asc" ~uids:1 ~subkeys:1 in()
-
-let test_openpgpjs_key_001 () =
-  let _ = exc_check_pk "test/keys/openpgpjs.key.001.pk.asc" ~uids:1 ~subkeys:1
+let test_openpgpjs_key_000 () =
+  let _ = exc_check_pk "test/keys/openpgpjs.key.000.pk.asc" ~uids:1 ~subkeys:1
   in () (* TODO this armored file really contains two transferable public keys.
            API doesn't handle that atm.*)
 
-let test_openpgpjs_key_002 () = (* revoked *)
-  let _ = exc_check_pk "test/keys/openpgpjs.key.002.pk.asc" ~uids:0 ~subkeys:0
+let test_openpgpjs_key_001 () = (* revoked *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.001.pk.asc" ~uids:0 ~subkeys:0
   in ()
 
-let test_openpgpjs_key_003 () =
-  try ignore @@
-      exc_check_pk "test/keys/openpgpjs.key.003.pk.asc" ~uids:1 ~subkeys:1 ;
-      failwith "Should fail to parse v3"
-  with | _ -> ()
+let test_openpgpjs_key_002 () =
+  must_fail "Should fail to parse v3"
+    (fun () ->
+       exc_check_pk "test/keys/openpgpjs.key.002.pk.asc" ~uids:1 ~subkeys:1 )
 
-let test_openpgpjs_key_004 () = (*RSA with revocations*)
-  let _ = exc_check_pk "test/keys/openpgpjs.key.004.pk.asc" ~uids:1 ~subkeys:1
+let test_openpgpjs_key_003 () = (*RSA with revocations*)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.003.pk.asc" ~uids:1 ~subkeys:1
   in ()
 
-let test_openpgpjs_key_005 () = (* priv_key_rsa *)
-  let _ = exc_check_pk "test/keys/openpgpjs.key.005.priv_key_rsa.pk.asc" ~uids:1
+let test_openpgpjs_key_004 () = (* priv_key_rsa *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.004.priv_key_rsa.pk.asc" ~uids:1
       ~subkeys:0 in ()
 
-let test_openpgpjs_key_006 () = (* user_attr *)
-  let _ = exc_check_pk "test/keys/openpgpjs.key.006.user_attr_key.pk.asc"
+let test_openpgpjs_key_005 () = (* user_attr *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.005.user_attr_key.pk.asc"
       ~uids:1 ~subkeys:0 in ()
 
-let test_openpgpjs_key_007 () = (* embedded signature *)
-  let _ = exc_check_pk "test/keys/openpgpjs.key.007.pgp_desktop_pub.pk.asc"
+let test_openpgpjs_key_006 () = (* embedded signature *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.006.pgp_desktop_pub.pk.asc"
       ~uids:1 ~subkeys:1 in ()
 
 
@@ -193,17 +198,17 @@ let tests =
     ; "GnuPG RSA-SC + RSA-S (002)", `Quick, test_gnupg_key_002
     ]
   ; "OpenPGP.js test suite",
-    [ "OpenPGP.js RSA-ESC + RSA-ES (001)", `Quick, test_openpgpjs_001
-    ; "OpenPGP.js (002)", `Quick, test_openpgpjs_002
-    ; "OpenPGP.js DSA + El-Gamal (003)", `Quick, test_openpgpjs_003
+    [ "OpenPGP.js RSA-ESC + RSA-ES (000)", `Quick, test_openpgpjs_000
+    ; "OpenPGP.js (001)", `Quick, test_openpgpjs_001
+    ; "OpenPGP.js DSA + El-Gamal (002)", `Quick, test_openpgpjs_002
     (* https://github.com/openpgpjs/openpgpjs/blob/master/test/general/key.js *)
+    ; "OpenPGP.js key.js (000)", `Quick, test_openpgpjs_key_000
     ; "OpenPGP.js key.js (001)", `Quick, test_openpgpjs_key_001
-    ; "OpenPGP.js key.js (002)", `Quick, test_openpgpjs_key_002
-    ; "OpenPGP.js key.js, v3 pk (003)", `Quick, test_openpgpjs_key_003
-    ; "OpenPGP.js key.js, revocations (004)", `Quick, test_openpgpjs_key_004
-    ; "OpenPGP.js key.js, secret key (005)", `Quick, test_openpgpjs_key_005
-    ; "OpenPGP.js key.js, user attr tag (006)", `Quick, test_openpgpjs_key_006
-    ; "OpenPGP.js key.js, PGP Desktop pk (007)", `Quick, test_openpgpjs_key_007
+    ; "OpenPGP.js key.js, v3 pk (002)", `Quick, test_openpgpjs_key_002
+    ; "OpenPGP.js key.js, revocations (003)", `Quick, test_openpgpjs_key_003
+    ; "OpenPGP.js key.js, secret key (004)", `Quick, test_openpgpjs_key_004
+    ; "OpenPGP.js key.js, user attr tag (005)", `Quick, test_openpgpjs_key_005
+    ; "OpenPGP.js key.js, PGP Desktop pk (006)", `Quick, test_openpgpjs_key_006
     ]
   ; "Integrity checks",
     [ "DSA: generate; sign; convert; verify", `Slow, test_integrity_dsa ;
