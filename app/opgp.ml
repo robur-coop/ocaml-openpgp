@@ -53,7 +53,7 @@ let do_convert _ current_time secret_file =
   >>= Openpgp.decode_secret_key_block ~current_time >>| fst
   >>| Openpgp.Signature.transferable_public_key_of_transferable_secret_key
   >>= Openpgp.serialize_transferable_public_key
-  >>| Openpgp.encode_ascii_armor Types.Ascii_public_key_block >>| fun cs ->
+  >>= Openpgp.encode_ascii_armor Types.Ascii_public_key_block >>| fun cs ->
   Logs.app (fun m -> m "%s" (Cs.to_string cs))
  )|> R.reword_error Types.msg_of_error
 
@@ -63,8 +63,9 @@ let do_genkey _ g current_time uid pk_algo =
   Openpgp.new_transferable_secret_key ~current_time Types.V4
     root_key [uid] []
   >>= Openpgp.serialize_transferable_secret_key Types.V4
-  >>| fun key_cs ->
-  let encoded_pk = Openpgp.encode_ascii_armor Types.Ascii_private_key_block key_cs in
+  >>= fun key_cs ->
+  Openpgp.encode_ascii_armor Types.Ascii_private_key_block key_cs
+  >>| fun encoded_pk ->
   Logs.app (fun m -> m "%s" (Cs.to_string encoded_pk))
 
 let do_list_packets _ target =
@@ -80,7 +81,7 @@ let do_list_packets _ target =
   Logs.app (fun m -> m "armor type: %a@.%a"
                (Fmt.option ~none:(Fmt.unit "None")
                  Types.pp_ascii_packet_type) arm_typ
-               Cstruct.hexdump_pp raw_cs
+               Cs.pp_hex raw_cs
            ) ;
   Openpgp.parse_packets raw_cs
   >>= fun pkts_tuple ->
@@ -88,7 +89,7 @@ let do_list_packets _ target =
                (fun fmt -> Fmt.pf fmt "%a"
                  Fmt.(list ~sep:(unit "@.|  ")
                       (vbox @@ pair ~sep:(unit "@,Hexdump: ")
-                         Openpgp.pp_packet Cstruct.hexdump_pp ))
+                         Openpgp.pp_packet Cs.pp_hex ))
                ) pkts_tuple
   ) in
   Ok ()
@@ -104,7 +105,7 @@ let do_sign _ current_time secret_file target_file =
   Openpgp.Signature.sign_detached_cs ~current_time
     sk.Openpgp.Signature.root_key Types.SHA384 target_content >>= fun sig_t ->
   Openpgp.serialize_packet Types.V4 (Openpgp.Signature_type sig_t)
-  >>| Openpgp.encode_ascii_armor Types.Ascii_signature
+  >>= Openpgp.encode_ascii_armor Types.Ascii_signature
   >>| Cs.to_string >>= fun encoded ->
   Logs.app (fun m -> m "%s" encoded) ; Ok ()
   )|> R.reword_error Types.msg_of_error
@@ -141,8 +142,9 @@ let rng_seed : Nocrypto.Rng.g option Cmdliner.Term.t =
     (Cs.of_hex seed_hex |> R.reword_error
         (fun _ -> Fmt.strf "--rng-seed: invalid hex string: %S" seed_hex)
       >>| fun seed ->
-     Logs.warn (fun m -> m "PRNG from seed %a" Cstruct.hexdump_pp seed) ;
-     Some (Nocrypto.Rng.create ~seed (module Nocrypto.Rng.Generators.Fortuna))
+     Logs.warn (fun m -> m "PRNG from seed %a" Cs.pp_hex seed) ;
+     Some (Nocrypto.Rng.create ~seed:(Cs.to_cstruct seed)
+             (module Nocrypto.Rng.Generators.Fortuna))
     ) |> R.to_presult
   in
   Arg.(value & opt (random_seed, (fun fmt _ -> Format.fprintf fmt "OS PRNG"))

@@ -136,11 +136,14 @@ let v4_fingerprint t : Cs.t =
 let v4_key_id t : string  =
   (* in gnupg2 this is g10/keyid.c:fingerprint_from_pk*)
   (* The Key ID is the low-order 64 bits of the fingerprint.*)
-  Cstruct.sub
+  (* NOTE: "low-order" means rightmost since it's "big-endian".*)
+  Cs.sub
     (v4_fingerprint t)
     (Nocrypto.Hash.SHA1.digest_size - (64/8))
     (64/8)
-  |> Cs.to_hex
+  |> R.get_ok |> Cs.to_string
+
+let v4_key_id_hex t : string = Cs.to_hex (v4_key_id t |> Cs.of_string)
 
 let parse_elgamal_asf buf : (public_key_asf * Cs.t, 'error) result =
   (*
@@ -226,9 +229,10 @@ let parse_secret_rsa_asf ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
     >>| fun () -> (RSA_privkey_asf sk, tl)
   end
 
-let parse_packet_return_extraneous_data buf
+let parse_packet_return_extraneous_data (buf:Cs.t)
   : (t * Cs.t, [> `Msg of string]) result =
-  Logs.debug (fun m -> m "%s parsing @[<v>%a@]" __LOC__ Cstruct.hexdump_pp buf) ;
+  Logs.debug (fun m -> m "%s parsing @[<v>%a@]" __LOC__
+                 Cs.pp_hex buf) ;
   (* 1: '\x04' *)
   v4_verify_version buf >>= fun()->
 
@@ -287,9 +291,9 @@ let parse_secret_packet buf : (private_key, 'error) result =
   in
   true_or_error (Cs.equal computed_sum csum)
     (fun m -> m "Parsing secret key: Invalid mod-65536-checksum: %a <> %a"
-        Cstruct.hexdump_pp csum Cstruct.hexdump_pp computed_sum
+        Cs.pp_hex csum Cs.pp_hex computed_sum
     ) >>| log_msg (fun m -> m "Parsing secret key: Good checksum: %a"
-                      Cstruct.hexdump_pp csum) >>= fun () ->
+                      Cs.pp_hex csum) >>= fun () ->
 
   Cs.e_is_empty (`Msg "Extraneous data after secret ASF") buf_tl >>| fun () ->
   {public ; priv_asf }
@@ -326,6 +330,7 @@ let generate_new ?g ~(current_time:Ptime.t) key_type =
 let public_of_private (priv_key : private_key) : t = priv_key.public
 
 let can_sign t =
+  (* TODO should also check the Key_usage_flags in the self-signature *)
   match public_key_algorithm_of_asf t.algorithm_specific_data with
   | RSA_sign_only | RSA_encrypt_or_sign | DSA -> true
   | Elgamal_encrypt_only | RSA_encrypt_only -> false

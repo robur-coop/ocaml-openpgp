@@ -1,8 +1,9 @@
 (** OpenPGP RFC 4880 library version %%VERSION%% *)
 
 open Types
+open Rresult
 
-val encode_ascii_armor : ascii_packet_type -> Cs.t -> Cs.t
+val encode_ascii_armor : ascii_packet_type -> Cs.t -> (Cs.t, [> R.msg]) result
 (** [encode_ascii_armor typ buf] encodes the ASCII-armored representation of
     [buf], with the header and footer lines determined by [typ]. *)
 
@@ -21,6 +22,8 @@ type packet_type =
   | Secret_key_subpacket of Public_key_packet.private_key
   | Trust_packet of Cs.t
   | User_attribute_packet of User_attribute_packet.t
+  | Encrypted_packet of Public_key_encrypted_session_packet.t
+  | Public_key_encrypted_session_packet of Public_key_encrypted_session_packet.t
 
 module Signature : sig
   type t
@@ -87,21 +90,20 @@ module Signature : sig
     transferable_public_key ->
     t ->
     (unit ->
-       (Cs.t option,
-       ([> `Msg of string] as 'err)) result) ->
-    ([> `Good_signature ], 'err ) result
+       (Cs.t option, [> R.msg] as 'err ) result) ->
+    ([ `Good_signature ], 'err ) result
 
   val verify_detached_cs :
     current_time : Ptime.t -> transferable_public_key ->
-    t -> Cs.t -> ([> `Good_signature ], [> `Msg of string] ) result
+    t -> Cs.t -> ([ `Good_signature ], [> R.msg ] ) result
 
   val sign_detached_cb :
      current_time:Ptime.t ->
      Public_key_packet.private_key ->
      Types.hash_algorithm ->
-     (Cstruct.t -> unit) * (unit -> Cstruct.t) -> (*hash_cb,hash_finalize*)
+     (Cs.t -> unit) * Types.digest_finalizer -> (*hash_cb,hash_finalize*)
      (unit (** io callback for reading the data to sign *) ->
-         (Cstruct.t option, [> `Msg of string ] as 'a
+         (Cs.t option, [> `Msg of string ] as 'a
          ) Result.result) ->
      (t, 'a) Result.result
 
@@ -113,21 +115,21 @@ module Signature : sig
 end with type t = Signature_packet.t
 
 val serialize_packet : Types.openpgp_version ->
-  packet_type -> (Cstruct.t, [> `Msg of string ]) Result.result
+  packet_type -> (Cs.t, [> `Msg of string ]) Result.result
 
 val packet_tag_of_packet : packet_type -> packet_tag_type
 
 val pp_packet : Format.formatter -> packet_type -> unit
 
-val parse_packet_body : packet_tag_type -> Cstruct.t ->
+val parse_packet_body : packet_tag_type -> Cs.t ->
   (packet_type
-   , [> `Msg of string | `Incomplete_packet ]
+   , [> R.msg | `Incomplete_packet ]
   ) Rresult.result
 
-val next_packet : Cstruct.t ->
+val next_packet : Cs.t ->
     (
-      (packet_tag_type * Cstruct.t * Cstruct.t) option,
-      [> `Incomplete_packet | `Msg of string ]
+      (packet_tag_type * Cs.t * Cs.t) option,
+      [> `Incomplete_packet | R.msg ]
     ) result
 
 val parse_packets :
@@ -170,10 +172,9 @@ val new_transferable_secret_key :
 
 val serialize_transferable_public_key :
   Signature.transferable_public_key ->
-  (Cstruct.t,
-   [> `Msg of string]) result
+  (Cs.t, [> R.msg]) result
 
 val serialize_transferable_secret_key :
   Types.openpgp_version ->
   Signature.transferable_secret_key ->
-  (Cstruct.t, [> `Msg of string ]) Result.result
+  (Cs.t, [> R.msg ]) Result.result

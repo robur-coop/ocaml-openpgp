@@ -19,7 +19,7 @@ module SubpacketMap : sig
   val upsert : tag -> 'element -> 'element t -> 'element t
   val to_list : 'element t -> 'element list
   val get_opt : tag -> 'element t -> 'element option
-  val get : tag -> 'element t -> ('element,[>`Msg of string]) result
+  val get : tag -> 'element t -> ('element,[> R.msg]) result
 end = struct
   type tag = signature_subpacket_tag
   type 'element value = {index: int ; tag: tag; element : 'element}
@@ -64,8 +64,25 @@ end = struct
     | None -> err_msg_debug (fun m -> m "SubpacketMap.get: not found")
 end
 
-(* [t] and [signature_subpacket] are mutually recursive
-   due to Embedded_signature containing [t] *)
+type signature_subpacket =
+  | Signature_creation_time of Ptime.t
+  | Signature_expiration_time of Ptime.Span.t
+  | Key_expiration_time of Ptime.Span.t
+  | Key_usage_flags of key_usage_flags
+  | Issuer_fingerprint of openpgp_version * Cs.t
+  | Preferred_hash_algorithms of hash_algorithm list
+  | Preferred_symmetric_algorithms of symmetric_algorithm list
+  | Embedded_signature of Cs.t (* [t] and [signature_subpacket] are mutually
+                                  recursive due to Embedded_signature containing
+                                  its own [t]. we store the Cs.t and defer
+                                  parsing to a later point. *)
+  | Key_server_preferences of Cs.t
+  | Reason_for_revocation of string
+  | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
+  | Features of feature list
+  | Unimplemented_subpacket of signature_subpacket_tag * Cs.t
+
+
 type t = {
   (* TODO consider some fancy gadt thing here*)
   signature_type : signature_type ;
@@ -76,18 +93,6 @@ type t = {
   subpacket_data : signature_subpacket SubpacketMap.t ;
   algorithm_specific_data : signature_asf;
 }
-
-and signature_subpacket =
-  | Signature_creation_time of Ptime.t
-  | Signature_expiration_time of Ptime.Span.t
-  | Key_expiration_time of Ptime.Span.t
-  | Key_usage_flags of key_usage_flags
-  | Issuer_fingerprint of openpgp_version * Cs.t
-  | Preferred_hash_algorithms of hash_algorithm list
-  | Embedded_signature of t
-  | Key_server_preferences of Cs.t
-  | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
-  | Unimplemented_subpacket of signature_subpacket_tag * Cs.t
 
 module Subpacket = struct
 
@@ -119,7 +124,7 @@ type (_,_) subpacket =
   | Key_expiration_time :
       key_expiration_time -> (c, key_expiration_time) subpacket
   | Key_usage_flags : key_usage_flags -> (d, key_usage_flags) subpacket
-  | MIssuer_fingerprint :
+  | Issuer_fingerprint :
       issuer_fingerprint -> (e, issuer_fingerprint) subpacket
 (*  | Preferred_hash_algorithms :
       preferred_hash_algorithms -> preferred_hash_algorithms subpacket
@@ -139,9 +144,11 @@ let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_
   | Key_usage_flags _ -> Key_usage_flags
   | Issuer_fingerprint _ -> Issuer_fingerprint
   | Preferred_hash_algorithms _ -> Preferred_hash_algorithms
+  | Preferred_symmetric_algorithms _ -> Preferred_symmetric_algorithms
   | Embedded_signature _ -> Embedded_signature
   | Key_server_preferences _ -> Key_server_preferences
   | Issuer_keyid _ -> Issuer_keyid
+  | Reason_for_revocation _ -> Reason_for_revocation
   | Unimplemented_subpacket (tag,_) -> tag
 
 (* [pp] and [pp_signature_subpacket] are mutually recursive because a [t] can
@@ -172,7 +179,10 @@ and pp_signature_subpacket ppf (pkt) =
     ; encrypt_storage = enc_store
     ; authentication = auth
     ; unimplemented = unimpl_char }
-    -> Fmt.pf fmt "{ @[<v>certify: %b ;@ sign data: %b ;@ encrypt communications: %b ;@ encrypt storage: %b ;@ authentication: %b ;@ raw decimal char: %C@]}" certs sign_data enc_comm enc_store auth unimpl_char
+    -> Fmt.pf fmt "{ @[<v>certify: %b ;@ sign data: %b ;@ encrypt \
+                   communications: %b ;@ encrypt storage: %b ;@ \
+                   authentication: %b ;@ raw decimal char: %C@]}"
+         certs sign_data enc_comm enc_store auth unimpl_char
   | Issuer_fingerprint (v,fp) -> begin match v with
       | V3 (*TODO is this valid for V3? *)
       | V4 -> Fmt.pf fmt "SHA1: %s" (Cs.to_hex fp)
@@ -181,10 +191,15 @@ and pp_signature_subpacket ppf (pkt) =
     Fmt.pf fmt "%a"
       Fmt.(brackets @@ hvbox ~indent:2 @@
            list ~sep:(unit "; ") pp_hash_algorithm) algos
-  | Embedded_signature em_sig -> Fmt.pf fmt "@[%a@]" pp em_sig
-  | Key_server_preferences cs -> Fmt.pf fmt "%a" Cstruct.hexdump_pp cs
-  | Issuer_keyid cs -> Fmt.pf fmt "%a" Cstruct.hexdump_pp cs
-  | Unimplemented_subpacket (_, cs) -> Fmt.pf fmt "%a" Cstruct.hexdump_pp cs
+  | Preferred_symmetric_algorithms algos ->
+    Fmt.pf fmt "%a"
+      Fmt.(brackets @@ hvbox ~indent:2 @@
+           list ~sep:(unit "; ") pp_symmetric_algorithm) algos
+  | Embedded_signature em_sig -> Fmt.pf fmt "@[%a@]" Cs.pp_hex em_sig
+  | Key_server_preferences cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
+  | Reason_for_revocation reason -> Fmt.pf fmt "%S" reason
+  | Issuer_keyid cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
+  | Unimplemented_subpacket (_, cs) -> Fmt.pf fmt "%a" Cs.pp_hex cs
   end
 
 let filter_subpacket_tag (tag:signature_subpacket_tag) =
@@ -228,7 +243,7 @@ let signature_expiration_date_is_valid (current_time : Ptime.t) (t : t) =
 
 let check_signature (current_time : Ptime.t)
     (public_keys : Public_key_packet.t list)
-    digest_finalizer
+    (digest_finalizer:Types.digest_finalizer)
     t
   : ('ok, [> `Msg of string]) result =
   (* Note that this function does not deal with key expiry.
@@ -295,10 +310,10 @@ The signature was not signed by this public key.|}
                                    ~q:key.Nocrypto.Dsa.q
                                    ~hash_algo:t.hash_algorithm
       >>= fun () ->
-      let cs_r = cs_of_mpi_no_header r in
-      let cs_s = cs_of_mpi_no_header s in
+      let cs_r = cs_of_mpi_no_header r |> Cs.to_cstruct in
+      let cs_s = cs_of_mpi_no_header s |> Cs.to_cstruct in
       e_true `Invalid_signature
-        (Nocrypto.Dsa.verify ~key (cs_r,cs_s) digest)
+        (Nocrypto.Dsa.verify ~key (cs_r,cs_s) (Cs.to_cstruct digest))
       |> log_failed (fun m -> m "DSA signature validation failed")
       >>| fun () -> `Good_signature
     | ( Public_key_packet.RSA_pubkey_sign_asf pub
@@ -317,8 +332,8 @@ The signature was not signed by this public key.|}
         e_true `Invalid_signature
           (Nocrypto.Rsa.PKCS1.verify
              ~hash:hash_algo
-             ~signature:(cs_of_mpi_no_header m_pow_d_mod_n)
-             ~key:pub (`Digest digest))
+             ~signature:(cs_of_mpi_no_header m_pow_d_mod_n |> Cs.to_cstruct)
+             ~key:pub (`Digest (Cs.to_cstruct digest)))
         |> log_failed (fun m -> m "RSA signature validation failed")
         >>| fun () -> `Good_signature
     | pk_asf , sig_asf ->
@@ -395,9 +410,23 @@ and serialize_hashed_manual version sig_type pk_algo hash_algo subpacket_data =
   Cs.W.to_cs buf
 
 and serialize_hashed version {signature_type ; public_key_algorithm
-                                 ; hash_algorithm ; subpacket_data;_ } =
+                             ; hash_algorithm ; subpacket_data
+                             ; algorithm_specific_data = _ } =
   serialize_hashed_manual version signature_type
     public_key_algorithm hash_algorithm (SubpacketMap.to_list subpacket_data)
+
+and serialize (t:t) : (Cs.t, [> R.msg]) result =
+  (* TODO handle V3 *)
+  serialize_hashed V4 t >>= fun hashed ->
+  compute_digest t.hash_algorithm hashed
+  >>| (fun digest -> Cs.sub_unsafe digest 0 2) >>= fun two_octet_checksum ->
+  serialize_asf t.algorithm_specific_data >>| fun asf_cs ->
+  Cs.concat [ hashed
+              (* length of unhashed subpackets (which we don't support): *)
+            ; Cs.BE.create_uint16 0
+              (* leftmost 16 bits of the signed hash value: *)
+            ; two_octet_checksum
+            ; asf_cs ]
 
 and construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
     subpacket_data =
@@ -414,7 +443,7 @@ and construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
             ; Cs.BE.create_uint16 0x04_ff
             ; Cs.BE.create_uint32 (Cs.len buf |> Int32.of_int) ]
    ) >>= fun tbh -> (Ok tbh) |>
-  log_msg (fun m -> m "signature to be hashed: @ %a" Cstruct.hexdump_pp tbh)
+  log_msg (fun m -> m "signature to be hashed: @ %a" Cs.pp_hex tbh)
 
 and construct_to_be_hashed_cs t : ('ok,'error) result =
   (* This is a helper function to be used on [t]s for verification purposes *)
@@ -433,7 +462,10 @@ and cs_of_signature_subpacket pkt =
   | Issuer_fingerprint (v,fp) -> Ok (Cs.concat [cs_of_version v;fp])
   | Preferred_hash_algorithms algos ->
     Ok (Cs.concat @@ List.map cs_of_hash_algorithm algos)
-  | Embedded_signature embedded -> serialize embedded
+  | Preferred_symmetric_algorithms algos ->
+    Ok (Cs.concat @@ List.map cs_of_symmetric_algorithm algos)
+  | Reason_for_revocation str -> Ok (Cs.of_string str)
+  | Embedded_signature embedded -> Ok embedded
   | Issuer_keyid cs
   | Key_server_preferences cs
   | Unimplemented_subpacket (_ , cs) -> Ok cs (* cs does not contain the tag *)
@@ -446,29 +478,15 @@ and cs_of_signature_subpacket pkt =
               |> cs_of_signature_subpacket_tag
             ; cs]
   |> log_msg (fun m -> m "serialized subpacket: @[%a@ %a@]"
-                pp_signature_subpacket pkt Cstruct.hexdump_pp cs)
+                pp_signature_subpacket pkt Cs.pp_hex cs)
 
-
-and serialize t =
-  (* TODO handle V3 *)
-  serialize_hashed V4 t >>= fun hashed ->
-  compute_digest t.hash_algorithm hashed
-  >>| (fun digest -> Cs.sub_unsafe digest 0 2) >>= fun two_octet_checksum ->
-  serialize_asf t.algorithm_specific_data >>| fun asf_cs ->
-  Cs.concat [ hashed
-              (* length of unhashed subpackets (which we don't support): *)
-            ; Cs.BE.create_uint16 0
-              (* leftmost 16 bits of the signed hash value: *)
-            ; two_octet_checksum
-            ; asf_cs ]
-
-let hash t hash_cb = construct_to_be_hashed_cs t >>| hash_cb
+let hash t (hash_cb : Cs.t -> unit) = construct_to_be_hashed_cs t >>| hash_cb
 
 let parse_subpacket ~allow_embedded_signatures buf
   : (signature_subpacket, [> `Msg of string]) result =
   Cs.e_split (`Msg "parse_subpacket: e_split") buf 1 >>= fun (tag, data) ->
   let tag_c, is_critical =
-    let tag_i = Cstruct.get_uint8 tag 0 in
+    let tag_i = Cs.get_uint8_unsafe tag 0 in
     Char.chr (tag_i land 0x7f), (tag_i land 0x80 = 0x80)
     (* RFC 4880: 5.2.3.1.  Signature Subpacket Specification
        Bit 7 of the subpacket type is the "critical" bit.  If set, it
@@ -486,7 +504,7 @@ let parse_subpacket ~allow_embedded_signatures buf
   begin match tag with
   | Key_usage_flags when Cs.len data = 1 ->
       Ok (Some (
-        Key_usage_flags (key_usage_flags_of_char @@ Cstruct.get_char data 0)))
+        Key_usage_flags (key_usage_flags_of_char @@ Cs.get_char_unsafe data 0)))
   (* Parse timestamps. Note that OpenPGP stores the expiration as an offset from
    * the creation time. *)
   | Signature_creation_time ->
@@ -507,13 +525,15 @@ let parse_subpacket ~allow_embedded_signatures buf
                       Cs.(sub_unsafe data 1 Nocrypto.Hash.SHA1.digest_size))))
         | V3 (*TODO don't think Issuer_fingerprint was a thing in V3? *)
         | V4 -> error_msg (fun m -> m "Invalid issuer fingerprint packet: %a"
-                              Cstruct.hexdump_pp data)
+                              Cs.pp_hex data)
       end
   | Preferred_hash_algorithms ->
     Ok (Cs.to_list data |> List.map hash_algorithm_of_char
         |> fun lst -> Some (Preferred_hash_algorithms lst))
-  | Embedded_signature when not allow_embedded_signatures ->
-      error_msg (fun m -> m "Embedded signatures not allowed in this context")
+  | Embedded_signature when (*TODO: not*) allow_embedded_signatures ->
+    error_msg (fun m -> m "Embedded signatures not allowed in this context")
+  | Reason_for_revocation ->
+    Ok (Some (Reason_for_revocation (Cs.to_string data)))
   | _ when not is_critical -> Ok None
   | tag -> error_msg (fun m -> m "Unimplemented critical subpacket: [%a] %s"
                          pp_signature_subpacket_tag tag
@@ -578,7 +598,7 @@ let parse_packet ?(allow_embedded_signatures=false) buf : (t, 'error) result =
   Cs.e_sub `Incomplete_packet buf (6+hashed_len+2) unhashed_len
   >>= fun unhashed_subpacket_data ->
   (* TODO decide what to do with unhashed subpacket data*)
-  Logs.debug (fun m -> m "Signature contains unhashed subpacket data (not handled in this implementation: %a" Cstruct.hexdump_pp unhashed_subpacket_data);
+  Logs.debug (fun m -> m "Signature contains unhashed subpacket data (not handled in this implementation: %a" Cs.pp_hex unhashed_subpacket_data);
 
   (* 6+hashed_len+2+unhashed_len: 2: leftmost 16 bits of the signed hash value (what the fuck) *)
   (* TODO currently ignored:
@@ -609,7 +629,7 @@ let parse_packet ?(allow_embedded_signatures=false) buf : (t, 'error) result =
   >>= fun (algorithm_specific_data, should_be_empty) ->
   true_or_error (Cs.len should_be_empty = 0)
     (fun m -> m "checking 'should be empty' - still contains %d bytes: %a"
-        (Cs.len should_be_empty) Cstruct.hexdump_pp should_be_empty)
+        (Cs.len should_be_empty) Cs.pp_hex should_be_empty)
   >>| fun () ->
   { signature_type
   ; public_key_algorithm = pk_algo

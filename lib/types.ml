@@ -110,6 +110,15 @@ let e_version_of_char e = function
   | '\004' -> Ok V4
   | _ -> Error e
 
+type feature =
+  | Modification_detection
+  | Unknown_feature of char
+
+let pp_feature fmt feature =
+  Fmt.string fmt @@ match feature with
+  | Modification_detection -> "Modification Detection"
+  | Unknown_feature c -> Cs.(to_hex @@ of_char c)
+
 type hash_algorithm =
   (* RFC 4880: 9.4 Hash Algorithms *)
   | MD5
@@ -162,6 +171,26 @@ let public_key_algorithm_enum =
   ; '\017', DSA
   ]
 
+type symmetric_algorithm =
+  | AES128
+  | AES192
+  | AES256
+  | Unknown_encryption of char
+
+let symmetric_algorithm_enum =
+  [ '\007', AES128
+  ; '\008', AES192
+  ; '\009', AES256
+  ]
+
+let pp_symmetric_algorithm ppf v =
+  Fmt.string ppf @@ match v with
+  | AES128 -> "AES-128"
+  | AES192 -> "AES-192"
+  | AES256 -> "AES-256"
+  | Unknown_encryption c ->
+    Format.sprintf "Unknown[%02x]" (Char.code c)
+
 type mpi = Z.t
 
 type ascii_packet_type =
@@ -198,6 +227,8 @@ type packet_tag_type =
   | Public_subkey_tag
   | User_attribute_tag
   | Trust_packet_tag
+  | Encrypted_packet_tag
+  | Public_key_encrypted_session_packet_tag
 
 let pp_packet_tag ppf v =
   Fmt.string ppf @@ match v with
@@ -209,12 +240,15 @@ let pp_packet_tag ppf v =
   | Public_subkey_tag -> "public subkey"
   | User_attribute_tag -> "user attribute"
   | Trust_packet_tag -> "trust packet"
+  | Encrypted_packet_tag -> "Encrypted packet"
+  | Public_key_encrypted_session_packet_tag ->
+    "Public-Key encrypted session packet"
 
 (* see RFC 4880: 4.3 Packet Tags *)
 let packet_tag_enum =
   (* note that in OCaml \XXX is decimal, not octal *)
-  [ (* '\001', Public-Key Encrypted Session Key Packet *)
-    ('\002', Signature_tag)
+  [ ('\001', Public_key_encrypted_session_packet_tag)
+  ; ('\002', Signature_tag)
     (* '\003', Symmetric-Key Encrypted Session Key Packet*)
     (* '\004', One-Pass Signature Packet *)
   ; ('\005', Secret_key_tag)
@@ -228,7 +262,8 @@ let packet_tag_enum =
   ; '\013', Uid_tag
   ; '\014', Public_subkey_tag
   ; '\017', User_attribute_tag (*User Attribute Packet *)
-    (* '\018', Symmetrically Encrypted and Integrity Protected Data Packet *)
+  ; '\018', Encrypted_packet_tag
+  (* ^-- Symmetrically Encrypted and Integrity Protected Data Packet *)
     (* '\019', Modification Detection Code Packet *)
   ]
 
@@ -468,23 +503,27 @@ let nocrypto_module_of_hash_algorithm algo :
   ((module Nocrypto.Hash.S),[> ]) result =
   nocrypto_poly_variant_of_hash_algorithm algo >>| Nocrypto.Hash.module_of
 
-type digest_finalizer = unit -> Nocrypto.Hash.digest
+type digest_finalizer = unit -> Cs.t
 type digest_feeder = (Cs.t -> unit) * digest_finalizer
 
 let digest_callback hash_algo: (digest_feeder, [> ]) result =
   nocrypto_module_of_hash_algorithm hash_algo >>= fun m ->
   let module H = (val (m)) in
   let t = ref H.empty in
-  let feeder cs = (t := H.feed !t cs)
+  let feeder cs = (t := H.feed !t (Cs.to_cstruct cs))
                   |> log_msg (fun m -> m "%a hashing %d bytes: %a\n"
                                  pp_hash_algorithm hash_algo
-                                 (Cs.len cs) Cstruct.hexdump_pp cs)
+                                 (Cs.len cs) Cs.pp_hex cs)
   in Ok (feeder,
-        (fun () -> H.get !t))
+        (fun () -> H.get !t |> Cs.of_cstruct))
 
 let compute_digest hash_algo to_be_hashed =
   digest_callback hash_algo >>= fun (feed, get) ->
   (feed to_be_hashed ; Ok (get ()))
+
+let features_enum =
+  [ '\001', Modification_detection
+  ]
 
 let hash_algorithm_enum =
   [ '\001', MD5
@@ -511,6 +550,16 @@ let rec find_enum_sumtype needle = function
   | (value, sumtype)::_ when value = needle -> Ok sumtype
   | _::tl -> find_enum_sumtype needle tl
 
+let feature_of_char needle =
+  find_enum_sumtype needle features_enum
+  |>  R.ignore_error ~use:(fun `Unmatched_enum_value ->
+      Logs.debug (fun m -> m "Unimplemented feature 0x%02x"
+                     (Char.code needle));
+      Unknown_feature needle
+    )
+
+let char_of_feature needle = find_enum_value needle features_enum |> R.get_ok
+
 let hash_algorithm_of_char needle =
   find_enum_sumtype needle hash_algorithm_enum
   |> R.ignore_error ~use:(fun `Unmatched_enum_value ->
@@ -526,6 +575,11 @@ let char_of_hash_algorithm needle =
   find_enum_value needle hash_algorithm_enum |> R.get_ok
 
 let cs_of_hash_algorithm a = char_of_hash_algorithm a |> Cs.of_char
+
+let char_of_symmetric_algorithm needle =
+  find_enum_value needle symmetric_algorithm_enum |> R.get_ok
+
+let cs_of_symmetric_algorithm a = char_of_symmetric_algorithm a |> Cs.of_char
 
 let packet_tag_type_of_char needle =
   find_enum_sumtype needle packet_tag_enum
@@ -610,7 +664,7 @@ let mpis_are_prime lst =
   in
   if non_primes <> [] then begin
     Logs.debug (fun m -> m "MPIs are not prime: %a"
-                   Fmt.(list ~sep:(unit " ; ") Cstruct.hexdump_pp)
+                   Fmt.(list ~sep:(unit " ; ") Cs.pp_hex)
                    (List.map cs_of_mpi_no_header non_primes)) ;
     R.error (msg_of_invalid_mpi_parameters non_primes)
   end else R.ok ()
@@ -619,7 +673,7 @@ let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
   mpi_len mpi_body >>= fun body_bitlen ->
   Logs.debug (fun m -> m "cs_of_mpi: %d: %a"
-                 body_bitlen Cstruct.hexdump_pp mpi_body) ;
+                 body_bitlen Cs.pp_hex mpi_body) ;
   let buf = Cs.W.create (2 + body_bitlen/8) in
   Cs.W.uint16 buf body_bitlen ;
   Cs.W.cs buf mpi_body ;
@@ -628,7 +682,7 @@ let cs_of_mpi mpi : (Cs.t, 'error) result =
 let cs_of_mpi_list mpi_list =
   let rec loop acc = function
     | hd::tl -> cs_of_mpi hd >>= fun cs -> loop (cs::acc) tl
-    | [] -> R.ok (List.rev acc |> Cstruct.concat)
+    | [] -> R.ok (List.rev acc |> Cs.concat)
   in
   loop [] mpi_list
 
@@ -646,12 +700,12 @@ let consume_mpi buf : (mpi * Cs.t, [> `Incomplete_packet ]) result =
   *)
   Cs.BE.e_get_uint16 `Incomplete_packet buf 0 >>= fun bitlen ->
   let bytelen = (bitlen + 7) / 8 in
-  Logs.debug (fun m -> m "going to read %d:@.%a" bytelen Cstruct.hexdump_pp buf) ;
+  Logs.debug (fun m -> m "going to read %d:@.%a" bytelen Cs.pp_hex buf) ;
   Cs.e_split ~start:2 `Incomplete_packet buf bytelen >>= fun (this_mpi, tl) ->
   Logs.debug (fun m -> m "splitmpi");
   R.ok (mpi_of_cs_no_header this_mpi, tl)
 
-let crc24 (buf : Cs.t) : Cstruct.t =
+let crc24 (buf : Cs.t) : Cs.t =
 (* adopted from the C reference implementation in RFC 4880:
     crc24 crc_octets(unsigned char *octets, size_t len)
 *)
@@ -659,15 +713,16 @@ let crc24 (buf : Cs.t) : Cstruct.t =
   let (<<>) = shift_left in
   (*     while (len--) { *)
   let rec loop (len:int) (prev_crc:int32) =
-    if len = Cstruct.len buf then
+    if len = Cs.len buf then
       prev_crc
     else
       (*        crc ^= ( *octets++) << 16; *)
-      let c2 = Cstruct.get_char buf len
-              |> int_of_char
-              |> of_int
-              |> fun c -> c <<> 16
-              |> logxor prev_crc
+      let c2 = ( Cs.e_get_char `err buf len
+                 |> R.get_ok) (* TODO *)
+               |> int_of_char
+               |> of_int
+               |> fun c -> c <<> 16
+               |> logxor prev_crc
       in
       (*        for (i = 0; i < 8; i++) { *)
       let rec inner_loop c3 = function
@@ -696,7 +751,7 @@ let crc24 (buf : Cs.t) : Cstruct.t =
     |> Char.chr
     |> Cstruct.set_char output i
   done ;
-  output
+  Cs.of_cstruct output
 
 type packet_length_type =
   | One_octet
@@ -735,7 +790,7 @@ let serialize_packet_length_uint32 (len : Uint32.t) =
       |> Cs.BE.create_uint16
     in
     Logs.debug (fun m -> m "serializing packet length of %d -> %a" len
-                   Cstruct.hexdump_pp converted) ;
+                   Cs.pp_hex converted) ;
     converted
   | Four_octet -> (*This is a V4 "five octet": *)
     Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
@@ -799,7 +854,7 @@ let consume_packet_length length_type buf :
     |> R.reword_error (function _ ->  `Incomplete_packet)
     >>| fun ((header,_) as pair) ->
     Logs.debug (fun m -> m "consume_packet_length: consuming %a"
-                   Cstruct.hexdump_pp header) ;
+                   Cs.pp_hex header) ;
     pair
 
 (* https://tools.ietf.org/html/rfc4880#section-4.2 : Packet Headers *)

@@ -12,6 +12,9 @@ open Cs;;
 open Rresult;;
 #mod_use "lib/types.ml"
 #mod_use "lib/uid_packet.ml"
+#mod_use "lib/cfb.ml"
+#mod_use "lib/user_attribute_packet.ml"
 #mod_use "lib/public_key_packet.ml"
+#mod_use "lib/public_key_encrypted_session_packet.ml"
 #mod_use "lib/signature_packet.ml"
 #mod_use "lib/openpgp.ml"

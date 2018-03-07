@@ -69,3 +69,26 @@ It can currently:
 The spec is included in this repository in the rfc/ subdirectory.
 
 [RFC 4880 - OpenPGP Message Format](rfc/RFC+4880+-+OpenPGP+Message+Format.html)
+
+### Alternative implementations
+- [GnuPG (C, using libgcrypt)](https://gnupg.org/)
+  - [GnuPG's list of FOSS implementations](https://wiki.gnupg.org/OtherFreeSoftwareOpenPGP)
+- [Keybase PGP (C)](https://github.com/keybase/kbpgp/)
+- [libsimplepgp (C)](http://mrmekon.tumblr.com/post/12781181931/announcing-libsimplepgp)
+- [NetPGP (C)](http://netpgp.com/)
+  - [maintained/improved fork](https://github.com/riboseinc/rnp)
+- [pgcrypto (C, from postgresql)](https://doxygen.postgresql.org/pgp-info_8c.html)
+- [TinyGPG (C, using libgcrypt)](https://github.com/gpg/tgpg)
+- [CalcCrypto OpenPGP (C++)](https://github.com/calccrypto/OpenPGP)
+- [Golang OpenPGP (Go)](https://godoc.org/golang.org/x/crypto/openpgp)
+- [hOpenPGP (Haskell)](https://hackage.haskell.org/package/hOpenPGP-2.5.5)
+  - [may be this, TODO](https://github.com/singpolyma/OpenPGP-Haskell/)
+- [Bouncy Castle (Java)](https://bouncycastle.org/)
+- [Open-Keychain](https://github.com/open-keychain/open-keychain/)
+- [Google End-to-End (JavaScript)](https://github.com/google/end-to-end/blob/master/src/javascript/crypto/e2e/openpgp)
+- [OpenPGP.js (JavaScript)](https://github.com/openpgpjs/openpgpjs/)
+- [Mailvelope OpenPGP.js (JavaScript)](https://www.mailvelope.com/en)
+- [ObjectivePGP (Objective-C? TODO)](https://github.com/krzyzanowskim/ObjectivePGP/)
+- [Crypt::OpenPGP (perl)](https://github.com/btrott/Crypt-OpenPGP/tree/master/t)
+  - [CPAN package](https://metacpan.org/pod/Crypt::OpenPGP)
+- [Bigloo (Scheme?)](https://www-sop.inria.fr/indes/fp/Bigloo/doc/bigloo-16.html#OpenPGP)

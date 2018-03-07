@@ -1,7 +1,8 @@
 open Types
 open Rresult
 
-let a_cs = Alcotest.testable Cstruct.hexdump_pp Cstruct.equal
+let a_cs = Alcotest.testable Cs.pp_hex Cs.equal
+let a_cstruct = Alcotest.testable Cstruct.hexdump_pp Cstruct.equal
 
 let test_packet_length_selfcheck () =
   Alcotest.(check int32) "same int" 1234l
@@ -41,6 +42,12 @@ let cs_of_file name =
 
 let current_time = Ptime_clock.now ()
 
+let pk_of_file path =
+  cs_of_file path
+  |> R.reword_error (fun _ -> failwith "can't open file for reading")
+  >>= Openpgp.decode_public_key_block ~current_time ~armored:true
+  >>| fst
+
 let key_has_uids n (tpk:Openpgp.Signature.transferable_public_key) =
   let count = List.length tpk.Openpgp.Signature.uids in
    true_or_error (n = count)
@@ -52,7 +59,7 @@ let key_has_subkeys n tpk =
     (fun m -> m "Expected %d subkeys, got %d" n count)
 
 let exc_check_pk, exc_check_sk =
-  let inner check decode ~uids ~subkeys file =
+  let inner check decode ?(current_time=current_time) ~uids ~subkeys file =
     match (cs_of_file file
            |> R.reword_error (fun _ -> failwith "can't open file for reading")
            >>= decode >>= fun pk ->check pk ~uids ~subkeys >>| fun _ -> pk) with
@@ -62,7 +69,7 @@ let exc_check_pk, exc_check_sk =
   let check pk ~uids ~subkeys =
     (key_has_uids uids pk >>= fun () -> key_has_subkeys subkeys pk) in
   inner check (fun cs -> cs |> Openpgp.decode_public_key_block ~current_time
-                           ~armored:true >>| fst),
+                             ~armored:true >>| fst),
   inner (fun sk -> check
       (Openpgp.Signature.transferable_public_key_of_transferable_secret_key sk))
     (fun cs -> Openpgp.decode_secret_key_block ~current_time ~armored:true cs
@@ -108,8 +115,10 @@ let test_openpgpjs_key_000 () =
            API doesn't handle that atm.*)
 
 let test_openpgpjs_key_001 () = (* revoked *)
-  let _ = exc_check_pk "test/keys/openpgpjs.key.001.pk.asc" ~uids:0 ~subkeys:0
-  in ()
+  (* TODO this should fail *)
+  must_fail "should be expired"
+    (fun () ->
+       exc_check_pk "test/keys/openpgpjs.key.001.pk.asc" ~uids:0 ~subkeys:0 )
 
 let test_openpgpjs_key_002 () =
   must_fail "Should fail to parse v3"
@@ -137,10 +146,13 @@ let test_openpgpjs_key_006 () = (* embedded signature *)
 
 let test_integrity_with_algo algo target_hashes : unit =
   let uid = "My name goes here" in
-  let message_cs = Cstruct.of_string "my message" in
+  let message_cs = Cs.of_string "my message" in
   let current_time = Ptime.Span.of_int_s 1234567890 |> Ptime.of_span
                      |> function Some time -> time | None -> failwith "x" in
-  let g = let seed = Cs.of_string "a deterministic seed 9e5cbce8"in
+  let g =
+    let seed = Cs.of_string "a deterministic seed 9e5cbce8"
+             |> Cs.to_cstruct
+    in
     Nocrypto.Rng.create ~seed (module Nocrypto.Rng.Generators.Fortuna) in
   (Public_key_packet.generate_new ~current_time ~g algo >>= fun root_sk ->
   Public_key_packet.generate_new ~current_time ~g algo >>= fun subkey_sk ->
@@ -148,12 +160,12 @@ let test_integrity_with_algo algo target_hashes : unit =
     message_cs
   >>= (fun sig_t -> Openpgp.serialize_packet Types.V4
                       (Openpgp.Signature_type sig_t)
-      )>>| Openpgp.encode_ascii_armor Types.Ascii_signature >>= fun sig_cs ->
+      )>>= Openpgp.encode_ascii_armor Types.Ascii_signature >>= fun sig_cs ->
   Openpgp.new_transferable_secret_key ~current_time Types.V4 root_sk
                                       [uid] [subkey_sk] >>= fun sk ->
 
   Openpgp.serialize_transferable_secret_key Types.V4 sk
-  >>| Openpgp.encode_ascii_armor Types.Ascii_private_key_block
+  >>= Openpgp.encode_ascii_armor Types.Ascii_private_key_block
   >>= fun sk_asc_cs ->
   Openpgp.decode_secret_key_block ~current_time sk_asc_cs >>| fst
   >>| Openpgp.Signature.transferable_public_key_of_transferable_secret_key
@@ -163,8 +175,10 @@ let test_integrity_with_algo algo target_hashes : unit =
   >>= fun signature -> Openpgp.Signature.verify_detached_cs ~current_time
     root_pk signature message_cs
   >>| fun `Good_signature ->
-   let hashes = List.map Nocrypto.Hash.MD5.digest [sk_asc_cs; sig_cs] in
-   Logs.app (fun m -> m "%a" (Fmt.list Cstruct.hexdump_pp) hashes);
+  let hashes = List.map (fun x -> Nocrypto.Hash.MD5.digest x
+                                  |> Cs.of_cstruct)
+      (List.map Cs.to_cstruct [sk_asc_cs; sig_cs]) in
+   Logs.app (fun m -> m "%a" (Fmt.list Cs.pp_hex) hashes);
    Alcotest.(check @@ list a_cs) "deterministic generation of secret key & sig"
      hashes
      (List.map (fun h -> Cs.of_hex h |> R.get_ok)target_hashes);
@@ -173,6 +187,55 @@ let test_integrity_with_algo algo target_hashes : unit =
                 | Error (`Msg s) -> failwith s
                 | Error `Incomplete_packet -> failwith "incomplete packet"
 
+let test_create_pk_session_packet () : unit =
+  let open Openpgp.Signature in (* TODO *)
+  let open Public_key_encrypted_session_packet in
+  begin match
+      pk_of_file "test/keys/gnupg.test.001.pk.asc" >>= fun pk ->
+      create ~key_bitlength:256 pk.root_key
+    with
+    | Ok (key, t) ->
+      Alcotest.(check int) "Length of generated symmetric key is 256 bits"
+        256 (8 * Cs.len key) ;
+      Alcotest.(check @@ result pass reject) "Can serialize the message"
+        (Ok Cs.empty) (serialize t) ;
+      Alcotest.(check @@ result pass reject) "Can parse the serialized message"
+        (Ok t) (serialize t >>= parse_packet)
+    | Error `Msg s -> failwith s
+  end
+
+let test_cfb_google () : unit =
+  (* https://github.com/google/end-to-end/blob/master/src/javascript/crypto/e2e/openpgp/ocfb_test.html#L39-L48 *)
+  let key = Cs.init 16 (fun _ -> '\x77') in
+  let plain = Cs.init 51 (fun _ -> '\x66') in
+  let mdc_a = Nocrypto.Hash.SHA1.digest (* the "2" below is the "quick check" *)
+      Cs.(concat [Cs.init (16+2) (fun _ -> '\x1f') ; plain ] |> to_cstruct) in
+  begin match begin
+    Cs.of_hex "f26a24f487a3abd4d81f8072a1a2924364beba531a6b855f0239cda666eec\
+               f3f47c98dc52ea3bfd60773f1a40b182577789c0149d3010d84d90f85001e\
+               755b79eaaa67a52f" >>= fun ciphertext_b ->
+    Cfb.decrypt ~key ciphertext_b
+  end with
+  | Error `Invalid_hex -> failwith "invalid hex"
+  | Error (`Msg s) -> failwith s
+  | Ok (mdc_b, plain_b) ->
+    Alcotest.(check a_cs) "matches google's test vector" plain plain_b ;
+    Alcotest.(check a_cstruct) "Check MDC aka checksum" mdc_a mdc_b
+  end
+
+let test_cfb_internal () : unit =
+  let key = Cs.of_cstruct (Nocrypto.Rng.generate 16) in
+  let plain = Cs.init 47 (fun i -> Char.chr (i+0x21)) in
+  begin match begin
+    Cfb.encrypt ~key plain >>= fun (mdc, ciphertext_a) ->
+    Cfb.decrypt ~key ciphertext_a >>| fun (mdc_a,plain_a) ->
+    (mdc, mdc_a, plain_a)
+  end with
+  | Ok (mdc_a, mdc_b, plain_a) ->
+    Alcotest.(check a_cs) "Check output" plain plain_a ;
+    Alcotest.(check a_cstruct) "Check MDC aka checksum" mdc_a mdc_b ;
+  | Error `Msg s -> failwith s
+  end
 
 let test_integrity_dsa () : unit =
   ["aa15898f91a57a0428d61aca60fcf244";
@@ -188,9 +251,17 @@ let tests =
     "utilities",
     [ "packet length self-check", `Quick, test_packet_length_selfcheck ;
       "signature subpacket map", `Quick, test_signature_subpacket_map ;
+      (* TODO ping the rnp people with the vectors I collected
+         https://github.com/riboseinc/rnp/issues/372*)
+      (* http://csrc.nist.gov/publications/nistpubs/800-38a/sp800-38a.pdf *)
+      "OpenPGP-CFB (Google End-to-End vector)", `Quick, test_cfb_google ;
+      "OpenPGP-CFB (internal consistency)", `Quick, test_cfb_internal ;
     ]
   ; "constants",
-      [ "signature subpacket", `Quick, test_signature_subpacket_char ]
+    [ "signature subpacket", `Quick, test_signature_subpacket_char ]
+  ; "Encryption",
+    [ "create encrypted session packet", `Quick, test_create_pk_session_packet
+    ]
   ; "Parsing keys",
     [ "Fail broken GnuPG maintainer key (4F25E3B6)", `Quick,
           test_broken_gnupg_maintainer_key

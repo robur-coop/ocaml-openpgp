@@ -10,6 +10,8 @@ type packet_type =
   | Secret_key_subpacket of Public_key_packet.private_key
   | Trust_packet of Cs.t
   | User_attribute_packet of User_attribute_packet.t
+  | Encrypted_packet of Public_key_encrypted_session_packet.t (* TODO WRONG*)
+  | Public_key_encrypted_session_packet of Public_key_encrypted_session_packet.t
 
 let packet_tag_of_packet = begin function
   | Signature_type _ -> Signature_tag
@@ -20,40 +22,51 @@ let packet_tag_of_packet = begin function
   | Secret_key_subpacket _ -> Secret_subkey_tag
   | Trust_packet _ -> Trust_packet_tag
   | User_attribute_packet _ -> User_attribute_tag
+  | Encrypted_packet _ -> Encrypted_packet_tag
+  | Public_key_encrypted_session_packet _ ->
+    Public_key_encrypted_session_packet_tag
   end
 
-let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cstruct.t) =
+let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cs.t)
+  : (Cs.t, [> R.msg]) result=
   let newline = Cs.of_string "\r\n" in
-  let rec base64_encoded acc buf_tl =
+  let rec base64_encoded (acc:Cs.t list) buf_tl =
     (* 54 / 3 * 4 = 72; output chunks of 72 chars.
      * The last line will not be newline-terminated. *)
-    let (chunk,next_tl) = Cstruct.split buf_tl (min (Cs.len buf_tl) 54) in
+    Cs.split_result buf_tl (min (Cs.len buf_tl) 54)
+    >>= fun (chunk, next_tl) ->
     if Cs.len chunk <> 0 then
-      base64_encoded ((Nocrypto.Base64.encode chunk) :: acc) next_tl
+      base64_encoded (Cs.of_cstruct
+                        (Nocrypto.Base64.encode
+                           (Cs.to_cstruct chunk)) :: acc) next_tl
     else
       match acc with
-      | [] -> Cs.create 0 (* if input was empty, return empty output *)
+      | [] -> Ok (Cs.create 0) (* if input was empty, return empty output *)
       | acc_hd::acc_tl ->
-      let end_lines = List.map (fun line -> Cs.concat [line;newline]) acc_tl in
-      Cs.concat @@ List.rev (acc_hd::end_lines)
+        let end_lines = List.map (fun line ->
+            Cs.concat [line;newline]) acc_tl in
+        Ok (Cs.concat @@ List.rev (acc_hd::end_lines))
   in
   let cs_armor_magic = string_of_ascii_packet_type armor_type |> Cs.of_string in
+  base64_encoded [] buf >>| fun encoded_buf ->
     Cs.concat
     [ Cs.of_string "-----BEGIN PGP " ; cs_armor_magic ; Cs.of_string "-----\r\n"
       (*; TODO headers*)
     ; newline (* <-- end of headers*)
 
-    ; base64_encoded [] buf
+    ; encoded_buf
     ; newline
 
     (* CRC24 checksum: *)
-    ; Cs.of_string "="; Nocrypto.Base64.encode (crc24 buf) ; newline
+    ; Cs.of_string "=";
+      Nocrypto.Base64.encode
+        (crc24 buf |> Cs.to_cstruct) |> Cs.of_cstruct ; newline
 
     (* END / footer: *)
     ; Cs.of_string "-----END PGP " ; cs_armor_magic ; Cs.of_string "-----\r\n"
     ]
 
-let decode_ascii_armor (buf : Cstruct.t) =
+let decode_ascii_armor (buf : Cs.t) =
   (* see https://tools.ietf.org/html/rfc4880#section-6.2 *)
   let max_length = 73 in (*maximum line length *)
 
@@ -86,12 +99,13 @@ let decode_ascii_armor (buf : Cstruct.t) =
   end
   >>= fun pkt_type ->
 
-  Logs.debug (fun m -> m "Skipping armor headers (like \"Version:\"; not handled in this implementation)") ;
+  Logs.debug (fun m -> m "Skipping armor headers (like \"Version:\"; \
+                          not handled in this implementation)") ;
   let rec skip_headers buf_tl =
     match Cs.next_line ~max_length buf_tl  with
     | `Last_line not_body_cs ->
       error_msg (fun m -> m "Missing armored body, expected here: %a"
-                    Cstruct.hexdump_pp not_body_cs)
+                    Cs.pp_hex not_body_cs)
     | `Next_tuple (header, buf_tl) ->
       if Cs.len header = 0 then
         R.ok buf_tl
@@ -104,15 +118,16 @@ let decode_ascii_armor (buf : Cstruct.t) =
 
   let rec decode_body acc tl : (Cs.t*Cs.t,[> `Msg of string]) result =
     let b64_decode cs =
-      Nocrypto.Base64.decode cs
+      Nocrypto.Base64.decode (Cs.to_cstruct cs)
       |> R.of_option ~none:(fun()->
           error_msg (fun m -> m "Cannot base64-decode body line: %a"
-                        Cstruct.hexdump_pp cs ))
+                        Cs.pp_hex cs ))
+      >>| Cs.of_cstruct
     in
     begin match Cs.next_line ~max_length:76 tl with
       | `Last_line not_end_cs ->
         error_msg (fun m -> m "Unexpected end of armored body: %a"
-                  Cstruct.hexdump_pp not_end_cs)
+                  Cs.pp_hex not_end_cs)
       | `Next_tuple (cs,tl) when Some 0 = Cs.index_opt cs '=' ->
         Cs.e_split ~start:1 (`Msg "CRC24 must start with '='-sign") cs 4
         >>= fun (b64,must_be_empty) ->
@@ -125,7 +140,7 @@ let decode_ascii_armor (buf : Cstruct.t) =
           Ok (decoded, tl)
         else
           error_msg (fun m -> m "CRC-24 mismatch! Expected %a, got %a"
-                 Cstruct.hexdump_pp target_crc Cstruct.hexdump_pp decoded_crc24)
+                 Cs.pp_hex target_crc Cs.pp_hex decoded_crc24)
       | `Next_tuple (cs,tl) ->
         b64_decode cs >>= fun decoded ->
         decode_body (decoded::acc) tl
@@ -165,6 +180,8 @@ let decode_ascii_armor (buf : Cstruct.t) =
 let parse_packet_body packet_tag pkt_body
   : (packet_type, [> `Msg of string | `Incomplete_packet ]) result =
   begin match packet_tag with
+    | Encrypted_packet_tag ->
+      failwith "TODO"
     | Public_key_tag ->
       Public_key_packet.parse_packet pkt_body
       >>| fun pkt -> Public_key_packet pkt
@@ -185,6 +202,9 @@ let parse_packet_body packet_tag pkt_body
     | User_attribute_tag ->
       User_attribute_packet.parse_packet
         pkt_body >>| fun attr -> User_attribute_packet attr
+    | Public_key_encrypted_session_packet_tag ->
+      Public_key_encrypted_session_packet.parse_packet pkt_body
+      >>| fun session_pkt -> Public_key_encrypted_session_packet session_pkt
 
   end
 
@@ -202,9 +222,13 @@ let pp_packet ppf = begin function
   | Signature_type pkt ->
       Fmt.pf ppf "Signature: @[<v>%a@]" Signature_packet.pp pkt
   | Trust_packet cs ->
-    Fmt.pf ppf "Trust packet (ignored): @[%a@]" Cstruct.hexdump_pp cs
+    Fmt.pf ppf "Trust packet (ignored): @[%a@]" Cs.pp_hex cs
   | User_attribute_packet pkt ->
     Fmt.pf ppf "User attribute packet: %a" User_attribute_packet.pp pkt
+  | Encrypted_packet pkt -> (* TODO *)
+    Fmt.pf ppf "Encrypted packet %a" Public_key_encrypted_session_packet.pp pkt
+  | Public_key_encrypted_session_packet pkt ->
+    Fmt.pf ppf "Encrypted packet %a" Public_key_encrypted_session_packet.pp pkt
   end
 
 let hash_packet version hash_cb = begin function
@@ -218,7 +242,11 @@ let hash_packet version hash_cb = begin function
   | Trust_packet _ ->
     error_msg (fun m -> m "Should NOT be hashing Trust_packets!")
   | User_attribute_packet pkt -> User_attribute_packet.hash pkt hash_cb version
-  end
+  | Encrypted_packet pkt -> (* TODO*)
+    Public_key_encrypted_session_packet.hash pkt hash_cb version
+  | Public_key_encrypted_session_packet pkt ->
+    Public_key_encrypted_session_packet.hash pkt hash_cb version
+end
 
 let serialize_packet version (pkt:packet_type) =
   begin match pkt with
@@ -230,6 +258,9 @@ let serialize_packet version (pkt:packet_type) =
     | Secret_key_packet pkt -> Public_key_packet.serialize_secret version pkt
     | Secret_key_subpacket pkt -> Public_key_packet.serialize_secret version pkt
     | User_attribute_packet pkt -> User_attribute_packet.serialize pkt
+    | Encrypted_packet pkt -> Public_key_encrypted_session_packet.serialize pkt
+    | Public_key_encrypted_session_packet pkt ->
+      Public_key_encrypted_session_packet.serialize pkt
   end >>= fun body_cs ->
 
   begin match version with
@@ -247,8 +278,8 @@ let serialize_packet version (pkt:packet_type) =
   end >>| fun header_cs ->
   Logs.debug (fun m -> m "serialized packet @[<v>%a@ header: %a@ contents: %a@]"
                pp_packet pkt
-               Cstruct.hexdump_pp header_cs
-               Cstruct.hexdump_pp body_cs );
+               Cs.pp_hex header_cs
+               Cs.pp_hex body_cs );
   Cs.concat [header_cs ; body_cs ]
 
 let next_packet (full_buf : Cs.t) :
@@ -302,7 +333,8 @@ struct
     }
 
   let pp_subkey fmt key =
-    Fmt.pf fmt "subkey {  @[<v>key: @[%a@]@,binding: [@[%a@]]@,revocations: [@[%a@]]@]}"
+    Fmt.pf fmt "subkey {  @[<v>key: @[%a@]@,binding: \
+                [@[%a@]]@,revocations: [@[%a@]]@]}"
       Public_key_packet.pp key.key
       Fmt.(list ~sep:(unit "@,|  ") Signature_packet.pp) key.binding_signatures
       Fmt.(list ~sep:(unit "@,|  ") Signature_packet.pp) key.revocations
@@ -349,10 +381,14 @@ struct
     let pks = pk.root_key :: (pk.subkeys |> List.map (fun k -> k.key)) in
     (* ^-- TODO filter out non-signing-keys*)
     check_signature current_time pks hash_final signature
+    |> R.reword_error (function
+        | `Incomplete_packet ->  R.msg "TODO Incomplete packet"
+        | `Msg x -> `Msg x
+      )
 
   let verify_detached_cb ~current_time (pk:transferable_public_key)
-      (signature:t) (cb:(unit -> (Cs.t option, [> `Msg of string]) result))
-  : ('ok, [> `Msg of string]) result =
+      (signature:t) (cb:(unit -> (Cs.t option, [> R.msg]) result))
+  : ([ `Good_signature], [> R.msg ]) result =
     (* TODO check pk is valid *)
     true_or_error (signature.signature_type = Signature_of_binary_document)
       (fun m -> m "TODO not implemented: we do not handle the newline-\
@@ -464,10 +500,15 @@ struct
            SubpacketMap.get Embedded_signature t.subpacket_data
            |> log_failed (fun m ->
                m "no embedded signature subpacket in subkey binding signature")
-           >>= fun (Embedded_signature embedded_sig) ->
-           check_embedded_signature current_time root_pk
-             embedded_sig { key = subkey
-                          ; revocations = []; binding_signatures=[]}
+           >>= (function
+               | (Embedded_signature embedded_sig) -> Ok embedded_sig
+               | _ -> error_msg (fun m -> m "expected embedded signature TODO")
+             )
+           >>= Signature_packet.parse_packet ~allow_embedded_signatures:false
+           >>= fun embedded_sig ->
+             check_embedded_signature current_time root_pk
+               embedded_sig { key = subkey
+                            ; revocations = []; binding_signatures=[]}
            >>= fun `Good_signature -> R.ok ()
       end
 
@@ -505,7 +546,11 @@ struct
     Logs.debug (fun m -> m "sign: got digest %s" (Cs.to_hex digest)) ;
     begin match sk.Public_key_packet.priv_asf with
     | Public_key_packet.DSA_privkey_asf key ->
-      let (r,s) = Nocrypto.Dsa.sign ~mask:`Yes ~key digest in
+      let (r,s) =
+        let (r,s) =
+          Nocrypto.Dsa.sign ~mask:`Yes ~key (Cs.to_cstruct digest) in
+        Cs.of_cstruct r, Cs.of_cstruct s
+      in
       Ok (DSA_sig_asf {r = Types.mpi_of_cs_no_header r
                       ; s = mpi_of_cs_no_header s})
     | Public_key_packet.RSA_privkey_asf key ->
@@ -515,8 +560,8 @@ struct
         (RSA_sig_asf { m_pow_d_mod_n =
                           Nocrypto.Rsa.PKCS1.sign ~mask:`Yes
                           ~hash
-                          ~key (`Digest digest)
-                          |> mpi_of_cs_no_header
+                          ~key (`Digest (Cs.to_cstruct digest))
+                          |> Cs.of_cstruct |> mpi_of_cs_no_header
                      })
     | Public_key_packet.Elgamal_privkey_asf _ ->
       error_msg (fun m -> m "Cannot sign with El-Gamal key")
