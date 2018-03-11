@@ -91,4 +91,5 @@ The spec is included in this repository in the rfc/ subdirectory.
 - [ObjectivePGP (Objective-C? TODO)](https://github.com/krzyzanowskim/ObjectivePGP/)
 - [Crypt::OpenPGP (perl)](https://github.com/btrott/Crypt-OpenPGP/tree/master/t)
   - [CPAN package](https://metacpan.org/pod/Crypt::OpenPGP)
+- [PGPy](https://github.com/SecurityInnovation/PGPy/)
 - [Bigloo (Scheme?)](https://www-sop.inria.fr/indes/fp/Bigloo/doc/bigloo-16.html#OpenPGP)

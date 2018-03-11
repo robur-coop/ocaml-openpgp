@@ -36,6 +36,8 @@ type _ t =
   | Decryption : state -> [`decryption] t
   | Encryption : state -> [`encryption] t
 
+let mdc_header = Cstruct.of_hex "\xD3\x14"
+
 let initialize ~key =
   assert (block_size >= 2) ;
   of_secret key >>= fun key ->
@@ -91,7 +93,7 @@ let finalize_decryption (Decryption state) ciphertext =
   Cs.xor fr_e ciphertext >>| fun plain ->
   Nocrypto.Hash.SHA1.(feed state.mdc (Cs.to_cstruct plain) |> fun mdc ->
                       (* Hash the MDC header: *)
-                      feed mdc (Cstruct.of_hex "\xD3\x14")
+                      feed mdc mdc_header
                       |> get), plain
 
 let init_encryption ?g ~key
@@ -113,12 +115,12 @@ let init_encryption ?g ~key
          data that were prefixed to the plaintext.  This produces C[BS+1]
          and C[BS+2], the next two octets of ciphertext.
      - to address the timing attack on PGP described in the links below,
-     we blatantly ignore the spec and substitute with nullbytes.
+     we blatantly ignore the spec and substitute with random bytes.
      ( see https://github.com/google/end-to-end/issues/151 )
      This makes us incompatible with vulnerable implementations.
      - https://eprint.iacr.org/2005/033.pdf
      - https://tools.ietf.org/html/rfc4880#page-84 *)
-  let prepend = Some (Cs.of_string "\x00\x00") in
+  let prepend = Some (Nocrypto.Rng.generate ?g 2 |> Cs.of_cstruct) in
 
   (* return new encryption state *)
   Ok (Encryption { state with prepend}, ciphertext)
@@ -153,37 +155,53 @@ let init_decryption ~key data
   decrypt_streaming (Decryption state) data >>= fun (_random, state, tl1) ->
   decrypt_streaming state tl1 >>= fun (plain, Decryption state, tl) ->
   (* skip two bytes, the "quick verification" stuff *)
-  Cs.sub plain 2 (Cs.len plain -2) >>= fun plain ->
-  Ok (Decryption {state with prepend = Some tl}, plain)
+  Cs.split_result plain 2 >>| snd >>| fun plain ->
+  Decryption {state with prepend = Some tl}, plain
 
-let full f original_state data =
+let full ~until_remains f original_state data =
   let rec loop data_acc state this_data =
     f state this_data >>= fun (next_data, new_state, rest) ->
     let next_acc = next_data :: data_acc in
-    if Cs.len rest >= block_size then
+    if Cs.len rest > until_remains then
       (loop[@tailcall]) next_acc new_state rest
-    else Ok (new_state, next_acc, rest)
+    else Ok (new_state, List.rev next_acc, rest)
   in
   loop [] original_state data
 
-let finalize_encryption (Encryption _ as t) plaintext =
-  (* "CFB shift" encrypts with the original IV: *)
-  enc t plaintext >>| fun (Encryption state, trailing) ->
-  let mdc = Nocrypto.Hash.SHA1.get state.mdc in
-  mdc, trailing
+let finalize_encryption (Encryption state as t) plaintext =
+  let mdc = Nocrypto.Hash.SHA1.(
+      feed state.mdc (Cs.to_cstruct plaintext) |> fun mdc ->
+      feed mdc mdc_header
+      |> get |> Cs.of_cstruct) in
+  (* Append MDC (aka SHA1) of everything encrypted so far: *)
+  let plaintext = Cs.concat [plaintext ; Cs.of_cstruct mdc_header ; mdc] in
+  (* TODO could add the min-stuff to [get_block] and replace
+     the stuff below with a call to [full] (with a check for [block_size]
+     in [encrypt_streaming] instead, or keeping internal shift.)*)
+  let rec loop acc t plaintext =
+    Cs.split_result plaintext @@ min block_size @@ Cs.len plaintext
+    >>= fun (block, leftover) ->
+    enc t block >>= fun (t, encrypted) ->
+    if Cs.len leftover > 0 then
+      loop (encrypted::acc) t leftover
+    else
+      Ok (List.rev acc)
+  in
+  loop [] t plaintext
 
-let encrypt ?g ~key plain
-  : (Nocrypto.Hash.digest * Cs.t, [> R.msg]) result =
+let encrypt ?g ~key plain : (Cs.t, [> R.msg]) result =
   init_encryption ?g ~key >>= fun (t, ciphertext_start) ->
-  full encrypt_streaming t plain >>= fun (t, encrypted, leftover) ->
-  finalize_encryption t leftover >>| fun (mdc, trailing) ->
-  let output = Cs.concat (ciphertext_start::List.rev (trailing::encrypted)) in
+  full ~until_remains:0
+    encrypt_streaming t plain >>= fun (t, encrypted, leftover) ->
+  finalize_encryption t leftover >>| fun trailing ->
+  let output = Cs.concat (ciphertext_start::Cs.concat encrypted::trailing) in
   assert(Cs.len output > Cs.len plain) ;
-  (mdc, output)
+  output
 
 let decrypt ~key ciphertext =
   init_decryption ~key ciphertext >>= fun (t, first_plaintext) ->
-  full decrypt_streaming t Cs.empty >>= fun (t, decrypted, leftover) ->
+  full ~until_remains:20 decrypt_streaming t Cs.empty
+  >>= fun (t, decrypted, leftover) ->
   finalize_decryption t leftover >>| fun (mdc, last) ->
   let plaintext =
     Cs.concat (first_plaintext::List.rev (last::decrypted))

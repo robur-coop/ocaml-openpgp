@@ -15,7 +15,7 @@ val decrypt : key:Cs.t -> Cs.t ->
 *)
 
 val encrypt : ?g:Nocrypto.Rng.g -> key:Cs.t -> Cs.t ->
-  (Nocrypto.Hash.digest * Cs.t, [> R.msg]) result
+  (Cs.t, [> R.msg]) result
 (** [encrypt ~key plaintext] is [plaintext] decrypted with [key].*)
 
 
@@ -33,8 +33,7 @@ val init_decryption : key:Cs.t -> Cs.t ->
     NOTE / TODO: [ciphertext] must be at least (block_size+2) bytes
 *)
 
-val finalize_encryption : encryption t -> Cs.t ->
-  (Nocrypto.Hash.digest * Cs.t, [> R.msg]) result
+val finalize_encryption : encryption t -> Cs.t -> (Cs.t list, [> R.msg]) result
 (** [finalize_encryption state plaintext] is (digest,plaintext)
     where [digest] is the SHA1 digest of the complete plaintext encrypted by
     this state.

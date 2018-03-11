@@ -227,13 +227,11 @@ let test_cfb_internal () : unit =
   let key = Cs.of_cstruct (Nocrypto.Rng.generate 16) in
   let plain = Cs.init 47 (fun i -> Char.chr (i+0x21)) in
   begin match begin
-    Cfb.encrypt ~key plain >>= fun (mdc, ciphertext_a) ->
-    Cfb.decrypt ~key ciphertext_a >>| fun (mdc_a,plain_a) ->
-    (mdc, mdc_a, plain_a)
+    Cfb.encrypt ~key plain >>= fun ciphertext_a ->
+    Cfb.decrypt ~key ciphertext_a >>| snd
   end with
-  | Ok (mdc_a, mdc_b, plain_a) ->
-    Alcotest.(check a_cs) "Check output" plain plain_a ;
-    Alcotest.(check a_cstruct) "Check MDC aka checksum" mdc_a mdc_b ;
+  | Ok plain_a ->
+    Alcotest.(check a_cs) "Check output" plain plain_a
   | Error `Msg s -> failwith s
   end
 
