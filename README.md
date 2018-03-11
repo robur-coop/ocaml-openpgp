@@ -1,6 +1,8 @@
 ocaml-openpgp
 ===========
 
+[[![Build Status](https://api.travis-ci.org/cfcs/ocaml-openpgp.svg?branch=master)]](https://travis-ci.org/cfcs/ocaml-openpgp)
+
 OpenPGP library (RFC 4880)
 --------------------------
 

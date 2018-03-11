@@ -331,7 +331,8 @@ The signature was not signed by this public key.|}
       in
         e_true `Invalid_signature
           (Nocrypto.Rsa.PKCS1.verify
-             ~hash:hash_algo
+             ~hashp:(function | actual when actual = hash_algo -> true
+                              | _ -> false)
              ~signature:(cs_of_mpi_no_header m_pow_d_mod_n |> Cs.to_cstruct)
              ~key:pub (`Digest (Cs.to_cstruct digest)))
         |> log_failed (fun m -> m "RSA signature validation failed")

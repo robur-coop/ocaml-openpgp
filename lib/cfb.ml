@@ -36,7 +36,7 @@ type _ t =
   | Decryption : state -> [`decryption] t
   | Encryption : state -> [`encryption] t
 
-let mdc_header = Cstruct.of_hex "\xD3\x14"
+let mdc_header = Cstruct.of_string "\xD3\x14"
 
 let initialize ~key =
   assert (block_size >= 2) ;
