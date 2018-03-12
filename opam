@@ -23,7 +23,7 @@ depends: [
   "ocamlfind" {build}
   "topkg" {build}
   "odoc" {build & doc}
-  "alcotest"  { >= "0.8.0" & < "0.9.0" & test }
+  "alcotest"  { test & >= "0.8.0" & < "0.9.0" }
   "cs"
   "fmt"       { >= "0.8.4" & < "0.9.0" }
   "hex"       { >= "1.2.0" & < "1.3.0" }
