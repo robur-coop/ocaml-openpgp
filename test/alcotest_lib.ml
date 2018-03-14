@@ -237,6 +237,18 @@ let test_cfb_internal () : unit =
     end
   done
 
+let test_literal_data_packet () : unit =
+  let packet = Cs.of_string "b\x03abc\x01\x02\x03\x04abcdef"in
+  match begin
+    Literal_data_packet.parse packet
+  end with
+  | Error `Msg s -> failwith s
+  | Ok (Literal_data_packet.In_memory_t (_state,acc) as t) ->
+    let res = String.concat "" acc in
+    Alcotest.(check @@ string) "parsing literal data packet" "abcdef" res ;
+    Alcotest.(check @@ a_cs) "re-serializing"
+      packet @@ Literal_data_packet.serialize t
+
 let test_integrity_dsa () : unit =
   ["aa15898f91a57a0428d61aca60fcf244";
    "2b8d620fa5c755b1d34c570e36588d15"]
@@ -254,6 +266,7 @@ let tests =
       (* TODO ping the rnp people with the vectors I collected
          https://github.com/riboseinc/rnp/issues/372*)
       (* http://csrc.nist.gov/publications/nistpubs/800-38a/sp800-38a.pdf *)
+      "Literal data packet", `Quick, test_literal_data_packet ;
       "OpenPGP-CFB (hardcoded verified vector)", `Quick, test_cfb_fixed ;
       "OpenPGP-CFB (internal consistency)", `Quick, test_cfb_internal ;
     ]

@@ -288,10 +288,3 @@ let decrypt ~key ciphertext =
   (* nonce, "quickcheck", MDC header, MDC SHA1: *)
   assert(Cs.len plaintext = Cs.len ciphertext - block_size - 2 - 2 - 20) ;
   plaintext
-
-(*let serialize t =
-(* The body of this packet consists of:*)
-  (* - A one-octet version number.  The only currently defined value is "1".*)
-  Cs.concat (Cs.of_char '\x01' :: List.rev t.ciphertext)
-
-*)
