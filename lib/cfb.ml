@@ -1,8 +1,5 @@
-(* https://tools.ietf.org/html/rfc4880#section-13.9 *)
-
+(*TODO:*)
 (* https://github.com/bcgit/bc-java/blob/master/core/src/main/java/org/bouncycastle/crypto/modes/PGPCFBBlockCipher.java *)
-
-(* cipher.c:102 - MDC hashes IV too *)
 
 (* list of clients that do not do the "quick check":
   - pycryptodome: https://github.com/Legrandin/pycryptodome/commit/f80debf2d26cfd7f30dae95f2b2a893d3a34ee8c
@@ -25,6 +22,7 @@ type state =
     key : key ;
     mdc : Nocrypto.Hash.SHA1.t ;
     prepend : Cs.t option ;
+    skip : int ;
   }
 
 type decryption = [`decryption]
@@ -36,6 +34,8 @@ type _ t =
   | Decryption : state -> [`decryption] t
   | Encryption : state -> [`encryption] t
 
+let hash t data = Nocrypto.Hash.SHA1.feed t data
+
 let mdc_header = Cstruct.of_string "\xD3\x14"
 
 let initialize ~key =
@@ -46,6 +46,7 @@ let initialize ~key =
        key ;
        mdc = Nocrypto.Hash.SHA1.empty ;
        prepend = None ;
+       skip = 0 ;
      }
 
 let calc_fr_e state : Cs.t =
@@ -53,11 +54,17 @@ let calc_fr_e state : Cs.t =
   Cs.of_cstruct (encrypt ~key:state.key (Cs.to_cstruct state.fr))
 
 let update_mdc (type direction) (state : direction t) plain  : direction t =
-  let open Nocrypto.Hash.SHA1 in
   let plain_cs = Cs.to_cstruct plain in
   match state with
-  | Encryption t -> Encryption {t with mdc = feed t.mdc plain_cs }
-  | Decryption t -> Decryption {t with mdc = feed t.mdc plain_cs }
+  | Encryption t -> Encryption {t with mdc = hash t.mdc plain_cs }
+  | Decryption t -> Decryption {t with mdc = hash t.mdc plain_cs }
+
+let pending (type direction) (t : direction t) =
+  match begin match t with
+    | Encryption t -> t.prepend
+    | Decryption t -> t.prepend end with
+  | None -> 0
+  | Some prepend -> Cs.len prepend
 
 let enc (Encryption state) plain =
   (* 2. FR is encrypted to produce FRE (FR Encrypted).  This is the
@@ -81,21 +88,6 @@ let dec (Decryption state) ciphertext =
   let t = Decryption {state with fr = ciphertext } in
   update_mdc t plaintext, plaintext
 
-let finalize_decryption (Decryption state) ciphertext =
-  (* NOTE: there seems to be several different opinions about how CFB-8 is
-     supposed to work... You're supposed to XOR with the
-     "high bits" of FR_E. The stuff not below seems to work,
-     so we take it that GnuPG took that to mean big-endian:
-  *)
-  (*little-endian: (Cs.sub (Cs.reverse @@ calc_fr_e state) 0 (Cs.len ciphertext)
-    >>| Cs.reverse) >>= fun fr_e ->*)
-  Cs.sub (calc_fr_e state) 0 (Cs.len ciphertext) >>= fun fr_e ->
-  Cs.xor fr_e ciphertext >>| fun plain ->
-  Nocrypto.Hash.SHA1.(feed state.mdc (Cs.to_cstruct plain) |> fun mdc ->
-                      (* Hash the MDC header: *)
-                      feed mdc mdc_header
-                      |> get), plain
-
 let init_encryption ?g ~key
   : (encryption t * Cs.t, [> R.msg]) result =
  (* 1.  The feedback register (FR) is set to the IV, which is all zeros.
@@ -108,6 +100,7 @@ let init_encryption ?g ~key
        of ciphertext,
     4. FR is loaded with C[1] through C[BS]: *)
   let random_data = Nocrypto.Rng.generate ?g block_size |> Cs.of_cstruct in
+
   enc (Encryption state) random_data >>= fun (Encryption state, ciphertext) ->
 
   (* From the spec:
@@ -127,87 +120,174 @@ let init_encryption ?g ~key
 
 let get_block data = Cs.split_result data block_size
 
-let decrypt_streaming (Decryption state) ciphertext =
-  let t, ciphertext =
-    Decryption {state with prepend = None },
-    match state.prepend with
-      | None -> ciphertext
-      | Some prepend -> Cs.concat [prepend; ciphertext]
+let decrypt_streaming ((Decryption state) as t) ciphertext =
+  let ciphertext = match state.prepend, ciphertext with
+    | None, ciphertext -> ciphertext
+    | Some prepend, ciphertext -> Cs.concat [prepend; ciphertext]
   in
-  get_block ciphertext >>= fun (c_octets, c_rest) ->
-  dec t c_octets >>| fun (state, plaintext) ->
-  (plaintext, state, c_rest)
+  begin match Cs.len ciphertext >= block_size with
+    | true ->
+      get_block ciphertext >>= fun (c_octets, c_rest) ->
+      dec t c_octets >>| fun (Decryption state, plaintext) ->
+      let rest = if Cs.len c_rest = 0 then None else Some c_rest in
+      if state.skip = 0 then
+        (plaintext, Decryption {state with prepend = None}, rest)
+      else begin
+        let consumed = min state.skip block_size in
+        (Cs.sub_unsafe plaintext consumed (block_size - consumed),
+         Decryption {state with prepend = None; skip = state.skip - consumed},
+         rest)
+      end
+    | false ->
+      Ok (Cs.empty,
+          Decryption
+            {state with prepend =
+               if Cs.len ciphertext = 0 then None else Some ciphertext},
+          None)
+  end
 
-let encrypt_streaming (Encryption state) plain =
-  let t, plain =
-    Encryption {state with prepend = None },
-    match state.prepend with
-      | None -> plain
-      | Some prepend -> Cs.concat [prepend; plain]
+let encrypt_streaming ((Encryption state) as t) plain =
+  (* this is basically the same as decrypt_streaming *)
+  let plain = match state.prepend, plain with
+    | None, plain -> plain
+    | Some prepend, plain -> Cs.concat [prepend; plain]
   in
-  get_block plain >>= fun (bs_octets, bs_rest) ->
-  enc t bs_octets >>| fun (state, ciphertext) ->
-  (ciphertext, state , bs_rest)
+  begin match Cs.len plain >= block_size with
+    | true ->
+      get_block plain >>= fun (bs_octets, bs_rest) ->
+      enc t bs_octets >>| fun (Encryption state, ciphertext) ->
+      (ciphertext, Encryption {state with prepend = None} , if Cs.len bs_rest = 0 then None else Some bs_rest)
+    | false ->
+      Ok (Cs.empty, Encryption
+            {state
+             with prepend =
+                    (if Cs.len plain = 0 then None else Some plain)}, None)
+  end
 
-let init_decryption ~key data
-  : (decryption t * Cs.t, [> R.msg]) result =
-  initialize ~key >>= fun state ->
-  decrypt_streaming (Decryption state) data >>= fun (_random, state, tl1) ->
-  decrypt_streaming state tl1 >>= fun (plain, Decryption state, tl) ->
+let finalize_decryption (Decryption state) ciphertext_opt =
+  (* NOTE: there seems to be several different opinions
+     about how CFB-8 is
+     supposed to work... You're supposed to XOR with the
+     "high bits" of FR_E. The stuff not below seems to work,
+     so we take it that GnuPG took that to mean big-endian:
+  *)
+  (*little-endian: (Cs.sub (Cs.reverse @@ calc_fr_e state) 0 (Cs.len ciphertext)
+    >>| Cs.reverse) >>= fun fr_e ->*)
+
+  (* save MDC state to avoid including the target MDC in our computed checksum*)
+  let mdc = state.mdc in
+  let skip = state.skip in
+
+  let rec loop ((Decryption _) as t) mdc_acc ciphertext =
+    match ciphertext with
+    | Some ciphertext when pending t + Cs.len ciphertext > block_size ->
+      decrypt_streaming t ciphertext >>= fun (mdc,t,ciphertext) ->
+      (loop[@tailcall]) t (mdc::mdc_acc) ciphertext
+    | leftover -> Ok (mdc_acc,t,leftover)
+  in
+  let t, last_ct =
+    Decryption {state with prepend = None; skip = 0 },
+    Cs.concat [
+      (match state.prepend with None -> Cs.empty | Some x -> x) ;
+      (match ciphertext_opt with None -> Cs.empty | Some x -> x) ;
+    ]
+  in
+  let plain_len = Cs.len last_ct - 2 -20 in (* 22: 2xMDC header + 20xSHA1 *)
+  loop t [] (Some last_ct) >>= fun (mdc_lst, Decryption state, ciphertext) ->
+  let mdc_lst = List.rev mdc_lst in
+  let ciphertext = (match ciphertext with None -> Cs.empty | Some x -> x) in
+  Cs.sub (calc_fr_e state) 0 (min block_size @@ Cs.len ciphertext
+                             ) >>= fun fr_e ->
+  Cs.xor fr_e ciphertext >>= fun mdc_last ->
+  let decrypted = mdc_lst @ [ mdc_last] |> Cs.concat in
+  Cs.split_result decrypted plain_len >>= fun (plain, target_mdc) ->
+  let target_mdc = Cs.to_cstruct target_mdc in
+  let computed_mdc =
+    Cstruct.append mdc_header @@
+    ( hash mdc (Cs.to_cstruct plain) |> fun mdc ->
+      (* Hash the MDC header: *)
+      hash mdc mdc_header
+      |> Nocrypto.Hash.SHA1.get )
+  in
+  Logs.debug (fun m -> m "target mdc: %a@,computed_mdc: %a"
+                 Cstruct.hexdump_pp target_mdc
+                 Cstruct.hexdump_pp computed_mdc
+             );
+    Types.true_or_error (Cstruct.len target_mdc = Cstruct.len computed_mdc)
+    (fun m -> m "MDC length mismatch") >>= fun () ->
+  Types.true_or_error (Cstruct.equal target_mdc computed_mdc)
+    (fun m -> m "Invalid MDC during decryption") >>= fun () ->
+  Cs.split_result plain skip >>| snd >>| fun plain ->
+  plain
+
+let init_decryption ~key : (decryption t, [> R.msg]) result =
+  initialize ~key >>| fun state ->
   (* skip two bytes, the "quick verification" stuff *)
-  Cs.split_result plain 2 >>| snd >>| fun plain ->
-  Decryption {state with prepend = Some tl}, plain
+  Decryption {state with skip = block_size + 2 }
 
 let full ~until_remains f original_state data =
   let rec loop data_acc state this_data =
-    f state this_data >>= fun (next_data, new_state, rest) ->
-    let next_acc = next_data :: data_acc in
-    if Cs.len rest > until_remains then
-      (loop[@tailcall]) next_acc new_state rest
-    else Ok (new_state, List.rev next_acc, rest)
+    match this_data with
+    | Some this_data when pending state + Cs.len this_data > until_remains ->
+        f state this_data >>= fun (processed_data, new_state, rest) ->
+        (loop[@tailcall]) (processed_data::data_acc) new_state rest
+    | this_data  ->
+      Ok (state, List.rev data_acc, this_data)
   in
   loop [] original_state data
 
-let finalize_encryption (Encryption state as t) plaintext =
-  let mdc = Nocrypto.Hash.SHA1.(
-      feed state.mdc (Cs.to_cstruct plaintext) |> fun mdc ->
-      feed mdc mdc_header
-      |> get |> Cs.of_cstruct) in
-  (* Append MDC (aka SHA1) of everything encrypted so far: *)
-  let plaintext = Cs.concat [plaintext ; Cs.of_cstruct mdc_header ; mdc] in
+let finalize_encryption (Encryption state) plaintext_opt =
+  let t, plaintext =
+    Encryption {state with prepend = None },
+    Cs.concat [
+      ( match state.prepend with | None -> Cs.empty
+                                 | Some p -> p) ;
+      ( match plaintext_opt with None -> Cs.empty
+                               | Some p -> p)
+    ]
+  in
+  let mdc = hash state.mdc (Cs.to_cstruct plaintext) |> fun mdc ->
+            hash mdc mdc_header
+            |> Nocrypto.Hash.SHA1.get |> Cs.of_cstruct in
   (* TODO could add the min-stuff to [get_block] and replace
      the stuff below with a call to [full] (with a check for [block_size]
      in [encrypt_streaming] instead, or keeping internal shift.)*)
-  let rec loop acc t plaintext =
+  let rec loop acc ((Encryption state) as t) plaintext =
     Cs.split_result plaintext @@ min block_size @@ Cs.len plaintext
     >>= fun (block, leftover) ->
     enc t block >>= fun (t, encrypted) ->
-    if Cs.len leftover > 0 then
-      loop (encrypted::acc) t leftover
-    else
-      Ok (List.rev acc)
+    if Cs.len block = block_size then
+       (loop[@tailcall]) (encrypted::acc) t leftover
+    else begin
+      Cs.sub (calc_fr_e state) 0 (Cs.len block)
+      >>= Cs.xor block >>= fun last ->
+      Ok (List.rev @@ last::acc)
+    end
   in
-  loop [] t plaintext
+  (* Append MDC (aka SHA1) of everything encrypted so far: *)
+  let plaintext = Cs.concat [ plaintext ; Cs.of_cstruct mdc_header ; mdc] in
+  loop [] t @@ plaintext
 
 let encrypt ?g ~key plain : (Cs.t, [> R.msg]) result =
   init_encryption ?g ~key >>= fun (t, ciphertext_start) ->
-  full ~until_remains:0
-    encrypt_streaming t plain >>= fun (t, encrypted, leftover) ->
+  full ~until_remains:block_size
+    encrypt_streaming t (Some plain) >>= fun (t, encrypted, leftover) ->
   finalize_encryption t leftover >>| fun trailing ->
   let output = Cs.concat (ciphertext_start::Cs.concat encrypted::trailing) in
-  assert(Cs.len output > Cs.len plain) ;
+  assert(Cs.len output = block_size + 2 + Cs.len plain + 2 + 20) ;
   output
 
 let decrypt ~key ciphertext =
-  init_decryption ~key ciphertext >>= fun (t, first_plaintext) ->
-  full ~until_remains:20 decrypt_streaming t Cs.empty
+  init_decryption ~key >>= fun t ->
+  full ~until_remains:(2+20+block_size) decrypt_streaming t (Some ciphertext)
   >>= fun (t, decrypted, leftover) ->
-  finalize_decryption t leftover >>| fun (mdc, last) ->
+  finalize_decryption t leftover >>| fun (last) ->
   let plaintext =
-    Cs.concat (first_plaintext::List.rev (last::decrypted))
+    Cs.concat [ (Cs.concat decrypted) ; last]
   in
-  assert(Cs.len plaintext < Cs.len ciphertext) ;
-  mdc, plaintext
+  (* nonce, "quickcheck", MDC header, MDC SHA1: *)
+  assert(Cs.len plaintext = Cs.len ciphertext - block_size - 2 - 2 - 20) ;
+  plaintext
 
 (*let serialize t =
 (* The body of this packet consists of:*)

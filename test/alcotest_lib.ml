@@ -59,7 +59,7 @@ let key_has_subkeys n tpk =
     (fun m -> m "Expected %d subkeys, got %d" n count)
 
 let exc_check_pk, exc_check_sk =
-  let inner check decode ?(current_time=current_time) ~uids ~subkeys file =
+  let inner check decode ~uids ~subkeys file =
     match (cs_of_file file
            |> R.reword_error (fun _ -> failwith "can't open file for reading")
            >>= decode >>= fun pk ->check pk ~uids ~subkeys >>| fun _ -> pk) with
@@ -67,9 +67,11 @@ let exc_check_pk, exc_check_sk =
     | Error (`Msg s) -> failwith s
   in
   let check pk ~uids ~subkeys =
-    (key_has_uids uids pk >>= fun () -> key_has_subkeys subkeys pk) in
-  inner check (fun cs -> cs |> Openpgp.decode_public_key_block ~current_time
-                             ~armored:true >>| fst),
+    (key_has_uids uids pk >>= fun () -> key_has_subkeys subkeys pk)
+  in
+  inner check
+    (fun cs -> cs |> Openpgp.decode_public_key_block ~current_time
+                 ~armored:true >>| fst),
   inner (fun sk -> check
       (Openpgp.Signature.transferable_public_key_of_transferable_secret_key sk))
     (fun cs -> Openpgp.decode_secret_key_block ~current_time ~armored:true cs
@@ -204,36 +206,36 @@ let test_create_pk_session_packet () : unit =
     | Error `Msg s -> failwith s
   end
 
-let test_cfb_google () : unit =
-  (* https://github.com/google/end-to-end/blob/master/src/javascript/crypto/e2e/openpgp/ocfb_test.html#L39-L48 *)
-  let key = Cs.init 16 (fun _ -> '\x77') in
-  let plain = Cs.init 51 (fun _ -> '\x66') in
-  let mdc_a = Nocrypto.Hash.SHA1.digest (* the "2" below is the "quick check" *)
-      Cs.(concat [Cs.init (16+2) (fun _ -> '\x1f') ; plain ] |> to_cstruct) in
-  begin match begin
-    Cs.of_hex "f26a24f487a3abd4d81f8072a1a2924364beba531a6b855f0239cda666eec\
-               f3f47c98dc52ea3bfd60773f1a40b182577789c0149d3010d84d90f85001e\
-               755b79eaaa67a52f" >>= fun ciphertext_b ->
+let test_cfb_fixed () : unit =
+  let key = Cs.of_hex "fab932fd112bc4a0184fc64c3a8c2130\
+                       664c79a61a60302afae806222fc243a5" |> R.get_ok in
+  let plain =
+    Cs.of_string {|!"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNO|} in
+  match begin
+    Cs.of_hex "3e1723ae0500cf7514f64e743bf1fca778a2082175622f09dd3e42383b02e\
+               325b54b482bb5d5e11eb06a7ee36bff3d00459fe19bf030d0f2741821bf82\
+               e59c473a5dc2a21013ae345df6d25592466b01814192930c48aa"
+    >>= fun ciphertext_b ->
     Cfb.decrypt ~key ciphertext_b
   end with
   | Error `Invalid_hex -> failwith "invalid hex"
   | Error (`Msg s) -> failwith s
-  | Ok (mdc_b, plain_b) ->
-    Alcotest.(check a_cs) "matches google's test vector" plain plain_b ;
-    Alcotest.(check a_cstruct) "Check MDC aka checksum" mdc_a mdc_b
-  end
+  | Ok plain_b ->
+    Alcotest.(check a_cs) "matches our fixed test vector" plain plain_b
 
 let test_cfb_internal () : unit =
   let key = Cs.of_cstruct (Nocrypto.Rng.generate 16) in
-  let plain = Cs.init 47 (fun i -> Char.chr (i+0x21)) in
-  begin match begin
-    Cfb.encrypt ~key plain >>= fun ciphertext_a ->
-    Cfb.decrypt ~key ciphertext_a >>| snd
-  end with
-  | Ok plain_a ->
-    Alcotest.(check a_cs) "Check output" plain plain_a
-  | Error `Msg s -> failwith s
-  end
+  for plain_len = 0 to 1000 do
+    let plain = Nocrypto.Rng.generate plain_len |> Cs.of_cstruct in
+    begin match begin
+      Cfb.encrypt ~key plain >>= fun ciphertext_a ->
+      Cfb.decrypt ~key ciphertext_a
+    end with
+    | Ok plain_a ->
+      Alcotest.(check a_cs) "Check output" plain plain_a
+    | Error `Msg s -> failwith s
+    end
+  done
 
 let test_integrity_dsa () : unit =
   ["aa15898f91a57a0428d61aca60fcf244";
@@ -252,7 +254,7 @@ let tests =
       (* TODO ping the rnp people with the vectors I collected
          https://github.com/riboseinc/rnp/issues/372*)
       (* http://csrc.nist.gov/publications/nistpubs/800-38a/sp800-38a.pdf *)
-      "OpenPGP-CFB (Google End-to-End vector)", `Quick, test_cfb_google ;
+      "OpenPGP-CFB (hardcoded verified vector)", `Quick, test_cfb_fixed ;
       "OpenPGP-CFB (internal consistency)", `Quick, test_cfb_internal ;
     ]
   ; "constants",

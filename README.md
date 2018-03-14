@@ -1,16 +1,11 @@
-ocaml-openpgp
-===========
-
-[[![Build Status](https://api.travis-ci.org/cfcs/ocaml-openpgp.svg?branch=master)]](https://travis-ci.org/cfcs/ocaml-openpgp)
-
-OpenPGP library (RFC 4880)
---------------------------
+OpenPGP library (RFC 4880) [![Build Status](https://travis-ci.org/cfcs/ocaml-openpgp.svg?branch=master)](https://travis-ci.org/cfcs/ocaml-openpgp)
+===========================================
 
 This library implements rudimentary support for OpenPGP as used with signatures.
 
 Right now it's a work in progress and should not be used for anything critical to security in a real-world situation.
 
-- Encryption is out of scope for now.
+- Encryption is being worked on.
 
 - Supporting El-Gamal and elliptic curve keys are out of scope due to lack of support for these in [nocrypto](https://github.com/mirleft/nocrypto).
 
@@ -93,5 +88,5 @@ The spec is included in this repository in the rfc/ subdirectory.
 - [ObjectivePGP (Objective-C? TODO)](https://github.com/krzyzanowskim/ObjectivePGP/)
 - [Crypt::OpenPGP (perl)](https://github.com/btrott/Crypt-OpenPGP/tree/master/t)
   - [CPAN package](https://metacpan.org/pod/Crypt::OpenPGP)
-- [PGPy](https://github.com/SecurityInnovation/PGPy/)
+- [PGPy (Python)](https://github.com/SecurityInnovation/PGPy/)
 - [Bigloo (Scheme?)](https://www-sop.inria.fr/indes/fp/Bigloo/doc/bigloo-16.html#OpenPGP)
