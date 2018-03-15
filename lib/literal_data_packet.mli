@@ -21,8 +21,10 @@ type final_state =  private { format : data_format (** text or binary*);
                               time : string (** The unspecified time field.*); }
 
 type 'kind t = private
+
   (** doesn't store the actual packet data: *)
   |  Streaming_t : final_state -> streaming t
+
   (** accumulates data as a list of strings inside [t]: *)
   |  In_memory_t : final_state * string list -> in_memory t
 

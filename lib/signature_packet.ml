@@ -138,6 +138,7 @@ end
 
 let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
   match packet with
+  | Features _ -> Features
   | Signature_creation_time _ -> Signature_creation_time
   | Signature_expiration_time _ -> Signature_expiration_time
   | Key_expiration_time _ -> Key_expiration_time
@@ -169,6 +170,8 @@ and pp_signature_subpacket ppf (pkt) =
   let pp_tag = pp_signature_subpacket_tag in
   () |> Fmt.pf ppf "(%a: %a)" pp_tag tag @@ fun fmt () ->
   begin match pkt with
+    | Features feats ->
+      Fmt.pf fmt "[%a]" Fmt.(list ~sep:(unit "; ") pp_feature) feats
   | Signature_creation_time time -> Fmt.pf fmt "UTC: %a" Ptime.pp time
   | ( Signature_expiration_time time
     | Key_expiration_time time) -> Fmt.pf fmt "%a" Ptime.Span.pp time
@@ -454,6 +457,9 @@ and construct_to_be_hashed_cs t : ('ok,'error) result =
 
 and cs_of_signature_subpacket pkt =
   begin match pkt with
+    | Features feats ->
+      Ok (Cs.concat @@
+          List.map (fun feat -> char_of_feature feat |> Cs.of_char) feats)
   | Signature_creation_time time ->
     Cs.BE.e_create_ptime32 (`Msg "invalid sig creation time") time
   | ( Signature_expiration_time time
@@ -506,6 +512,7 @@ let parse_subpacket ~allow_embedded_signatures buf
   | Key_usage_flags when Cs.len data = 1 ->
       Ok (Some (
         Key_usage_flags (key_usage_flags_of_char @@ Cs.get_char_unsafe data 0)))
+  | Features -> Ok (Some (Features (Cs.map_char feature_of_char data)))
   (* Parse timestamps. Note that OpenPGP stores the expiration as an offset from
    * the creation time. *)
   | Signature_creation_time ->
@@ -529,8 +536,11 @@ let parse_subpacket ~allow_embedded_signatures buf
                               Cs.pp_hex data)
       end
   | Preferred_hash_algorithms ->
-    Ok (Cs.to_list data |> List.map hash_algorithm_of_char
-        |> fun lst -> Some (Preferred_hash_algorithms lst))
+    Ok (Some (
+        Preferred_hash_algorithms (Cs.map_char hash_algorithm_of_char data)))
+  | Preferred_symmetric_algorithms ->
+    Ok (Some (Preferred_symmetric_algorithms
+                (Cs.map_char symmetric_algorithm_of_char data)))
   | Embedded_signature when (*TODO: not*) allow_embedded_signatures ->
     error_msg (fun m -> m "Embedded signatures not allowed in this context")
   | Reason_for_revocation ->

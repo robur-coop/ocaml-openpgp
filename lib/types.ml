@@ -257,7 +257,7 @@ let packet_tag_enum =
     (* '\008', Compressed Data Packet *)
     (* '\009', Symmetrically Encrypted Data Packet *)
     (* '\010', Marker Packet *)
-    (* '\011', Literal Data Packet *)
+  (* '\011', Literal Data Packet *) (*TODO*)
   ; '\012', Trust_packet_tag
   ; '\013', Uid_tag
   ; '\014', Public_subkey_tag
@@ -576,10 +576,18 @@ let char_of_hash_algorithm needle =
 
 let cs_of_hash_algorithm a = char_of_hash_algorithm a |> Cs.of_char
 
-let char_of_symmetric_algorithm needle =
-  find_enum_value needle symmetric_algorithm_enum |> R.get_ok
+let char_of_symmetric_algorithm = function
+  | Unknown_encryption c -> c
+  | needle -> find_enum_value needle symmetric_algorithm_enum |> R.get_ok
 
 let cs_of_symmetric_algorithm a = char_of_symmetric_algorithm a |> Cs.of_char
+
+let symmetric_algorithm_of_char needle =
+  find_enum_sumtype needle symmetric_algorithm_enum
+  |> R.ignore_error ~use:(fun `Unmatched_enum_value ->
+         Logs.debug (fun m -> m "Unimplemented symmetric algorithm 0x%02x"
+               (Char.code needle));
+         Unknown_encryption needle )
 
 let packet_tag_type_of_char needle =
   find_enum_sumtype needle packet_tag_enum

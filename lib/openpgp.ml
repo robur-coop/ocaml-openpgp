@@ -602,10 +602,18 @@ struct
       SubpacketMap.empty |>
       SubpacketMap.upsert Key_usage_flags
         (Key_usage_flags { certify_keys = true ; unimplemented = '\000'
-                        ; sign_data = true ; encrypt_communications = false
-                        ; encrypt_storage = false ; authentication = false })
+                         ; sign_data = true ; encrypt_communications = false
+                         ; encrypt_storage = false ; authentication = false })
       |> SubpacketMap.upsert Key_expiration_time
         (Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365))
+      |> SubpacketMap.upsert Preferred_hash_algorithms
+        (Preferred_hash_algorithms [SHA384 ; SHA512 ; SHA256])
+      (* Tell peers about the ciphers we support: *)
+      |> SubpacketMap.upsert Preferred_symmetric_algorithms
+        (Preferred_symmetric_algorithms [AES256 ; AES192 ; AES128])
+      (* Tell peers that we support MDC checking so they will at least SHA1
+         their encrypted messages to us:*)
+      |> SubpacketMap.upsert Features (Features [Types.Modification_detection])
     in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
@@ -628,8 +636,10 @@ struct
     let subpackets =
       SubpacketMap.empty |>
       SubpacketMap.upsert Key_usage_flags
-        (Key_usage_flags {empty_key_usage_flags with
-         sign_data = Public_key_packet.(can_sign @@ public_of_private subkey);})
+        (Key_usage_flags
+           {empty_key_usage_flags with
+            sign_data = Public_key_packet.(can_sign
+                                           @@ public_of_private subkey);})
     in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     hash_packet V4 hash_cb (Public_key_packet

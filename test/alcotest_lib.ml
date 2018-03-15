@@ -180,10 +180,15 @@ let test_integrity_with_algo algo target_hashes : unit =
   let hashes = List.map (fun x -> Nocrypto.Hash.MD5.digest x
                                   |> Cs.of_cstruct)
       (List.map Cs.to_cstruct [sk_asc_cs; sig_cs]) in
-   Logs.app (fun m -> m "%a" (Fmt.list Cs.pp_hex) hashes);
-   Alcotest.(check @@ list a_cs) "deterministic generation of secret key & sig"
-     hashes
-     (List.map (fun h -> Cs.of_hex h |> R.get_ok)target_hashes);
+  Logs.app (fun m -> m "%a" (Fmt.list Cs.pp_hex) hashes);
+  (* This test case ensures that we didn't forget to pass the Nocrypo rng (?g)
+     somewhere - being able to deterministically generate keys from a seed is
+     tremendously useful for debugging and for minimizing test vectors: *)
+   Alcotest.(check @@ list a_cs) "deterministic generation of secret key & sig \
+                                  (this checks against a hardcoded hash; did \
+                                  you modify the key generation?)"
+     (List.map (fun h -> Cs.of_hex h |> R.get_ok) target_hashes)
+     hashes ;
    `Good_signature
   ) |> function | Ok `Good_signature -> ()
                 | Error (`Msg s) -> failwith s
@@ -250,11 +255,11 @@ let test_literal_data_packet () : unit =
       packet @@ Literal_data_packet.serialize t
 
 let test_integrity_dsa () : unit =
-  ["aa15898f91a57a0428d61aca60fcf244";
+  ["9388fea70729588120f2e315e72c1640";
    "2b8d620fa5c755b1d34c570e36588d15"]
   |> test_integrity_with_algo DSA
 let test_integrity_rsa () : unit =
-  ["085fd7cd79b26984d46c937e6b2f12ed";
+  ["2a784c6e1a3ddaddf8f9e4bc72815a02";
    "a86680d3768b7e4f923f87305f7b995e"]
   |> test_integrity_with_algo RSA_encrypt_or_sign
 
