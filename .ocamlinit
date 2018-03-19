@@ -16,5 +16,7 @@ open Rresult;;
 #mod_use "lib/user_attribute_packet.ml"
 #mod_use "lib/public_key_packet.ml"
 #mod_use "lib/public_key_encrypted_session_packet.ml"
+#mod_use "lib/literal_data_packet.ml"
+#mod_use "lib/encrypted_packet.ml"
 #mod_use "lib/signature_packet.ml"
 #mod_use "lib/openpgp.ml"

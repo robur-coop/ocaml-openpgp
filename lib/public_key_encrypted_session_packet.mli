@@ -17,17 +17,20 @@ val serialize : t -> (Cs.t, [> R.msg] ) result
     The byte representation can be deserialized using [parse_packet].
 *)
 
-val hash : t -> 'hash_cb -> Types.openpgp_version ->(unit, [> R.msg]) result
+val hash : t -> (Cs.t -> unit) -> Types.openpgp_version ->
+  (unit, [> R.msg]) result
 (** [hash pkt hash_cb openpgp_version] calls [hash_cb] with the serialized [pkt]
 *)
 
-val decrypt : Public_key_packet.private_key -> t -> (Cs.t, [> R.msg]) result
-(** [decrypt private_key session_packet] is the symmetric key resulting of the
+val decrypt : Public_key_packet.private_key -> t ->
+  (Types.symmetric_algorithm * Cs.t, [> R.msg]) result
+(** [decrypt private_key session_packet] is a tuple of
+    (symmetric algorithm * symmetric key) resulting of the
     decryption of the [session_packet] using [private_key].
 *)
 
 val create : ?g:Nocrypto.Rng.g -> Public_key_packet.t ->
-  key_bitlength:int ->
+  Types.symmetric_algorithm ->
   (Cs.t * t, [> R.msg] ) result
 (** [create ?rng target_pk key_byte_length] is a tuple of
     a key of [key_byte_length] bytes randomly generated using ?rng,

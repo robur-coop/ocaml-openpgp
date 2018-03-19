@@ -4,16 +4,41 @@ open Rresult
 let a_cs = Alcotest.testable Cs.pp_hex Cs.equal
 let a_cstruct = Alcotest.testable Cstruct.hexdump_pp Cstruct.equal
 
+let test_s2k_count_of_char () =
+  let max_count = (* from GPG src *) 65011712 in
+  Alcotest.(check int) "max count" max_count (s2k_count_of_char '\255') ;
+  Alcotest.(check int) "min count" 1024 (s2k_count_of_char '\000') ;
+  let rec all last = function
+    | '\255' -> () (* this one is checked in case above *)
+    | c ->
+      let next = s2k_count_of_char c in
+      assert(next >= 1024) ;
+      (* c is always <= 254, so this must hold: *)
+      assert(next < max_count ) ;
+      (* check that step >= (1<<6 = 64): *)
+      assert(next >= last + 64) ;
+      (* test that each is = decoded: *)
+      let c2 = char_of_s2k_count next in
+      assert( c = c2 ) ;
+      all next (Char.chr @@ Char.code c + 1)
+  in all (1024-64) '\000'
+
 let test_packet_length_selfcheck () =
-  Alcotest.(check int32) "same int" 1234l
-    (serialize_packet_length_uint32 1234l
-     |> v4_packet_length_of_cs `Error >>| snd |> R.get_ok
-    )
+  for i = 0 to 1030 do
+    let i = Int32.of_int i in
+    Alcotest.(check int32) "same int" i
+      (serialize_packet_length_uint32 i
+       |> v4_packet_length_of_cs `Error >>| snd |> R.get_ok
+      )
+  done
 
 let test_signature_subpacket_char () =
   (* TODO test signature_subpacket_tag_of_signature_subpacket somehow *)
-  Alcotest.(check char) "same char" 'a'
-    (signature_subpacket_tag_of_char 'a' |> char_of_signature_subpacket_tag)
+  for i = 0 to 255 do
+    let c = Char.chr i in
+    Alcotest.(check char) "same char" c
+      (signature_subpacket_tag_of_char c |> char_of_signature_subpacket_tag)
+  done
 
 let test_signature_subpacket_map () =
   let open Signature_packet in
@@ -199,7 +224,7 @@ let test_create_pk_session_packet () : unit =
   let open Public_key_encrypted_session_packet in
   begin match
       pk_of_file "test/keys/gnupg.test.001.pk.asc" >>= fun pk ->
-      create ~key_bitlength:256 pk.root_key
+      create pk.root_key AES256
     with
     | Ok (key, t) ->
       Alcotest.(check int) "Length of generated symmetric key is 256 bits"
@@ -255,18 +280,19 @@ let test_literal_data_packet () : unit =
       packet @@ Literal_data_packet.serialize t
 
 let test_integrity_dsa () : unit =
-  ["9388fea70729588120f2e315e72c1640";
+  ["c804eb0fdb2dc64621bbcba01f6e4907";
    "2b8d620fa5c755b1d34c570e36588d15"]
   |> test_integrity_with_algo DSA
 let test_integrity_rsa () : unit =
-  ["2a784c6e1a3ddaddf8f9e4bc72815a02";
+  ["175be0644b8281eab828a019a2ab0985";
    "a86680d3768b7e4f923f87305f7b995e"]
   |> test_integrity_with_algo RSA_encrypt_or_sign
 
 let tests =
   [
     "utilities",
-    [ "packet length self-check", `Quick, test_packet_length_selfcheck ;
+    [ "S2K count_of_char", `Quick, test_s2k_count_of_char ;
+      "packet length self-check", `Quick, test_packet_length_selfcheck ;
       "signature subpacket map", `Quick, test_signature_subpacket_map ;
       (* TODO ping the rnp people with the vectors I collected
          https://github.com/riboseinc/rnp/issues/372*)

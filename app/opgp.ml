@@ -110,6 +110,42 @@ let do_sign _ current_time secret_file target_file =
   Logs.app (fun m -> m "%s" encoded) ; Ok ()
   )|> R.reword_error Types.msg_of_error
 
+let do_decrypt _ current_time secret_file target_file =
+  (
+  cs_of_file secret_file >>= fun sk_cs ->
+  cs_of_file target_file >>= fun target_content ->
+  Openpgp.decode_secret_key_block ~current_time sk_cs
+  >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (secret_key,_) ->
+
+  ( Openpgp.decode_message ~current_time ~secret_key target_content
+    |>  R.reword_error Types.msg_of_error)
+  >>= fun {Openpgp.public_sessions ; data; signatures ;
+           symmetric_session = _} ->
+  Logs.debug (fun m -> m "got encrypted msg") ;
+  Public_key_encrypted_session_packet.decrypt
+    secret_key.Openpgp.Signature.root_key List.(hd public_sessions)
+  >>=fun (sym_algo, dec) ->
+  Logs.debug (fun m -> m"key: %a" Cs.pp_hex dec) ;
+  Encrypted_packet.decrypt ~key:dec data >>= fun payload ->
+  Types.consume_packet_header payload >>= fun (header, payload) ->
+  Types.consume_packet_length header.Types.length_type payload
+  >>= fun (payload, rest) ->
+  Types.true_or_error (0 = Cs.len rest)
+    (fun m -> m "Extraneous data in decrypted payload") >>= fun () ->
+  (* TODO parse payload as literal data packet _OR_ compressed data packet*)
+  begin match header.Types.packet_tag with
+    | Types.Literal_data_packet_tag ->
+      Literal_data_packet.parse payload
+      >>= fun (Literal_data_packet.In_memory_t (_,acc) as pkt) ->
+      let msg = String.concat "" acc in
+      Logs.debug (fun m -> m "ph: %a@ msg:@,%S"
+                  Literal_data_packet.pp pkt msg); Ok msg
+    | unexpected_tag -> R.error_msgf "Expected Literal Data in message, got %a"
+                          Types.pp_packet_tag unexpected_tag
+  end >>| fun msg -> print_string msg
+  )|> R.reword_error Types.msg_of_error
+
+
 open Cmdliner
 
 let docs = Manpage.s_options
@@ -177,7 +213,7 @@ let pk_algo : Types.public_key_algorithm Cmdliner.Term.t =
   let convert s = s |> Types.public_key_algorithm_of_string
                   |> function Ok x -> `Ok x | Error (`Msg x) -> `Error x in
   Arg.(value & opt (convert, Types.pp_public_key_algorithm) (Types.DSA)
-             & info ["algo";"pk-algo"] ~docs ~doc)
+             & info ["algo";"type";"pk-algo"] ~docs ~doc)
 
 let genkey_cmd =
   let doc = "Generate a new secret key" in
@@ -230,6 +266,21 @@ let verify_cmd =
   Term.info "verify" ~doc ~sdocs
     ~exits:Term.default_exits ~man
     ~man_xrefs:[`Cmd "sign"]
+
+let decrypt_cmd =
+  let doc = "Decrypt a PGP-encrypted file" in
+  let man = [
+    `S Manpage.s_synopsis ;
+    `P {|$(tname) [$(i,OPTIONS)] $(b,--sk) $(i,private-key.asc) $(i,FILE) |} ;
+    `S Manpage.s_description ;
+    `P {|Decrypt the $(i,FILE) using the provided secret key.|};
+    ]
+  in
+  Term.(term_result (const do_decrypt $ setup_log $ override_timestamp $ sk
+                                      $ target)),
+  Term.info "decrypt" ~doc ~sdocs
+    ~exits:Term.default_exits ~man
+    ~man_xrefs:[`Cmd "encrypt"]
 
 let list_packets_cmd =
   let doc = "Pretty-print the packets contained in a file" in
@@ -296,7 +347,8 @@ let help_cmd =
   Term.(ret (const help $ setup_log)),
   Term.info "opgp" ~version:(Manpage.escape "%%VERSION_NUM%%") ~man ~doc ~sdocs
 
-let cmds = [verify_cmd ; genkey_cmd; convert_cmd; list_packets_cmd; sign_cmd]
+let cmds = [ verify_cmd ; genkey_cmd; convert_cmd; list_packets_cmd; sign_cmd ;
+             decrypt_cmd ]
 
 let () =
   Nocrypto_entropy_unix.initialize () ;

@@ -33,8 +33,6 @@ let pp fmt {key_id ; pk_algo; asf}: unit=
     Types.pp_public_key_algorithm pk_algo
     pp_asf asf
 
-let hash t hash_cb version : (unit, [> R.msg]) result = Ok ()
-
 let serialize_asf = function
   | RSA_message { m_pow_e } -> Types.cs_of_mpi m_pow_e
 
@@ -58,6 +56,9 @@ let serialize t =
        dependent on the public-key algorithm used:*)
   serialize_asf t.asf >>| Cs.W.cs w >>| fun () ->
   Cs.W.to_cs w
+
+let hash t hash_cb (_:Types.openpgp_version) : (unit, [> R.msg]) result =
+  serialize t >>| hash_cb
 
 let parse_packet buf : (t, [> R.msg]) result =
   let rdr = Cs.R.of_cs (R.msg "TODO") buf in
@@ -91,6 +92,27 @@ let parse_packet buf : (t, [> R.msg]) result =
       R.error_msgf "not implemented: %a" Types.pp_public_key_algorithm pk_algo
   end
 
+let parse_session_key cs_r =
+  (* This function parses the output of the decryption of a session key*)
+
+  (* RFC 4880: First, the session key is prefixed with a one-octet
+     algorithm identifier that specifies the symmetric encryption
+     algorithm used to encrypt the following Symmetrically Encrypted Data
+     Packet. *)
+  ( Cs.R.char cs_r >>| Types.symmetric_algorithm_of_char ) >>= fun algo ->
+
+  Cs.R.cs cs_r (Cs.R.len cs_r - 2) >>= fun key ->
+
+  (* RFC 4880: Then a two-octet checksum is appended, which is equal to the
+     sum of the preceding session key octets, not including the algorithm
+     identifier, modulo 65536.*)
+  ( Cs.R.cs cs_r 2 >>= fun checksum ->
+    Types.true_or_error (Cs.equal checksum @@ Types.two_octet_checksum key)
+      (fun m -> m "symmetric key checksum mismatch")) >>= fun () ->
+
+  (* Check that it's empty, and return: *)
+  Cs.R.equal_string cs_r "" >>| fun () -> algo, key
+
 let decrypt (private_key : Public_key_packet.private_key) (t:t) =
   let open Public_key_packet in
   match private_key, t with
@@ -102,27 +124,33 @@ let decrypt (private_key : Public_key_packet.private_key) (t:t) =
     }, { pk_algo ; asf = RSA_message { m_pow_e }; _
        } when pk_algo = public_key_algorithm_of_asf priv_key_asf
     ->
-    R.of_option ~none:(fun () -> R.error_msg "Decryption failed")
-    @@ ( match Nocrypto.Rsa.PKCS1.decrypt ~mask:`Yes ~key
-                 (Types.cs_of_mpi_no_header m_pow_e |> Cs.to_cstruct) with
-        | exception Nocrypto.Rsa.Insufficient_key -> None
-        | other -> other ) >>| Cs.of_cstruct
+    ( R.of_option ~none:(fun () -> R.error_msg "Decryption failed")
+      @@ ( match Nocrypto.Rsa.PKCS1.decrypt ~mask:`Yes ~key
+                   (Types.cs_of_mpi_no_header m_pow_e |> Cs.to_cstruct) with
+         | exception Nocrypto.Rsa.Insufficient_key ->
+           Logs.err (fun m -> m "Insufficient_key, this should not happen.");
+           None
+         | other -> other ) ) >>| Cs.of_cstruct
+    >>| Cs.R.of_cs (R.msg "Invalid session key") >>= parse_session_key
   | _ -> R.error_msg "Only RSA decryption is implemented"
 
-let create ?g (pk : Public_key_packet.t) ~key_bitlength =
-  let key_byte_length = key_bitlength / 8 in
+let create ?g (pk : Public_key_packet.t) symmetric_algo =
   let open Public_key_packet in
-  Types.true_or_error
-    (Array.mem key_byte_length Nocrypto.Cipher_block.AES.ECB.key_sizes)
-    (fun m -> m "Invalid key size %d for AES-OpenPGP-CFB, accepted are: %a"
-        key_bitlength Fmt.(array ~sep:(unit "; ") int)
-        (Array.map (fun n -> n*8) Nocrypto.Cipher_block.AES.ECB.key_sizes)
-    ) >>= fun () ->
+  Types.key_byte_size_of_symmetric_algorithm symmetric_algo
+  >>= fun key_byte_length ->
   match pk.algorithm_specific_data with
   | RSA_pubkey_encrypt_or_sign_asf key
   | RSA_pubkey_encrypt_asf key ->
     let symmetric_key = Nocrypto.Rng.generate ?g key_byte_length in
-    let m_pow_e = Nocrypto.Rsa.PKCS1.encrypt ?g ~key symmetric_key
+    let key_container = (* GnuPG calls this "DEK" *)
+      Cstruct.concat
+        [ Types.cs_of_symmetric_algorithm symmetric_algo |> Cs.to_cstruct;
+          symmetric_key ;
+          Cs.(Types.two_octet_checksum @@ of_cstruct symmetric_key
+              |> to_cstruct)
+        ]
+    in
+    let m_pow_e = Nocrypto.Rsa.PKCS1.encrypt ?g ~key key_container
                   |> Cs.of_cstruct
                   |> Types.mpi_of_cs_no_header in
     Ok ( Cs.of_cstruct symmetric_key,

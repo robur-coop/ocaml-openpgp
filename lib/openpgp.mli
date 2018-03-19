@@ -22,7 +22,7 @@ type packet_type =
   | Secret_key_subpacket of Public_key_packet.private_key
   | Trust_packet of Cs.t
   | User_attribute_packet of User_attribute_packet.t
-  | Encrypted_packet of Public_key_encrypted_session_packet.t
+  | Encrypted_packet of Encrypted_packet.encrypted Encrypted_packet.t
   | Public_key_encrypted_session_packet of Public_key_encrypted_session_packet.t
 
 module Signature : sig
@@ -161,6 +161,20 @@ val decode_secret_key_block :
 val decode_detached_signature :
   ?armored:bool ->
   Cs.t -> (Signature.t, [> `Msg of string])result
+
+type encrypted_message =
+  { public_sessions : Public_key_encrypted_session_packet.t list ;
+    symmetric_session : unit list ; (* TODO *)
+    data : Encrypted_packet.encrypted Encrypted_packet.t ;
+    signatures : Signature.t list ;
+  }
+
+
+val decode_message :
+  current_time:Ptime.t ->
+  secret_key:Signature.transferable_secret_key ->
+  ?armored:bool ->
+  Cs.t -> (encrypted_message, [> R.msg | Public_key_packet.parse_error ]) result
 
 val new_transferable_secret_key :
   current_time:Ptime.t ->

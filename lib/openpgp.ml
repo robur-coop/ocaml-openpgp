@@ -10,7 +10,7 @@ type packet_type =
   | Secret_key_subpacket of Public_key_packet.private_key
   | Trust_packet of Cs.t
   | User_attribute_packet of User_attribute_packet.t
-  | Encrypted_packet of Public_key_encrypted_session_packet.t (* TODO WRONG*)
+  | Encrypted_packet of Encrypted_packet.encrypted Encrypted_packet.t
   | Public_key_encrypted_session_packet of Public_key_encrypted_session_packet.t
 
 let packet_tag_of_packet = begin function
@@ -180,8 +180,10 @@ let decode_ascii_armor (buf : Cs.t) =
 let parse_packet_body packet_tag pkt_body
   : (packet_type, [> `Msg of string | `Incomplete_packet ]) result =
   begin match packet_tag with
+    | Literal_data_packet_tag ->
+      R.error_msg "Literal data packet not allowed in this context."
     | Encrypted_packet_tag ->
-      failwith "TODO"
+      Encrypted_packet.parse_packet pkt_body >>| fun pkt -> Encrypted_packet pkt
     | Public_key_tag ->
       Public_key_packet.parse_packet pkt_body
       >>| fun pkt -> Public_key_packet pkt
@@ -225,8 +227,8 @@ let pp_packet ppf = begin function
     Fmt.pf ppf "Trust packet (ignored): @[%a@]" Cs.pp_hex cs
   | User_attribute_packet pkt ->
     Fmt.pf ppf "User attribute packet: %a" User_attribute_packet.pp pkt
-  | Encrypted_packet pkt -> (* TODO *)
-    Fmt.pf ppf "Encrypted packet %a" Public_key_encrypted_session_packet.pp pkt
+  | Encrypted_packet pkt ->
+    Fmt.pf ppf "Encrypted packet %a" Encrypted_packet.pp pkt
   | Public_key_encrypted_session_packet pkt ->
     Fmt.pf ppf "Encrypted packet %a" Public_key_encrypted_session_packet.pp pkt
   end
@@ -243,7 +245,7 @@ let hash_packet version hash_cb = begin function
     error_msg (fun m -> m "Should NOT be hashing Trust_packets!")
   | User_attribute_packet pkt -> User_attribute_packet.hash pkt hash_cb version
   | Encrypted_packet pkt -> (* TODO*)
-    Public_key_encrypted_session_packet.hash pkt hash_cb version
+    Encrypted_packet.hash pkt hash_cb version
   | Public_key_encrypted_session_packet pkt ->
     Public_key_encrypted_session_packet.hash pkt hash_cb version
 end
@@ -258,7 +260,7 @@ let serialize_packet version (pkt:packet_type) =
     | Secret_key_packet pkt -> Public_key_packet.serialize_secret version pkt
     | Secret_key_subpacket pkt -> Public_key_packet.serialize_secret version pkt
     | User_attribute_packet pkt -> User_attribute_packet.serialize pkt
-    | Encrypted_packet pkt -> Public_key_encrypted_session_packet.serialize pkt
+    | Encrypted_packet pkt -> Encrypted_packet.serialize pkt
     | Public_key_encrypted_session_packet pkt ->
       Public_key_encrypted_session_packet.serialize pkt
   end >>= fun body_cs ->
@@ -599,10 +601,17 @@ struct
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA384 in
     let subpackets : signature_subpacket SubpacketMap.t =
+      let encrypt_communications =
+        match Public_key_packet.public_key_algorithm_of_asf
+                priv_key.Public_key_packet.public.
+                  Public_key_packet.algorithm_specific_data with
+        | RSA_encrypt_or_sign | RSA_encrypt_only -> true
+        | _ -> false (*TODO don't hardcode this *)
+      in
       SubpacketMap.empty |>
       SubpacketMap.upsert Key_usage_flags
         (Key_usage_flags { certify_keys = true ; unimplemented = '\000'
-                         ; sign_data = true ; encrypt_communications = false
+                         ; sign_data = true ; encrypt_communications
                          ; encrypt_storage = false ; authentication = false })
       |> SubpacketMap.upsert Key_expiration_time
         (Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365))
@@ -613,7 +622,12 @@ struct
         (Preferred_symmetric_algorithms [AES256 ; AES192 ; AES128])
       (* Tell peers that we support MDC checking so they will at least SHA1
          their encrypted messages to us:*)
-      |> SubpacketMap.upsert Features (Features [Types.Modification_detection])
+      |> SubpacketMap.upsert Features (Features [ Modification_detection ])
+      (* specify that we don't support ZIP:
+         RFC 4880: 13.3.1: If the preferences are not present, then they are
+         assumed to be [ZIP(1), Uncompressed(0)].*)
+      |> SubpacketMap.upsert Preferred_compression_algorithms
+        (Preferred_compression_algorithms [ Uncompressed ])
     in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
@@ -937,8 +951,58 @@ let decode_public_key_block ~current_time ?armored cs
 
 let decode_secret_key_block ~current_time ?armored cs =
   armored_or_not ?armored Ascii_private_key_block cs
-  >>= (fun sec_cs -> parse_packets sec_cs)
+  >>= parse_packets
   >>= (fun sec_cs -> Signature.root_sk_of_packets ~current_time sec_cs )
+
+type encrypted_message =
+  { public_sessions : Public_key_encrypted_session_packet.t list ;
+    symmetric_session : unit list ; (* TODO *)
+    data : Encrypted_packet.encrypted Encrypted_packet.t ;
+    signatures : Signature.t list ;
+  }
+
+let decode_message ~current_time ~secret_key ?armored cs
+  : (encrypted_message, [> R.msg]) result =
+  (* TODO RFC 4880 #section-11.3*)
+  (* *)
+  armored_or_not ?armored Ascii_message cs
+  >>= parse_packets >>= fun packets ->
+  let rec loop (state : [< `Container | `Data
+                        | `Trailing of 'a Encrypted_packet.t * 'b list])
+                ~public packets =
+    let session_packet = function
+      | (Public_key_encrypted_session_packet pkt, _)::tl ->
+        loop state ~public:(pkt::public) tl
+      | (Encrypted_packet _, _)::_ ->
+        loop `Data ~public packets
+      | (pkt, _)::_ -> R.error_msgf "Unexpected packet while decoding message \
+                                     [public keys]: %a" pp_packet pkt
+      | [] -> R.error_msgf "Unexpected end of stream while decoding message \
+                           looking for session key data packets"
+    in
+    let data_packet = function
+      | (Encrypted_packet pkt, _cs)::tl ->
+        loop (`Trailing (pkt,[])) ~public tl
+      | (pkt, _)::_ -> R.error_msgf "Unexpected packet while decoding message \
+                                     [encrypted data]: %a" pp_packet pkt
+      | [] -> R.error_msgf "Unexpected end of stream while decoding message \
+                           looking for encrypted data packets"
+    in
+    let trailing_packet pkt s_acc = function
+      | (Signature_type x, (*TODO*) _cs ) :: tl ->
+        loop (`Trailing (pkt, x::s_acc)) ~public tl
+      | (pkt, _)::_ -> R.error_msgf "Unexpected packet while decoding message \
+                                     [trailing packets]: %a" pp_packet pkt
+      | [] -> Ok (public, pkt, s_acc)
+    in
+    match state with
+    | `Container -> session_packet packets
+    | `Data -> data_packet packets
+    | `Trailing (pkt, sigs)-> trailing_packet pkt sigs packets
+  in loop `Container ~public:[] packets
+  >>= fun (public_sessions, data, signatures) ->
+  (* TODO validation *)
+  Ok { public_sessions ; symmetric_session = [] ; data; signatures }
 
 let decode_detached_signature ?armored cs =
   armored_or_not ?armored Ascii_signature cs

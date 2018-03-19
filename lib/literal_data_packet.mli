@@ -21,12 +21,14 @@ type final_state =  private { format : data_format (** text or binary*);
                               time : string (** The unspecified time field.*); }
 
 type 'kind t = private
-
-  (** doesn't store the actual packet data: *)
   |  Streaming_t : final_state -> streaming t
+  (** doesn't store the actual packet data: *)
 
-  (** accumulates data as a list of strings inside [t]: *)
   |  In_memory_t : final_state * string list -> in_memory t
+  (** accumulates data as a list of strings inside [t]: *)
+
+val pp : Format.formatter -> _ t -> unit
+(** [pp fmt t] is [t] pretty-printed on [fmt].*)
 
 val in_memory_parser : total_len:int64 -> (in_memory parser, [> R.msg] )result
 (** [in_memory_parser ~total_len] is a parser that will read up to [total_len]

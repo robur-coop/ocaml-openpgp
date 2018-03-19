@@ -25,6 +25,7 @@ type signature_subpacket =
   | Issuer_fingerprint of Types.openpgp_version * Cs.t
   | Preferred_hash_algorithms of Types.hash_algorithm list
   | Preferred_symmetric_algorithms of Types.symmetric_algorithm list
+  | Preferred_compression_algorithms of Types.compression_algorithm list
   | Embedded_signature of Cs.t (* [t] and [signature_subpacket] are mutually
                                   recursive due to Embedded_signature containing
                                   its own [t]. we store the Cs.t and defer

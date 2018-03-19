@@ -191,6 +191,30 @@ let pp_symmetric_algorithm ppf v =
   | Unknown_encryption c ->
     Format.sprintf "Unknown[%02x]" (Char.code c)
 
+type compression_algorithm =
+  | Uncompressed
+  | ZIP
+  | ZLIB (* aka DEFLATE? *)
+  | BZip2
+  | Unknown_compression of char
+
+let compression_algorithm_enum =
+  (* #section-9.3 *)
+  [ '\000', Uncompressed
+  ; '\001', ZIP
+  ; '\002', ZLIB
+  ; '\003', BZip2
+  ]
+
+let pp_compression_algorithm ppf v =
+  Fmt.string ppf @@ match v with
+  | Uncompressed -> "Uncompressed"
+  | ZIP -> "ZIP"
+  | ZLIB -> "ZLIB"
+  | BZip2 -> "BZip2"
+  | Unknown_compression c ->
+    Format.sprintf "Unknown[%02x]" (Char.code c)
+
 type mpi = Z.t
 
 type ascii_packet_type =
@@ -218,7 +242,7 @@ let string_of_ascii_packet_type = function
     "MESSAGE, PART " ^ string_of_int n.x ^ "/" ^ string_of_int n.y
   | Ascii_signature -> "SIGNATURE"
 
-type packet_tag_type =
+type packet_tag_type = (* TODO add comments with gpg constants for these: *)
   | Signature_tag
   | Secret_key_tag
   | Public_key_tag
@@ -229,6 +253,7 @@ type packet_tag_type =
   | Trust_packet_tag
   | Encrypted_packet_tag
   | Public_key_encrypted_session_packet_tag
+  | Literal_data_packet_tag
 
 let pp_packet_tag ppf v =
   Fmt.string ppf @@ match v with
@@ -241,6 +266,7 @@ let pp_packet_tag ppf v =
   | User_attribute_tag -> "user attribute"
   | Trust_packet_tag -> "trust packet"
   | Encrypted_packet_tag -> "Encrypted packet"
+  | Literal_data_packet_tag -> "Literal Data Packet"
   | Public_key_encrypted_session_packet_tag ->
     "Public-Key encrypted session packet"
 
@@ -257,7 +283,7 @@ let packet_tag_enum =
     (* '\008', Compressed Data Packet *)
     (* '\009', Symmetrically Encrypted Data Packet *)
     (* '\010', Marker Packet *)
-  (* '\011', Literal Data Packet *) (*TODO*)
+  ; '\011', Literal_data_packet_tag
   ; '\012', Trust_packet_tag
   ; '\013', Uid_tag
   ; '\014', Public_subkey_tag
@@ -265,6 +291,7 @@ let packet_tag_enum =
   ; '\018', Encrypted_packet_tag
   (* ^-- Symmetrically Encrypted and Integrity Protected Data Packet *)
     (* '\019', Modification Detection Code Packet *)
+    (*\020 encrypted_AEAD https://gitlab.com/GNU/GNUPG/GNUPG/commit/3f4ca85cb0cf58006417f4f7faafaa9a1f1bdf22 *)
   ]
 
 type signature_type =
@@ -589,10 +616,40 @@ let symmetric_algorithm_of_char needle =
                (Char.code needle));
          Unknown_encryption needle )
 
+let key_byte_size_of_symmetric_algorithm = function
+  | AES128 -> Ok (128 / 8)
+  | AES192 -> Ok (192 / 8)
+  | AES256 -> Ok (256 / 8)
+  | unknown ->
+    R.error_msgf "No defined key length for cipher %a"
+      pp_symmetric_algorithm unknown
+
+let module_of_symmetric_algorithm algo :
+  ((module Nocrypto.Cipher_block.S.ECB),[> ]) result =
+  match algo with
+  | AES128 | AES192 | AES256 ->
+    Ok (module Nocrypto.Cipher_block.AES.ECB)
+  | unknown -> R.error_msgf "Can't instantiate crypto module for %a"
+                 pp_symmetric_algorithm unknown
+
+let char_of_compression_algorithm = function
+  | Unknown_compression c -> c
+  | needle -> find_enum_value needle compression_algorithm_enum |> R.get_ok
+
+let cs_of_compression_algorithm a =
+  char_of_compression_algorithm a |> Cs.of_char
+
+let compression_algorithm_of_char needle =
+  find_enum_sumtype needle compression_algorithm_enum
+  |> R.ignore_error ~use:(fun `Unmatched_enum_value ->
+         Logs.debug (fun m -> m "Unimplemented compression algorithm 0x%02x"
+               (Char.code needle));
+         Unknown_compression needle )
+
 let packet_tag_type_of_char needle =
   find_enum_sumtype needle packet_tag_enum
   |> R.reword_error (fun `Unmatched_enum_value ->
-                         `Msg "Invalid packet_tag_type")
+                         R.msgf "Invalid packet_tag_type: %C" needle)
 
 let int_of_packet_tag_type (needle:packet_tag_type) =
   (find_enum_value needle packet_tag_enum >>= fun c ->
@@ -856,7 +913,8 @@ let consume_packet_length length_type buf :
     | Some length -> v3_packet_length_of_cs `Incomplete_packet buf length
   end >>= fun (start , length) ->
   match Uint32.to_int length with
-  | None -> error_msg (fun m -> m "consume_packet_length: Invalid packet length: %ld" length)
+  | None -> error_msg (fun m -> m "consume_packet_length: Invalid packet length\
+                                   : %ld" length)
   | Some length ->
     Cs.split_result ~start buf length
     |> R.reword_error (function _ ->  `Incomplete_packet)
@@ -936,6 +994,41 @@ let v4_verify_version (buf : Cs.t) :
     error_msg (fun m -> m "Expected OpenPGP version 4, got v. %d" (Char.code version))
   else
     R.ok ()
+
+let s2k_count_of_char c =
+  (* RFC%204880%20-%20OpenPGP%20Message%20Format.html#section-3.7.1.3 *)
+  (* keeping the style of being thoroughly ambiguous, I assume the spec writers
+     want you to go take a look at "g10/passphrase.c:encode_s2k_iterations"
+     in GnuPG. the rnp implementations is pretty easy to read:
+     https://github.com/riboseinc/rnp/blob/82fb956244d721fc6fa002922b36b9f3fe1887e6/src/lib/crypto/s2k.c#L37
+     once you have smoked the same illegal substances as the author of the spec,
+     you may proceed to make sense of the code below:
+  *)
+  let c = Char.code c in
+  let expbias = 6 in
+  let count = (16 + (c land 15)) lsl ((c lsr 4) + expbias) in
+  count
+
+let char_of_s2k_count count =
+  (* char rounded up to nearest valid count *)
+  (* The spec doesn't specify the algorithm for encoding the count.
+     The following python code implements it:
+     def x1(y): return (max(int(math.floor(math.log(y,2)))-10, 0)<<4)
+     def x2(y): return ( (y >> (int(math.floor(math.log(y,2)))-4)) -16)
+     def char_of_count(y): return x1(y) + x2(y)
+  *)
+  let to_c count =
+    let log2_floor n = log (float_of_int n) /. log(2.)
+                       |> floor |> int_of_float in
+    let x1 = (max 0 (~-10 + log2_floor count)) lsl 4 in
+    let x2 = (count lsr (~-4 + log2_floor count)) -16 in
+    x1 + x2 in
+  let count = max 0x400 (min count 0x3e0_0000) in
+  let code = to_c count in
+  let rounded_count = Char.chr code |> s2k_count_of_char in
+  if rounded_count = count
+  then Char.chr code
+  else Char.chr @@ to_c @@ s2k_count_of_char @@ Char.chr (code +1)
 
 let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
   : (unit,'error) result =

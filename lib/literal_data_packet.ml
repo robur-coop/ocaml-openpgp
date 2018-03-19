@@ -67,6 +67,17 @@ type 'kind t =
   |  In_memory_t : final_state * string list -> in_memory t
   (*  constraint 'kind = [< streaming | in_memory ]*)
 
+let pp_final_state fmt { format ; filename ; time} =
+  Fmt.pf fmt "{ @[<v>format: %a@ \
+              filename: %S@ \
+              time: %S@ @]}" pp_data_format format filename time
+
+let pp fmt (type kind) (v : kind t) =
+  Fmt.pf fmt "Literal Data Packet: %a" pp_final_state
+  @@ match v with
+  | In_memory_t (s,_) -> s
+  | Streaming_t s -> s
+
 open Rresult
 
 let parser_create ~total_len

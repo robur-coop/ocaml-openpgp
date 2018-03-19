@@ -72,6 +72,7 @@ type signature_subpacket =
   | Issuer_fingerprint of openpgp_version * Cs.t
   | Preferred_hash_algorithms of hash_algorithm list
   | Preferred_symmetric_algorithms of symmetric_algorithm list
+  | Preferred_compression_algorithms of compression_algorithm list
   | Embedded_signature of Cs.t (* [t] and [signature_subpacket] are mutually
                                   recursive due to Embedded_signature containing
                                   its own [t]. we store the Cs.t and defer
@@ -117,7 +118,7 @@ end
 end
 
 open Tag
-type (_,_) subpacket =
+type (_,_) subpacket = (* this stuff is not used atm*)
   | Sig_creation_time : sig_creation_time -> (a, sig_creation_time) subpacket
   | Sig_expiration_time :
       sig_expiration_time -> (b, sig_expiration_time) subpacket
@@ -146,6 +147,7 @@ let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_
   | Issuer_fingerprint _ -> Issuer_fingerprint
   | Preferred_hash_algorithms _ -> Preferred_hash_algorithms
   | Preferred_symmetric_algorithms _ -> Preferred_symmetric_algorithms
+  | Preferred_compression_algorithms _ -> Preferred_compression_algorithms
   | Embedded_signature _ -> Embedded_signature
   | Key_server_preferences _ -> Key_server_preferences
   | Issuer_keyid _ -> Issuer_keyid
@@ -198,6 +200,10 @@ and pp_signature_subpacket ppf (pkt) =
     Fmt.pf fmt "%a"
       Fmt.(brackets @@ hvbox ~indent:2 @@
            list ~sep:(unit "; ") pp_symmetric_algorithm) algos
+  | Preferred_compression_algorithms algos ->
+    Fmt.pf fmt "%a"
+      Fmt.(brackets @@ hvbox ~indent:2 @@
+           list ~sep:(unit "; ") pp_compression_algorithm) algos
   | Embedded_signature em_sig -> Fmt.pf fmt "@[%a@]" Cs.pp_hex em_sig
   | Key_server_preferences cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
   | Reason_for_revocation reason -> Fmt.pf fmt "%S" reason
@@ -471,6 +477,8 @@ and cs_of_signature_subpacket pkt =
     Ok (Cs.concat @@ List.map cs_of_hash_algorithm algos)
   | Preferred_symmetric_algorithms algos ->
     Ok (Cs.concat @@ List.map cs_of_symmetric_algorithm algos)
+  | Preferred_compression_algorithms algos ->
+    Ok (Cs.concat @@ List.map cs_of_compression_algorithm algos)
   | Reason_for_revocation str -> Ok (Cs.of_string str)
   | Embedded_signature embedded -> Ok embedded
   | Issuer_keyid cs
