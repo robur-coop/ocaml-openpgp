@@ -90,3 +90,5 @@ The spec is included in this repository in the rfc/ subdirectory.
   - [CPAN package](https://metacpan.org/pod/Crypt::OpenPGP)
 - [PGPy (Python)](https://github.com/SecurityInnovation/PGPy/)
 - [Bigloo (Scheme?)](https://www-sop.inria.fr/indes/fp/Bigloo/doc/bigloo-16.html#OpenPGP)
+- [NeoPG (C++/Botan)](https://neopg.io)
+- [Sequoia-PGP (Rust/libnettle)](https://sequoia-pgp.org/)
