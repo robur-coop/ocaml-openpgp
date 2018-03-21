@@ -1010,7 +1010,7 @@ let s2k_count_of_char c =
   count
 
 let char_of_s2k_count count =
-  (* char rounded up to nearest valid count *)
+  (* returns char representation of [count] rounded up to nearest valid count *)
   (* The spec doesn't specify the algorithm for encoding the count.
      The following python code implements it:
      def x1(y): return (max(int(math.floor(math.log(y,2)))-10, 0)<<4)
@@ -1018,10 +1018,20 @@ let char_of_s2k_count count =
      def char_of_count(y): return x1(y) + x2(y)
   *)
   let to_c count =
-    let log2_floor n = log (float_of_int n) /. log(2.)
-                       |> floor |> int_of_float in
-    let x1 = (max 0 (~-10 + log2_floor count)) lsl 4 in
-    let x2 = (count lsr (~-4 + log2_floor count)) -16 in
+    let log2 v =
+      (* see https://graphics.stanford.edu/~seander/bithacks.html#IntegerLog *)
+      let (>) a b = if a > b then 1 else 0 in
+      let r = (v > 0xFFFF) lsl 4 in
+      let v = v lsr r in
+      let shift = (v > 0xFF) lsl 3 in
+      let v,r = v lsr shift, r lor shift in
+      let shift = (v > 0xF) lsl 2 in
+      let v, r = v lsr shift, r lor shift in
+      let shift = (v > 0x3) lsl 1 in
+      let v, r = v lsr shift, r lor shift in
+      r lor (v lsr 1) in
+    let x1 = (max 0 (log2 count -10)) lsl 4 in
+    let x2 = (count lsr (log2 count -4)) -16 in
     x1 + x2 in
   let count = max 0x400 (min count 0x3e0_0000) in
   let code = to_c count in
