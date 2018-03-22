@@ -180,6 +180,8 @@ let decode_ascii_armor (buf : Cs.t) =
 let parse_packet_body packet_tag pkt_body
   : (packet_type, [> `Msg of string | `Incomplete_packet ]) result =
   begin match packet_tag with
+    | Compressed_data_packet_tag ->
+      R.error_msg "Compressed data packet not allowed in this context."
     | Literal_data_packet_tag ->
       R.error_msg "Literal data packet not allowed in this context."
     | Encrypted_packet_tag ->
@@ -627,7 +629,7 @@ struct
          RFC 4880: 13.3.1: If the preferences are not present, then they are
          assumed to be [ZIP(1), Uncompressed(0)].*)
       |> SubpacketMap.upsert Preferred_compression_algorithms
-        (Preferred_compression_algorithms [ Uncompressed ])
+        (Preferred_compression_algorithms [ ZLIB ; Uncompressed ])
     in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;

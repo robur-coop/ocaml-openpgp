@@ -4,6 +4,8 @@ B _build/lib
 PKG cs cstruct rresult nocrypto usane hex logs
 PKG topkg
 
+PKG decompress
+
 PKG cmdliner
 PKG fpath
 PKG bos

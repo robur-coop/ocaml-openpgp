@@ -127,19 +127,36 @@ let do_decrypt _ current_time secret_file target_file =
   >>=fun (sym_algo, dec) ->
   Logs.debug (fun m -> m"key: %a" Cs.pp_hex dec) ;
   Encrypted_packet.decrypt ~key:dec data >>= fun payload ->
-  Types.consume_packet_header payload >>= fun (header, payload) ->
-  Types.consume_packet_length header.Types.length_type payload
-  >>= fun (payload, rest) ->
-  Types.true_or_error (0 = Cs.len rest)
-    (fun m -> m "Extraneous data in decrypted payload") >>= fun () ->
-  (* TODO parse payload as literal data packet _OR_ compressed data packet*)
-  begin match header.Types.packet_tag with
-    | Types.Literal_data_packet_tag ->
+  let consume_all payload =
+    Types.consume_packet_header payload >>= fun (header, payload) ->
+    Logs.debug (fun m -> m "Got header %a" Types.pp_packet_header header );
+    Types.consume_packet_length header.Types.length_type payload
+    >>= fun (payload, rest) ->
+    Types.true_or_error (0 = Cs.len rest)
+      (fun m -> m "Extraneous data in decrypted payload")
+    >>| fun () -> header, payload
+  in
+  let handle_literal payload =
       Literal_data_packet.parse payload
       >>= fun (Literal_data_packet.In_memory_t (_,acc) as pkt) ->
       let msg = String.concat "" acc in
       Logs.debug (fun m -> m "ph: %a@ msg:@,%S"
-                  Literal_data_packet.pp pkt msg); Ok msg
+                     Literal_data_packet.pp pkt msg); Ok msg
+  in
+  consume_all payload >>= fun (header,payload) ->
+  begin match header.Types.packet_tag with
+    | Types.Literal_data_packet_tag ->
+      handle_literal payload
+    | Types.Compressed_data_packet_tag ->
+      Logs.debug (fun m -> m "compressed packet:@,%a" Cs.pp_hex payload);
+      Compressed_packet.parse
+        (Cs.R.of_cs (R.msg "Unexpected end of compressed plaintext") payload)
+      >>| Cs.of_string >>= fun decompressed ->
+      Logs.debug (fun m -> m "decompressed: %a" Cs.pp_hex decompressed);
+      consume_all decompressed >>| snd >>= fun xxx ->
+      Logs.debug (fun m -> m "xxx: %a" Cs.pp_hex xxx);
+      handle_literal xxx
+    (* TODO check that header does indeed contain a literal data packet*)
     | unexpected_tag -> R.error_msgf "Expected Literal Data in message, got %a"
                           Types.pp_packet_tag unexpected_tag
   end >>| fun msg -> print_string msg

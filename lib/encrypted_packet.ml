@@ -30,9 +30,6 @@ let pp (type kind) fmt : kind t -> unit = function
 
 open Rresult
 
-let parse_literal_data_packet =
-  Literal_data_packet.parse
-
 let parse_payload cs =
   Types.consume_packet_header cs
 

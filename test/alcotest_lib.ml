@@ -40,6 +40,14 @@ let test_signature_subpacket_char () =
       (signature_subpacket_tag_of_char c |> char_of_signature_subpacket_tag)
   done
 
+let test_packet_header () =
+  for i = 0 to 255 do
+    Alcotest.(check unit) ("doesn't crash " ^ (string_of_int i)
+                           ^ "->" ^ Char.(escaped @@ chr i))
+      ()
+      ( match Types.packet_header_of_char (Char.chr i) with | _ -> () )
+  done
+
 let test_signature_subpacket_map () =
   let open Signature_packet in
   let open SubpacketMap in
@@ -293,6 +301,7 @@ let tests =
     "utilities",
     [ "S2K count_of_char", `Quick, test_s2k_count_of_char ;
       "packet length self-check", `Quick, test_packet_length_selfcheck ;
+      "packet header", `Quick, test_packet_header ;
       "signature subpacket map", `Quick, test_signature_subpacket_map ;
       (* TODO ping the rnp people with the vectors I collected
          https://github.com/riboseinc/rnp/issues/372*)

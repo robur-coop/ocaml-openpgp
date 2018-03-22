@@ -254,6 +254,7 @@ type packet_tag_type = (* TODO add comments with gpg constants for these: *)
   | Encrypted_packet_tag
   | Public_key_encrypted_session_packet_tag
   | Literal_data_packet_tag
+  | Compressed_data_packet_tag
 
 let pp_packet_tag ppf v =
   Fmt.string ppf @@ match v with
@@ -267,6 +268,7 @@ let pp_packet_tag ppf v =
   | Trust_packet_tag -> "trust packet"
   | Encrypted_packet_tag -> "Encrypted packet"
   | Literal_data_packet_tag -> "Literal Data Packet"
+  | Compressed_data_packet_tag -> "Compressed Data Packet"
   | Public_key_encrypted_session_packet_tag ->
     "Public-Key encrypted session packet"
 
@@ -280,7 +282,7 @@ let packet_tag_enum =
   ; ('\005', Secret_key_tag)
   ; ('\006', Public_key_tag)
   ; ('\007', Secret_subkey_tag)
-    (* '\008', Compressed Data Packet *)
+  ; '\008', Compressed_data_packet_tag
     (* '\009', Symmetrically Encrypted Data Packet *)
     (* '\010', Marker Packet *)
   ; '\011', Literal_data_packet_tag
@@ -822,20 +824,22 @@ type packet_length_type =
   | One_octet
   | Two_octet
   | Four_octet
-  (* | Partial_length - TODO: Not clear to me if this is ever used in practice. seems a bit uselesss, and tricky to implement due to the extended state machine required. *)
+  | Indeterminate_length (* V3: until end of file.
+                            V4: not implemented "Partial Length" misfeature.*)
 
 let pp_packet_length_type fmt t =
   (Fmt.parens Fmt.string) fmt
-    (match t with
+    @@ match t with
     | One_octet -> "one octet"
     | Two_octet -> "two octet"
-    | Four_octet -> "four octet")
+    | Four_octet -> "four octet"
+    | Indeterminate_length -> "indeterminate length"
 
 let packet_length_type_enum =
-  [ (0 , One_octet)
-  ; (1 , Two_octet)
-  ; (2 , Four_octet)
-(*; (3 , Partial_length)*)
+  [ 0 , One_octet
+  ; 1 , Two_octet
+  ; 2 , Four_octet
+  ; 3 , Indeterminate_length
   ]
 
 let packet_length_type_of_size = function
@@ -901,7 +905,7 @@ let v3_packet_length_of_cs (e:'e) buf = function
       Cs.BE.e_get_uint16 e buf 0 >>| fun length -> (2, Uint32.of_int length)
   | Four_octet ->
       Cs.BE.e_get_uint32 e buf 0 >>| fun length -> (4, (length :> Uint32.t))
-  (*| Partial_length -> R.error (`Unimplemented_feature "partial_length") *)
+  | Indeterminate_length -> Ok (0, Cs.len buf |> Int32.of_int)
 
 let consume_packet_length length_type buf :
   (Cs.t * Cs.t,
@@ -930,13 +934,22 @@ type packet_header =
   ; new_format  : bool
   }
 
+let pp_packet_header fmt { length_type ; packet_tag ; new_format } =
+  Fmt.pf fmt "{@[<v> length_type = %a@ \
+              packet_tag = %a@ \
+              new_format = %a@]}"
+    Fmt.(option pp_packet_length_type) length_type
+    pp_packet_tag packet_tag
+    Fmt.bool new_format
+
 let char_of_packet_header ph : (char,'error) result =
   begin match ph with
   | { new_format = true ; packet_tag ; length_type = None } ->
       (1 lsl 6) lor (* 1 bit, new_format = true *)
       (int_of_packet_tag_type packet_tag) (* 6 bits*)
       |> R.ok
-    | { new_format ; packet_tag ; length_type = Some length_type } when new_format = false ->
+  | { new_format ; packet_tag ; length_type = Some length_type
+    } when new_format = false ->
       ((int_of_packet_length_type length_type) land 0x3) (* 2 bits *)
       lor (((int_of_packet_tag_type packet_tag) land 0xf) lsl 2) (* 4 bits *)
       |> R.ok
@@ -969,17 +982,14 @@ let packet_header_of_char (c : char)
       | false ->
         packet_tag_type_of_char (Char.chr (bits_5_through_2 c_int))
         >>= fun packet_tag ->
-        let length_type =
-          bits_1_through_0 c_int
-          |> packet_length_type_of_int
-          |> R.get_ok
-        in
-        R.ok (packet_tag, Some length_type)
-    end >>= fun (packet_tag , length_type) ->
-  Ok { length_type
-     ; packet_tag
-     ; new_format
-     }
+        ( let length_int = bits_1_through_0 c_int in
+          packet_length_type_of_int length_int
+          |> R.reword_error ( fun `Unmatched_enum_value ->
+              R.msgf "Invalid packet length for %a: %d [old format: 0x%02x]"
+                pp_packet_tag packet_tag length_int (Char.code c)
+            ) ) >>| fun length_type -> packet_tag, Some length_type
+    end >>| fun (packet_tag , length_type) ->
+    { length_type ; packet_tag ; new_format }
 
 let consume_packet_header buf :
   ((packet_header * Cs.t), [> `Msg of string | `Incomplete_packet]) result =
@@ -991,7 +1001,8 @@ let v4_verify_version (buf : Cs.t) :
   (unit, [> `Msg of string | `Incomplete_packet]) result =
   Cs.e_get_char `Incomplete_packet buf 0 >>= fun version ->
   if version <> '\x04' then
-    error_msg (fun m -> m "Expected OpenPGP version 4, got v. %d" (Char.code version))
+    error_msg (fun m -> m "Expected OpenPGP version 4, got v. %d"
+                  (Char.code version))
   else
     R.ok ()
 
@@ -1006,8 +1017,7 @@ let s2k_count_of_char c =
   *)
   let c = Char.code c in
   let expbias = 6 in
-  let count = (16 + (c land 15)) lsl ((c lsr 4) + expbias) in
-  count
+  ( 16 + (c land 15) ) lsl ( (c lsr 4) + expbias )
 
 let char_of_s2k_count count =
   (* returns char representation of [count] rounded up to nearest valid count *)
