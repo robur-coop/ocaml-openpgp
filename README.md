@@ -36,7 +36,8 @@ The library currently depends on the unreleased `Usane` library for unsigned
 ```bash
 opam pin add -n usane 'https://github.com/hannesm/usane.git'
 opam pin add -n cs 'https://github.com/cfcs/ocaml-cs.git'
-opam install alcotest bos cmdliner cs cstruct fmt fpath hex logs \
+opam pin add -n gmap 'https://github.com/hannesm/gmap.git'
+opam install alcotest bos cmdliner cs cstruct fmt fpath gmap hex logs \
              nocrypto ptime qcheck rresult usane topkg
 ocaml pkg/pkg.ml build
 ```
@@ -92,3 +93,5 @@ The spec is included in this repository in the rfc/ subdirectory.
 - [Bigloo (Scheme?)](https://www-sop.inria.fr/indes/fp/Bigloo/doc/bigloo-16.html#OpenPGP)
 - [NeoPG (C++/Botan)](https://neopg.io)
 - [Sequoia-PGP (Rust/libnettle)](https://sequoia-pgp.org/)
+- [pbp "pretty bad protocol" (Rust/libdalek)](https://github.com/withoutboats/pbp)
+  - see also the author's [git commit signing tool](https://github.com/withoutboats/bpb)
