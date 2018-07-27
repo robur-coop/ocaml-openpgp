@@ -5,6 +5,7 @@ This library implements rudimentary support for OpenPGP as used with signatures.
 
 Right now it's a work in progress and should not be used for anything critical to security in a real-world situation.
 
+- Decryption of messages to the root key seems to work.
 - Encryption is being worked on.
 
 - Supporting El-Gamal and elliptic curve keys are out of scope due to lack of support for these in [nocrypto](https://github.com/mirleft/nocrypto).
@@ -62,6 +63,8 @@ It can currently:
 - Derive a public key from a private key (`opgp convert`)
 - Verify a detached signature (`opgp verify`)
 - List packets contained in armored or binary PGP streams (`opgp list-packets`)
+- Decrypt messages to RSA root keys
+  - Decompress ZIP(RFC1951) and ZLIB messages - BZip2 is still missing
 
 ### Resources
 
