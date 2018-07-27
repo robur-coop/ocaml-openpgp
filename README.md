@@ -37,6 +37,7 @@ The library currently depends on the unreleased `Usane` library for unsigned
 opam pin add -n usane 'https://github.com/hannesm/usane.git'
 opam pin add -n cs 'https://github.com/cfcs/ocaml-cs.git'
 opam pin add -n gmap 'https://github.com/hannesm/gmap.git'
+opam pin add -n nocrypto -k git 'https://github.com/mirleft/ocaml-nocrypto.git#79d5db2488e338d161d7e170cd681a8120ce07d1'
 opam install alcotest bos cmdliner cs cstruct fmt fpath gmap hex logs \
              nocrypto ptime qcheck rresult usane topkg
 ocaml pkg/pkg.ml build

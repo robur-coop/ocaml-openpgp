@@ -1,6 +1,6 @@
 env:
   global:
-    - PINS="usane:https://github.com/hannesm/usane.git cs:https://github.com/cfcs/ocaml-cs.git nocrypto:https://github.com/mirleft/ocaml-nocrypto#master"
+    - PINS="usane:https://github.com/hannesm/usane.git cs:https://github.com/cfcs/ocaml-cs.git nocrypto:https://github.com/mirleft/ocaml-nocrypto.git#79d5db2488e338d161d7e170cd681a8120ce07d1 gmap:https://github.com/hannesm/gmap.git"
     - PACKAGE="openpgp"
     - OPAM_VERSION=1.2.2
   matrix:

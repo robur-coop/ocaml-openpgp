@@ -285,10 +285,11 @@ let parse_secret_packet buf : (private_key, 'error) result =
 
   (* The "(sum octets) mod 65536" checksum: *)
   Cs.e_split `Incomplete_packet checksum_tl 2 >>= fun (csum, buf_tl) ->
-  let computed_sum =
-      let asf_portion = Cs.sub_unsafe asf_cs 0 (Cs.len asf_cs - Cs.len checksum_tl) in
-      two_octet_checksum asf_portion
-  in
+  ( Cs.sub asf_cs 0 (Cs.len asf_cs - Cs.len checksum_tl)
+    |> log_failed (fun m -> m "Error reading asf_portion")
+    >>| fun asf_portion ->
+    two_octet_checksum asf_portion
+  ) >>= fun computed_sum ->
   true_or_error (Cs.equal computed_sum csum)
     (fun m -> m "Parsing secret key: Invalid mod-65536-checksum: %a <> %a"
         Cs.pp_hex csum Cs.pp_hex computed_sum

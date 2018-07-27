@@ -1,7 +1,7 @@
 true: color(always), bin_annot, safe_string, principal
 true: warn(+A-4-18-41-42-44-48-58)
 "lib": include
-true: package(cs decompress fmt hex logs nocrypto ptime rresult usane)
+true: package(cs checkseum.ocaml decompress fmt hex logs nocrypto ptime rresult usane)
 
 <app/*.*>: package(bos cmdliner fpath logs.cli logs.fmt fmt.cli fmt.tty nocrypto.unix ptime.clock.os)
 <test/*>: package(alcotest bos fpath logs.fmt nocrypto.unix ptime.clock.os)

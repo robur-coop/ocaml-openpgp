@@ -169,12 +169,16 @@ type encrypted_message =
     signatures : Signature.t list ;
   }
 
+val decode_message : ?armored:bool -> Cs.t ->
+  (encrypted_message, [> R.msg | Public_key_packet.parse_error ]) result
+(** [decode_message] is the parsed PGP message before decryption.*)
 
-val decode_message :
-  current_time:Ptime.t ->
-  secret_key:Signature.transferable_secret_key ->
-  ?armored:bool ->
-  Cs.t -> (encrypted_message, [> R.msg | Public_key_packet.parse_error ]) result
+val decrypt_message : current_time:Ptime.t ->
+  secret_key:Signature.transferable_secret_key -> encrypted_message ->
+  (Literal_data_packet.final_state * string,
+   [> R.msg | Public_key_packet.parse_error ]) result
+(** [decrypt_message time key msg] is [msg] decrypted with [key],
+    honouring [time].*)
 
 val new_transferable_secret_key :
   current_time:Ptime.t ->

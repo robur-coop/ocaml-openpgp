@@ -280,10 +280,11 @@ let serialize_packet version (pkt:packet_type) =
     >>| fun packet_header -> Cs.concat [ packet_header
                                        ; serialize_packet_length body_cs ]
   end >>| fun header_cs ->
-  Logs.debug (fun m -> m "serialized packet @[<v>%a@ header: %a@ contents: %a@]"
-               pp_packet pkt
-               Cs.pp_hex header_cs
-               Cs.pp_hex body_cs );
+  Logs.debug
+    (fun m -> m "serialized packet@[<v>@ %a@ header: %a@ contents: %a@]"
+        pp_packet pkt
+        Cs.pp_hex header_cs
+        Cs.pp_hex body_cs );
   Cs.concat [header_cs ; body_cs ]
 
 let next_packet (full_buf : Cs.t) :
@@ -379,6 +380,11 @@ struct
     ; user_attributes = [] (*TODO*)
     ; subkeys = sk.secret_subkeys |> List.map public_subkey_of_private
     }
+
+  let can_decrypt { subpacket_data ; _ } =
+    Signature_packet.SubpacketMap.get Key_usage_flags subpacket_data >>|
+    function Key_usage_flags { encrypt_communications ; _ } ->
+      encrypt_communications
 
   let check_signature_transferable current_time (pk:transferable_public_key)
                                    hash_final signature  =
@@ -535,7 +541,7 @@ struct
       SubpacketMap.upsert Issuer_fingerprint (Issuer_fingerprint (V4,v4_fp))
         signature_subpackets
       |> SubpacketMap.upsert Issuer_keyid
-        (Issuer_keyid (Cs.sub_unsafe v4_fp 12 8))
+        (Issuer_keyid (Cs.exc_sub v4_fp 12 8))
       |> SubpacketMap.add_if_empty Signature_creation_time
         (Signature_creation_time current_time)
     in
@@ -629,7 +635,7 @@ struct
          RFC 4880: 13.3.1: If the preferences are not present, then they are
          assumed to be [ZIP(1), Uncompressed(0)].*)
       |> SubpacketMap.upsert Preferred_compression_algorithms
-        (Preferred_compression_algorithms [ ZLIB ; Uncompressed ])
+        (Preferred_compression_algorithms [ ZLIB ; ZIP ; Uncompressed ])
     in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
@@ -746,6 +752,7 @@ struct
   : ('transferable_key * 'packets,
      [>  `Incomplete_packet | `Msg of string ] as 'error) result
   =
+  (* TODO return certifications *)
   let debug_if_any s = begin function
       | [] -> () | lst -> Logs.debug (fun m -> m ("%s: %d") s (List.length lst))
   end in
@@ -850,8 +857,8 @@ struct
     in
 
     let finalize_key packets root_key uids secret_subkeys =
-      ( {root_key ; uids; secret_subkeys}
-      , packets) |> R.ok
+      Ok ( {root_key ; uids; secret_subkeys}
+         , packets)
     in
     transferable_of_packets ~current_time packets
       take_root_key
@@ -963,10 +970,58 @@ type encrypted_message =
     signatures : Signature.t list ;
   }
 
-let decode_message ~current_time ~secret_key ?armored cs
+let decrypt_message ~current_time
+    ~(secret_key:Signature.transferable_secret_key)
+    {public_sessions ; data; signatures ; symmetric_session = _} =
+  (* TODO check signatures *)
+  Signature.can_decrypt (List.hd (List.hd secret_key.Signature.uids).certifications) ;
+  List.filter (Public_key_encrypted_session_packet.matches_key
+                 secret_key.root_key)
+    public_sessions;
+  Public_key_encrypted_session_packet.decrypt
+    secret_key.Signature.root_key List.(hd public_sessions)
+  >>= fun (sym_algo, dec) ->
+  Logs.debug (fun m -> m "decrypted message using %a"
+                 pp_symmetric_algorithm sym_algo);
+  Encrypted_packet.decrypt ~key:dec data >>= fun payload ->
+  let consume_all payload =
+    Types.consume_packet_header payload >>= fun (header, payload) ->
+    Logs.debug (fun m -> m "Got header %a" Types.pp_packet_header header );
+    Types.consume_packet_length header.Types.length_type payload
+    >>= fun (payload, rest) ->
+    Types.true_or_error (0 = Cs.len rest)
+      (fun m -> m "Extraneous data in decrypted payload")
+    >>| fun () -> header, payload
+  in
+  let handle_literal payload =
+      Literal_data_packet.parse payload
+      >>= fun (Literal_data_packet.In_memory_t (final_state, acc) as pkt) ->
+      let msg = String.concat "" acc in
+      Logs.debug (fun m -> m "ph: %a@ msg:@,%S"
+                     Literal_data_packet.pp pkt msg) ;
+      Ok (final_state, msg)
+  in
+  consume_all payload >>= fun (header,payload) ->
+  begin match header.Types.packet_tag with
+    | Types.Literal_data_packet_tag ->
+      handle_literal payload
+    | Types.Compressed_data_packet_tag ->
+      Logs.debug (fun m -> m "compressed packet:@,%a" Cs.pp_hex payload);
+      Compressed_packet.parse
+        (Cs.R.of_cs (R.msg "Unexpected end of compressed plaintext") payload)
+      >>| Cs.of_string >>= fun decompressed ->
+      Logs.debug (fun m -> m "decompressed: %a" Cs.pp_hex decompressed);
+      consume_all decompressed >>| snd >>= fun literal_data ->
+      Logs.debug (fun m -> m "literal_data: %a" Cs.pp_hex literal_data);
+      handle_literal literal_data
+    (* TODO check that header does indeed contain a literal data packet*)
+    | unexpected_tag -> R.error_msgf "Expected Literal Data in message, got %a"
+                          Types.pp_packet_tag unexpected_tag
+  end
+
+let decode_message ?armored cs
   : (encrypted_message, [> R.msg]) result =
   (* TODO RFC 4880 #section-11.3*)
-  (* *)
   armored_or_not ?armored Ascii_message cs
   >>= parse_packets >>= fun packets ->
   let rec loop (state : [< `Container | `Data
@@ -1002,7 +1057,7 @@ let decode_message ~current_time ~secret_key ?armored cs
     | `Data -> data_packet packets
     | `Trailing (pkt, sigs)-> trailing_packet pkt sigs packets
   in loop `Container ~public:[] packets
-  >>= fun (public_sessions, data, signatures) ->
+  >>=  fun (public_sessions, data, signatures) ->
   (* TODO validation *)
   Ok { public_sessions ; symmetric_session = [] ; data; signatures }
 

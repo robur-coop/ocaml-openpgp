@@ -288,12 +288,12 @@ let test_literal_data_packet () : unit =
       packet @@ Literal_data_packet.serialize t
 
 let test_integrity_dsa () : unit =
-  ["c804eb0fdb2dc64621bbcba01f6e4907";
-   "2b8d620fa5c755b1d34c570e36588d15"]
+  ["5513e173b497fdbcd5877aaf6a30b0f6" ;
+   "2b8d620fa5c755b1d34c570e36588d15" ]
   |> test_integrity_with_algo DSA
 let test_integrity_rsa () : unit =
-  ["175be0644b8281eab828a019a2ab0985";
-   "a86680d3768b7e4f923f87305f7b995e"]
+  ["0e24ca0da59aaafdae0762035222fb78" ;
+   "a86680d3768b7e4f923f87305f7b995e" ]
   |> test_integrity_with_algo RSA_encrypt_or_sign
 
 let tests =

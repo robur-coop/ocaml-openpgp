@@ -22,6 +22,10 @@ val hash : t -> (Cs.t -> unit) -> Types.openpgp_version ->
 (** [hash pkt hash_cb openpgp_version] calls [hash_cb] with the serialized [pkt]
 *)
 
+val matches_key : Public_key_packet.private_key -> t -> bool
+(** [matches_key sk session_packet] is true if [session_packet]
+    references the key id of [sk].*)
+
 val decrypt : Public_key_packet.private_key -> t ->
   (Types.symmetric_algorithm * Cs.t, [> R.msg]) result
 (** [decrypt private_key session_packet] is a tuple of

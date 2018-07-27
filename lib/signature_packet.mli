@@ -1,18 +1,5 @@
 open Rresult
 
-module SubpacketMap :
-sig
-  type 'element t
-  type tag = Types.signature_subpacket_tag
-  val get_opt : tag -> 'element t -> 'element option
-  val get : tag -> 'element t -> ('element, [> R.msg] ) result
-  val upsert : tag -> 'element -> 'element t -> 'element t
-  val add_if_empty : tag -> 'element -> 'element t -> 'element t
-  val to_list : 'element t -> 'element list
-  val empty : 'element t
-  val cardinality : 'a t -> int
-end
-
 type signature_asf =
   | RSA_sig_asf of { m_pow_d_mod_n : Types.mpi } (* PKCS1-*)
   | DSA_sig_asf of { r: Types.mpi; s: Types.mpi; }
@@ -35,6 +22,19 @@ type signature_subpacket =
   | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
   | Features of Types.feature list
   | Unimplemented_subpacket of Types.signature_subpacket_tag * Cs.t
+
+module SubpacketMap :
+sig
+  type 'element t
+  type tag = Types.signature_subpacket_tag
+  val get_opt : tag -> 'element t -> 'element option
+  val get : tag -> 'element t -> ('element, [> R.msg] ) result
+  val upsert : tag -> 'element -> 'element t -> 'element t
+  val add_if_empty : tag -> 'element -> 'element t -> 'element t
+  val to_list : 'element t -> 'element list
+  val empty : 'element t
+  val cardinality : 'a t -> int
+end
 
 type t =
   { signature_type : Types.signature_type ;

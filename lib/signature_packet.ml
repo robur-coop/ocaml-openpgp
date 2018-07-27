@@ -10,60 +10,6 @@ let pp_signature_asf fmt sig_asf =
   | RSA_sig_asf _ -> "RSA signature"
   | DSA_sig_asf _ -> "DSA signature"
 
-module SubpacketMap : sig
-  type 'element t (* TODO s/'element/signature_subpacket/g *)
-  type tag = signature_subpacket_tag
-  val empty : 'a t
-  val cardinality : 'a t -> int
-  val add_if_empty : tag -> 'element -> 'element t -> 'element t
-  val upsert : tag -> 'element -> 'element t -> 'element t
-  val to_list : 'element t -> 'element list
-  val get_opt : tag -> 'element t -> 'element option
-  val get : tag -> 'element t -> ('element,[> R.msg]) result
-end = struct
-  type tag = signature_subpacket_tag
-  type 'element value = {index: int ; tag: tag; element : 'element}
-  type 'element t = {count : int ; lst : 'element value list}
-
-  let empty = {count = 0 ; lst = []}
-  let exists ntag t =
-    t.lst |> List.exists (function
-        | {tag; _ } when ntag = tag -> true
-        | _ -> false )
-
-  let cardinality {count; _ } = count
-  let append tag element t =
-    let count = succ t.count in
-    {count ; lst = {index = count ; tag ; element}::t.lst}
-
-  let add_if_empty (tag:tag) (element:'element) (t:'element t) =
-    if exists tag t then t else append tag element t
-
-  let upsert (tag:tag) (element:'element) (t:'element t) =
-    if exists tag t
-    then
-      {t with
-         lst = t.lst |> List.map
-                 (function| e when e.tag <> tag -> e
-                          | e -> {e with tag; element}) }
-    else
-      append tag element t
-
-  let to_list t = List.rev_map (fun {element;_} -> element) t.lst
-
-  let get_opt tag t =
-    begin try
-        Some (t.lst |> List.find (fun {tag = needle;_} -> tag = needle)
-             |> fun {element ; _} -> element
-             )
-    with Not_found -> None end
-
-  let get tag t =
-    match get_opt tag t with
-    | Some e -> Ok e
-    | None -> err_msg_debug (fun m -> m "SubpacketMap.get: not found")
-end
-
 type signature_subpacket =
   | Signature_creation_time of Ptime.t
   | Signature_expiration_time of Ptime.Span.t
@@ -83,6 +29,61 @@ type signature_subpacket =
   | Features of feature list
   | Unimplemented_subpacket of signature_subpacket_tag * Cs.t
 
+module SubpacketMap : sig
+  type 'element t
+  type tag = signature_subpacket_tag
+  val empty : 'a t
+  val cardinality : 'a t -> int
+  val add_if_empty : tag -> 'element -> 'element t -> 'element t
+  val upsert : tag -> 'element -> 'element t -> 'element t
+  val to_list : 'element t -> 'element list
+  val get_opt : tag -> 'element t -> 'element option
+  val get : tag -> 'element t -> ('element,[> R.msg]) result
+end = struct
+  type tag = signature_subpacket_tag
+  type 'element value = {index: int ; tag: signature_subpacket_tag ;
+                         element : 'element}
+  type 'element t = T : {count : int ; lst : 'element value list} -> 'element t
+
+  let empty = T {count = 0 ; lst = []}
+  let exists ntag (T t) =
+    t.lst |> List.exists (function
+        | {tag; _ } when ntag = tag -> true
+        | _ -> false )
+
+  let cardinality (T {count; _ }) = count
+
+  let append tag element (T t) =
+    let count = succ t.count in
+    T {count ; lst = {index = count ; tag ; element}::t.lst}
+
+  let add_if_empty (tag:tag) (element:'element) (t:'element t) =
+    if exists tag t then t else append tag element t
+
+  let upsert (tag:tag) (element:'element) (T t) =
+    if exists tag (T t)
+    then
+      T {t with
+         lst = t.lst |> List.map
+                 (function| e when e.tag <> tag -> e
+                          | e -> {e with tag; element}) }
+    else
+      append tag element (T t)
+
+  let to_list (T t) = List.rev_map (fun {element;_} -> element) t.lst
+
+  let get_opt tag (T t) =
+    begin try
+        Some (t.lst |> List.find (fun {tag = needle;_} -> tag = needle)
+             |> fun {element ; _} -> element
+             )
+    with Not_found -> None end
+
+  let get tag t =
+    match get_opt tag t with
+    | Some e -> Ok e
+    | None -> err_msg_debug (fun m -> m "SubpacketMap.get: not found")
+end
 
 type t = {
   (* TODO consider some fancy gadt thing here*)
@@ -157,7 +158,8 @@ let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_
 (* [pp] and [pp_signature_subpacket] are mutually recursive because a [t] can
    contain embedded signatures. *)
 let rec pp ppf t =
-  Fmt.pf ppf "{ signature type: [%a]@,; public key algorithm: [%a]@,; hash algorithm: [%a]@,; subpackets: @,%a"
+  Fmt.pf ppf "@[<v>{ signature type: [%a]@,; public key algorithm: [%a]@,\
+              ; hash algorithm: [%a]@,; subpackets: @,%a}@]"
     pp_signature_type t.signature_type
     pp_public_key_algorithm t.public_key_algorithm
     pp_hash_algorithm t.hash_algorithm
@@ -170,45 +172,46 @@ let rec pp ppf t =
 and pp_signature_subpacket ppf (pkt) =
   let tag = signature_subpacket_tag_of_signature_subpacket pkt in
   let pp_tag = pp_signature_subpacket_tag in
-  () |> Fmt.pf ppf "(%a: %a)" pp_tag tag @@ fun fmt () ->
+  () |> Fmt.pf ppf "(%a: @[<v>  %a@])" pp_tag tag @@ fun fmt () ->
   begin match pkt with
     | Features feats ->
       Fmt.pf fmt "[%a]" Fmt.(list ~sep:(unit "; ") pp_feature) feats
-  | Signature_creation_time time -> Fmt.pf fmt "UTC: %a" Ptime.pp time
-  | ( Signature_expiration_time time
-    | Key_expiration_time time) -> Fmt.pf fmt "%a" Ptime.Span.pp time
-  | Key_usage_flags (* TODO also prettyprint unimplemented flags *)
-    { certify_keys = certs
-    ; sign_data = sign_data
-    ; encrypt_communications = enc_comm
-    ; encrypt_storage = enc_store
-    ; authentication = auth
-    ; unimplemented = unimpl_char }
-    -> Fmt.pf fmt "{ @[<v>certify: %b ;@ sign data: %b ;@ encrypt \
-                   communications: %b ;@ encrypt storage: %b ;@ \
-                   authentication: %b ;@ raw decimal char: %C@]}"
-         certs sign_data enc_comm enc_store auth unimpl_char
-  | Issuer_fingerprint (v,fp) -> begin match v with
-      | V3 (*TODO is this valid for V3? *)
-      | V4 -> Fmt.pf fmt "SHA1: %s" (Cs.to_hex fp)
-    end
-  | Preferred_hash_algorithms algos ->
-    Fmt.pf fmt "%a"
-      Fmt.(brackets @@ hvbox ~indent:2 @@
-           list ~sep:(unit "; ") pp_hash_algorithm) algos
-  | Preferred_symmetric_algorithms algos ->
-    Fmt.pf fmt "%a"
-      Fmt.(brackets @@ hvbox ~indent:2 @@
-           list ~sep:(unit "; ") pp_symmetric_algorithm) algos
-  | Preferred_compression_algorithms algos ->
-    Fmt.pf fmt "%a"
-      Fmt.(brackets @@ hvbox ~indent:2 @@
-           list ~sep:(unit "; ") pp_compression_algorithm) algos
-  | Embedded_signature em_sig -> Fmt.pf fmt "@[%a@]" Cs.pp_hex em_sig
-  | Key_server_preferences cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
-  | Reason_for_revocation reason -> Fmt.pf fmt "%S" reason
-  | Issuer_keyid cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
-  | Unimplemented_subpacket (_, cs) -> Fmt.pf fmt "%a" Cs.pp_hex cs
+    | Signature_creation_time time -> Fmt.pf fmt "UTC: %a" Ptime.pp time
+    | ( Signature_expiration_time time
+      | Key_expiration_time time) -> Fmt.pf fmt "%a" Ptime.Span.pp time
+    | Key_usage_flags (* TODO also prettyprint unimplemented flags *)
+        { certify_keys = certs
+        ; sign_data = sign_data
+        ; encrypt_communications = enc_comm
+        ; encrypt_storage = enc_store
+        ; authentication = auth
+        ; unimplemented = unimpl_char }
+      -> Fmt.pf fmt "@[<v>{ @[<v>certify: %b ;@ sign data: %b ;@ encrypt \
+                     communications: %b ;@ encrypt storage: %b ;@ \
+                     authentication: %b ;@ raw decimal char: %C@]}@]"
+           certs sign_data enc_comm enc_store auth unimpl_char
+    | Issuer_fingerprint (v,fp) -> begin match v with
+        | V3 (*TODO is this valid for V3? *)
+        | V4 -> Fmt.pf fmt "SHA1: %s" (Cs.to_hex fp)
+      end
+    | Preferred_hash_algorithms algos ->
+      Fmt.pf fmt "%a"
+        Fmt.(brackets @@ hvbox ~indent:2 @@
+             list ~sep:(unit "; ") pp_hash_algorithm) algos
+    | Preferred_symmetric_algorithms algos ->
+      Fmt.pf fmt "%a"
+        Fmt.(brackets @@ hvbox ~indent:2 @@
+             list ~sep:(unit "; ") pp_symmetric_algorithm) algos
+    | Preferred_compression_algorithms algos ->
+      Fmt.pf fmt "%a"
+        Fmt.(brackets @@ hvbox ~indent:2 @@
+             list ~sep:(unit "; ") pp_compression_algorithm) algos
+    | Embedded_signature em_sig -> Fmt.pf fmt "@[%a@]" Cs.pp_hex em_sig
+    | Key_server_preferences cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
+    | Reason_for_revocation reason -> Fmt.pf fmt "%S" reason
+    | Issuer_keyid cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
+    | Unimplemented_subpacket (_, cs) ->
+      Fmt.pf fmt "(UNIMPLEMENTED): %a" Cs.pp_hex cs
   end
 
 let filter_subpacket_tag (tag:signature_subpacket_tag) =
@@ -275,7 +278,7 @@ let check_signature (current_time : Ptime.t)
     let candidate_pks , fp_mismatched =
       pks |> List.partition (fun pk ->
           let pk_fp = pk.Public_key_packet.v4_fingerprint in
-          let pk_keyid = Cs.sub_unsafe pk_fp 12 8 in
+          let pk_keyid = Cs.exc_sub pk_fp 12 8 in
           (* TODO should check that [pk] has Key_usage_flags {signing=true;_}*)
           Public_key_packet.can_sign pk &&
           begin match issuer_fp, issuer_keyid with
@@ -340,8 +343,7 @@ The signature was not signed by this public key.|}
       in
         e_true `Invalid_signature
           (Nocrypto.Rsa.PKCS1.verify
-             ~hashp:(function | actual when actual = hash_algo -> true
-                              | _ -> false)
+             ~hash:hash_algo
              ~signature:(cs_of_mpi_no_header m_pow_d_mod_n |> Cs.to_cstruct)
              ~key:pub (`Digest (Cs.to_cstruct digest)))
         |> log_failed (fun m -> m "RSA signature validation failed")
@@ -429,7 +431,7 @@ and serialize (t:t) : (Cs.t, [> R.msg]) result =
   (* TODO handle V3 *)
   serialize_hashed V4 t >>= fun hashed ->
   compute_digest t.hash_algorithm hashed
-  >>| (fun digest -> Cs.sub_unsafe digest 0 2) >>= fun two_octet_checksum ->
+  >>| (fun digest -> Cs.exc_sub digest 0 2) >>= fun two_octet_checksum ->
   serialize_asf t.algorithm_specific_data >>| fun asf_cs ->
   Cs.concat [ hashed
               (* length of unhashed subpackets (which we don't support): *)
@@ -501,7 +503,7 @@ let parse_subpacket ~allow_embedded_signatures buf
   : (signature_subpacket, [> `Msg of string]) result =
   Cs.e_split (`Msg "parse_subpacket: e_split") buf 1 >>= fun (tag, data) ->
   let tag_c, is_critical =
-    let tag_i = Cs.get_uint8_unsafe tag 0 in
+    let tag_i = Cs.exc_get_uint8 tag 0 in
     Char.chr (tag_i land 0x7f), (tag_i land 0x80 = 0x80)
     (* RFC 4880: 5.2.3.1.  Signature Subpacket Specification
        Bit 7 of the subpacket type is the "critical" bit.  If set, it
@@ -519,7 +521,7 @@ let parse_subpacket ~allow_embedded_signatures buf
   begin match tag with
   | Key_usage_flags when Cs.len data = 1 ->
       Ok (Some (
-        Key_usage_flags (key_usage_flags_of_char @@ Cs.get_char_unsafe data 0)))
+        Key_usage_flags (key_usage_flags_of_char @@ Cs.exc_get_char data 0)))
   | Features -> Ok (Some (Features (Cs.map_char feature_of_char data)))
   (* Parse timestamps. Note that OpenPGP stores the expiration as an offset from
    * the creation time. *)
@@ -538,7 +540,7 @@ let parse_subpacket ~allow_embedded_signatures buf
       >>= begin function
         | V4 when Cs.len data = 1 + Nocrypto.Hash.SHA1.digest_size ->
           Ok (Some (Issuer_fingerprint (V4,
-                      Cs.(sub_unsafe data 1 Nocrypto.Hash.SHA1.digest_size))))
+                      Cs.(exc_sub data 1 Nocrypto.Hash.SHA1.digest_size))))
         | V3 (*TODO don't think Issuer_fingerprint was a thing in V3? *)
         | V4 -> error_msg (fun m -> m "Invalid issuer fingerprint packet: %a"
                               Cs.pp_hex data)
@@ -549,6 +551,9 @@ let parse_subpacket ~allow_embedded_signatures buf
   | Preferred_symmetric_algorithms ->
     Ok (Some (Preferred_symmetric_algorithms
                 (Cs.map_char symmetric_algorithm_of_char data)))
+  | Preferred_compression_algorithms ->
+    Ok (Some (Preferred_compression_algorithms
+                (Cs.map_char compression_algorithm_of_char data)))
   | Embedded_signature when (*TODO: not*) allow_embedded_signatures ->
     error_msg (fun m -> m "Embedded signatures not allowed in this context")
   | Reason_for_revocation ->

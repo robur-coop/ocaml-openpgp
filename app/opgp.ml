@@ -111,57 +111,17 @@ let do_sign _ current_time secret_file target_file =
   )|> R.reword_error Types.msg_of_error
 
 let do_decrypt _ current_time secret_file target_file =
-  (
-  cs_of_file secret_file >>= fun sk_cs ->
-  cs_of_file target_file >>= fun target_content ->
-  Openpgp.decode_secret_key_block ~current_time sk_cs
-  >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (secret_key,_) ->
-
-  ( Openpgp.decode_message ~current_time ~secret_key target_content
-    |>  R.reword_error Types.msg_of_error)
-  >>= fun {Openpgp.public_sessions ; data; signatures ;
-           symmetric_session = _} ->
-  Logs.debug (fun m -> m "got encrypted msg") ;
-  Public_key_encrypted_session_packet.decrypt
-    secret_key.Openpgp.Signature.root_key List.(hd public_sessions)
-  >>=fun (sym_algo, dec) ->
-  Logs.debug (fun m -> m"key: %a" Cs.pp_hex dec) ;
-  Encrypted_packet.decrypt ~key:dec data >>= fun payload ->
-  let consume_all payload =
-    Types.consume_packet_header payload >>= fun (header, payload) ->
-    Logs.debug (fun m -> m "Got header %a" Types.pp_packet_header header );
-    Types.consume_packet_length header.Types.length_type payload
-    >>= fun (payload, rest) ->
-    Types.true_or_error (0 = Cs.len rest)
-      (fun m -> m "Extraneous data in decrypted payload")
-    >>| fun () -> header, payload
-  in
-  let handle_literal payload =
-      Literal_data_packet.parse payload
-      >>= fun (Literal_data_packet.In_memory_t (_,acc) as pkt) ->
-      let msg = String.concat "" acc in
-      Logs.debug (fun m -> m "ph: %a@ msg:@,%S"
-                     Literal_data_packet.pp pkt msg); Ok msg
-  in
-  consume_all payload >>= fun (header,payload) ->
-  begin match header.Types.packet_tag with
-    | Types.Literal_data_packet_tag ->
-      handle_literal payload
-    | Types.Compressed_data_packet_tag ->
-      Logs.debug (fun m -> m "compressed packet:@,%a" Cs.pp_hex payload);
-      Compressed_packet.parse
-        (Cs.R.of_cs (R.msg "Unexpected end of compressed plaintext") payload)
-      >>| Cs.of_string >>= fun decompressed ->
-      Logs.debug (fun m -> m "decompressed: %a" Cs.pp_hex decompressed);
-      consume_all decompressed >>| snd >>= fun xxx ->
-      Logs.debug (fun m -> m "xxx: %a" Cs.pp_hex xxx);
-      handle_literal xxx
-    (* TODO check that header does indeed contain a literal data packet*)
-    | unexpected_tag -> R.error_msgf "Expected Literal Data in message, got %a"
-                          Types.pp_packet_tag unexpected_tag
-  end >>| fun msg -> print_string msg
-  )|> R.reword_error Types.msg_of_error
-
+  ( cs_of_file secret_file >>= fun sk_cs ->
+    cs_of_file target_file >>= fun target_content ->
+    Openpgp.decode_secret_key_block ~current_time sk_cs
+    >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (secret_key,_) ->
+    ( Openpgp.decode_message target_content
+      |>  R.reword_error Types.msg_of_error)
+    >>= Openpgp.decrypt_message ~current_time ~secret_key
+    >>| fun ({ Literal_data_packet.filename ; _}, decrypted) ->
+    Logs.info (fun m -> m "Suggested filename: %S" filename) ;
+    print_string decrypted
+  ) |> R.reword_error Types.msg_of_error
 
 open Cmdliner
 

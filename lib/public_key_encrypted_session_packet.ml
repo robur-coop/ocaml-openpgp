@@ -113,6 +113,9 @@ let parse_session_key cs_r =
   (* Check that it's empty, and return: *)
   Cs.R.equal_string cs_r "" >>| fun () -> algo, key
 
+let matches_key private_key t =
+  String.equal t.key_id Public_key_packet.(v4_key_id private_key.public)
+
 let decrypt (private_key : Public_key_packet.private_key) (t:t) =
   let open Public_key_packet in
   match private_key, t with

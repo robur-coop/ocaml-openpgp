@@ -129,15 +129,16 @@ let decrypt_streaming ((Decryption state) as t) ciphertext =
   begin match Cs.len ciphertext >= block_size with
     | true ->
       get_block ciphertext >>= fun (c_octets, c_rest) ->
-      dec t c_octets >>| fun (Decryption state, plaintext) ->
+      dec t c_octets >>= fun (Decryption state, plaintext) ->
       let rest = opt_of_cs c_rest in
       if state.skip = 0 then
-        (plaintext, Decryption {state with prepend = None}, rest)
+        Ok (plaintext, Decryption {state with prepend = None}, rest)
       else begin
         let consumed = min state.skip block_size in
-        (Cs.sub_unsafe plaintext consumed (block_size - consumed),
-         Decryption {state with prepend = None; skip = state.skip - consumed},
-         rest)
+        Cs.sub plaintext consumed (block_size - consumed) >>| fun decrypted ->
+        ( decrypted,
+          Decryption {state with prepend = None; skip = state.skip - consumed},
+          rest)
       end
     | false ->
       Ok ( Cs.empty ,

@@ -539,10 +539,13 @@ let digest_callback hash_algo: (digest_feeder, [> ]) result =
   nocrypto_module_of_hash_algorithm hash_algo >>= fun m ->
   let module H = (val (m)) in
   let t = ref H.empty in
-  let feeder cs = (t := H.feed !t (Cs.to_cstruct cs))
-                  |> log_msg (fun m -> m "%a hashing %d bytes: %a\n"
-                                 pp_hash_algorithm hash_algo
-                                 (Cs.len cs) Cs.pp_hex cs)
+  let feeder cs =
+    (t := H.feed !t (Cs.to_cstruct cs))
+    |> log_msg
+      (fun m -> m "@[<v>%s:@ %a hashing %d bytes:@ %a@]"
+          __LOC__
+          pp_hash_algorithm hash_algo
+          (Cs.len cs) Cs.pp_hex cs)
   in Ok (feeder,
         (fun () -> H.get !t |> Cs.of_cstruct))
 
@@ -739,8 +742,8 @@ let mpis_are_prime lst =
 let cs_of_mpi mpi : (Cs.t, 'error) result =
   let mpi_body = cs_of_mpi_no_header mpi in
   mpi_len mpi_body >>= fun body_bitlen ->
-  Logs.debug (fun m -> m "cs_of_mpi: %d: %a"
-                 body_bitlen Cs.pp_hex mpi_body) ;
+  Logs.debug (fun m -> m "@[<v>%s@ %d bits:@ %a@]"
+                 __LOC__ body_bitlen Cs.pp_hex mpi_body) ;
   let buf = Cs.W.create (2 + body_bitlen/8) in
   Cs.W.uint16 buf body_bitlen ;
   Cs.W.cs buf mpi_body ;
@@ -767,9 +770,10 @@ let consume_mpi buf : (mpi * Cs.t, [> `Incomplete_packet ]) result =
   *)
   Cs.BE.e_get_uint16 `Incomplete_packet buf 0 >>= fun bitlen ->
   let bytelen = (bitlen + 7) / 8 in
-  Logs.debug (fun m -> m "going to read %d:@.%a" bytelen Cs.pp_hex buf) ;
+  Logs.debug (fun m -> m "@[<v>consume_mpi: %s:@ %d bytes:@ %a@]"
+                 __LOC__ bytelen Cs.pp_hex buf) ;
   Cs.e_split ~start:2 `Incomplete_packet buf bytelen >>= fun (this_mpi, tl) ->
-  Logs.debug (fun m -> m "splitmpi");
+  Logs.debug (fun m -> m "%s: splitmpi" __LOC__);
   R.ok (mpi_of_cs_no_header this_mpi, tl)
 
 let crc24 (buf : Cs.t) : Cs.t =
@@ -849,6 +853,8 @@ let packet_length_type_of_size = function
 
 let serialize_packet_length_uint32 (len : Uint32.t) =
   match packet_length_type_of_size len with
+  (* TODO we should not emit Indeterminate_length,
+     but this function is not currently a result type.*)
   | One_octet -> Cs.make_uint8 (Int32.to_int len)
   (* TODO V3: | Two_octet -> Cs.BE.create_uint16 (Int32.to_int len)*)
   | Two_octet ->
@@ -917,14 +923,15 @@ let consume_packet_length length_type buf :
     | Some length -> v3_packet_length_of_cs `Incomplete_packet buf length
   end >>= fun (start , length) ->
   match Uint32.to_int length with
-  | None -> error_msg (fun m -> m "consume_packet_length: Invalid packet length\
-                                   : %ld" length)
+  | None -> error_msg
+              (fun m -> m "consume_packet_length: %s:@ \
+                           Invalid packet length: %ld" __LOC__ length)
   | Some length ->
     Cs.split_result ~start buf length
     |> R.reword_error (function _ ->  `Incomplete_packet)
     >>| fun ((header,_) as pair) ->
-    Logs.debug (fun m -> m "consume_packet_length: consuming %a"
-                   Cs.pp_hex header) ;
+    Logs.debug (fun m -> m "@[<v>consume_packet_length: %s:@ %a@]"
+                   __LOC__ Cs.pp_hex header) ;
     pair
 
 (* https://tools.ietf.org/html/rfc4880#section-4.2 : Packet Headers *)
