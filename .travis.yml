@@ -1,6 +1,6 @@
 env:
   global:
-    - PINS="usane:https://github.com/hannesm/usane.git cs:https://github.com/cfcs/ocaml-cs.git nocrypto:https://github.com/mirleft/ocaml-nocrypto.git'#'79d5db2488e338d161d7e170cd681a8120ce07d1 gmap:https://github.com/hannesm/gmap.git"
+    - PINS="usane:https://github.com/hannesm/usane.git cs:https://github.com/cfcs/ocaml-cs.git nocrypto:https://github.com/hannesm/ocaml-nocrypto.git#safely"
     - PACKAGE="openpgp"
     - OPAM_VERSION=1.2.2
   matrix:
@@ -9,7 +9,6 @@ env:
     - OCAML_VERSION=4.06
 os:
   - linux
-  - osx
 language: c
 install: wget https://raw.githubusercontent.com/ocaml/ocaml-travisci-skeleton/master/.travis-opam.sh
 sudo: required
