@@ -1,6 +1,15 @@
 open Rresult
 open Usane
 
+let pp_red pp = Fmt.styled `Bold @@ Fmt.styled `Red pp
+let pp_green pp = Fmt.styled `Bold @@ Fmt.styled `Green pp
+let pp_red_str = pp_red Fmt.string
+let pp_green_str = pp_green Fmt.string
+
+let pp_bool fmt v = (* print bools in red/green*)
+  Fmt.pf fmt "%a"
+    ((match v with true -> pp_green | false -> pp_red) Fmt.bool) v
+
 let list_find_leading (f : 'a -> ('b,'c) result) (lst : 'a list)
   : ('d list, 'error) result =
   let rec loop acc = function
@@ -37,13 +46,15 @@ let list_take_leading f lst : ('a list * 'b list, 'error) result =
   list_find_leading f lst >>= fun left ->
   Ok (left, list_drop_e_n `Guarded (List.length left) lst |> R.get_ok)
 
-let result_ok_list_or_error (parser : 'a -> ('b,'c) result) (body_lst : 'a list) =
+let result_ok_list_or_error (parser : 'a -> ('b,'c) result)
+    (body_lst : 'a list) =
   (* TODO perhaps this function should be called concat_result or similar *)
   List.fold_left (fun acc -> fun cs ->
-            acc >>= fun acc ->
-            parser cs >>= fun parsed ->
-            R.ok (parsed::acc)
-    ) (Ok []) body_lst >>| List.rev
+      acc >>= fun acc ->
+      parser cs >>= fun parsed ->
+      R.ok (parsed::acc)
+    ) (Ok []) body_lst
+  >>| List.rev
 
 let result_filter f lst =
   (* List.filter returning the elements with Ok results *)
@@ -115,9 +126,9 @@ type feature =
   | Unknown_feature of char
 
 let pp_feature fmt feature =
-  Fmt.string fmt @@ match feature with
-  | Modification_detection -> "Modification Detection"
-  | Unknown_feature c -> Cs.(to_hex @@ of_char c)
+  match feature with
+  | Modification_detection -> Fmt.string fmt "Modification Detection"
+  | Unknown_feature c -> pp_red_str fmt ("Unimpl["^Cs.(to_hex @@ of_char c)^"]")
 
 type hash_algorithm =
   (* RFC 4880: 9.4 Hash Algorithms *)
@@ -183,13 +194,14 @@ let symmetric_algorithm_enum =
   ; '\009', AES256
   ]
 
-let pp_symmetric_algorithm ppf v =
-  Fmt.string ppf @@ match v with
-  | AES128 -> "AES-128"
-  | AES192 -> "AES-192"
-  | AES256 -> "AES-256"
+let pp_symmetric_algorithm fmt v =
+  match v with
+  | AES128 -> Fmt.string fmt "AES-128"
+  | AES192 -> Fmt.string fmt "AES-192"
+  | AES256 -> Fmt.string fmt "AES-256"
   | Unknown_encryption c ->
-    Format.sprintf "Unknown[%02x]" (Char.code c)
+    Fmt.pf fmt "%a" pp_red_str @@
+    Format.sprintf "Unknown[0x%02x]" (Char.code c)
 
 type compression_algorithm =
   | Uncompressed
@@ -360,41 +372,43 @@ type key_usage_flags = (* RFC 4880: 5.2.3.21 Key Flags *)
   ; encrypt_communications : bool
   ; encrypt_storage : bool
   ; authentication : bool
-  ; unimplemented : char
+  ; unimplemented : char list
   }
 
 let empty_key_usage_flags =
   { certify_keys = false; sign_data = false; encrypt_communications = false;
-    encrypt_storage = false; authentication = false; unimplemented = '\000'; }
+    encrypt_storage = false; authentication = false; unimplemented = ['\000']; }
 
-let key_usage_flags_of_char needle =
-  let n = Char.code needle in
-  let bit place = 0 <> n land (1 lsl place) in
-  { certify_keys = bit 0
-  ; sign_data    = bit 1
-  ; encrypt_communications = bit 2
-  ; encrypt_storage = bit 3
-  (* ; whatever = bit 4 *)
-  ; authentication = bit 5
-  ; unimplemented = needle
-  }
+let key_usage_flags_of_cs needle =
+  if Cs.len needle > 0 then
+    let n = Char.code @@ Cs.exc_get_char needle 0 in
+    let bit place = 0 <> n land (1 lsl place) in
+    Ok { certify_keys = bit 0
+       ; sign_data    = bit 1
+       ; encrypt_communications = bit 2
+       ; encrypt_storage = bit 3
+       (* ; whatever = bit 4 *)
+       ; authentication = bit 5
+       ; unimplemented = Cs.map_char (fun c -> c) needle
+       }
+  else Ok empty_key_usage_flags
 
-let char_of_key_usage_flags t =
+let cs_of_key_usage_flags t : Cs.t=
   let bit place = function
     | false -> 0
     | true -> 1 lsl place
   in
-  [ Char.code t.unimplemented
-  ; bit 0 t.certify_keys
-  ; bit 1 t.sign_data
-  ; bit 2 t.encrypt_communications
-  ; bit 3 t.encrypt_storage
-  (*; bit 4 some-other-thing-not-implemented *)
-  ; bit 5 t.authentication
-  ] |> List.fold_left (lor) 0
-  |> Char.chr
-
-let cs_of_key_usage_flags t = char_of_key_usage_flags t |> Cs.of_char
+  Cs.of_list
+  ( ( [ Char.code (List.hd t.unimplemented)
+      ; bit 0 t.certify_keys
+      ; bit 1 t.sign_data
+      ; bit 2 t.encrypt_communications
+      ; bit 3 t.encrypt_storage
+      (*; bit 4 some-other-thing-not-implemented *)
+      ; bit 5 t.authentication
+      ] |> List.fold_left (lor) 0
+      |> Char.chr )
+    :: List.tl t.unimplemented)
 
 type signature_subpacket_tag =
   | Signature_creation_time
@@ -590,7 +604,9 @@ let feature_of_char needle =
       Unknown_feature needle
     )
 
-let char_of_feature needle = find_enum_value needle features_enum |> R.get_ok
+let char_of_feature = function
+  | Unknown_feature ch -> ch
+  | needle -> find_enum_value needle features_enum |> R.get_ok
 
 let hash_algorithm_of_char needle =
   find_enum_sumtype needle hash_algorithm_enum

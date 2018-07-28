@@ -172,7 +172,7 @@ let rec pp ppf t =
 and pp_signature_subpacket ppf (pkt) =
   let tag = signature_subpacket_tag_of_signature_subpacket pkt in
   let pp_tag = pp_signature_subpacket_tag in
-  () |> Fmt.pf ppf "(%a: @[<v>  %a@])" pp_tag tag @@ fun fmt () ->
+  () |> Fmt.pf ppf "(@[<v>%a: %a@])" pp_tag tag @@ fun fmt () ->
   begin match pkt with
     | Features feats ->
       Fmt.pf fmt "[%a]" Fmt.(list ~sep:(unit "; ") pp_feature) feats
@@ -186,10 +186,12 @@ and pp_signature_subpacket ppf (pkt) =
         ; encrypt_storage = enc_store
         ; authentication = auth
         ; unimplemented = unimpl_char }
-      -> Fmt.pf fmt "@[<v>{ @[<v>certify: %b ;@ sign data: %b ;@ encrypt \
-                     communications: %b ;@ encrypt storage: %b ;@ \
-                     authentication: %b ;@ raw decimal char: %C@]}@]"
-           certs sign_data enc_comm enc_store auth unimpl_char
+      ->
+      Fmt.pf fmt "@[<v>{ @[<v>certify: %a ;@ sign data: %a ;@ encrypt \
+                     communications: %a ;@ encrypt storage: %a ;@ \
+                     authentication: %a ;@ raw decimal char: [%a]@]}@]"
+        pp_bool certs pp_bool sign_data pp_bool enc_comm pp_bool enc_store
+        pp_bool auth Fmt.(list ~sep:(unit"; ") (Fmt.fmt "%C")) unimpl_char
     | Issuer_fingerprint (v,fp) -> begin match v with
         | V3 (*TODO is this valid for V3? *)
         | V4 -> Fmt.pf fmt "SHA1: %s" (Cs.to_hex fp)
@@ -206,12 +208,15 @@ and pp_signature_subpacket ppf (pkt) =
       Fmt.pf fmt "%a"
         Fmt.(brackets @@ hvbox ~indent:2 @@
              list ~sep:(unit "; ") pp_compression_algorithm) algos
-    | Embedded_signature em_sig -> Fmt.pf fmt "@[%a@]" Cs.pp_hex em_sig
+    | Embedded_signature em_sig -> Fmt.pf fmt "@[<v>%a@]" Cs.pp_hex em_sig
     | Key_server_preferences cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
     | Reason_for_revocation reason -> Fmt.pf fmt "%S" reason
     | Issuer_keyid cs -> Fmt.pf fmt "%a" Cs.pp_hex cs
     | Unimplemented_subpacket (_, cs) ->
-      Fmt.pf fmt "(UNIMPLEMENTED): %a" Cs.pp_hex cs
+        Fmt.pf fmt "(%a):%a @[<v>%a@]"
+          pp_red_str "UNIMPLEMENTED"
+          (if Cs.len cs > 8 then Fmt.cut else Fmt.nop) ()
+          Cs.pp_hex cs
   end
 
 let filter_subpacket_tag (tag:signature_subpacket_tag) =
@@ -384,13 +389,17 @@ let rec serialize_signature_subpackets subpackets : (Cs.t,[>]) result =
        Cs.concat [ serialize_packet_length_int (Cs.len cs)
                  ; cs ] |> R.ok
     )
+  |> log_failed (fun m -> m "Error while serializing signature subpackets")
   >>| Cs.concat
 
 and serialize_hashed_manual version sig_type pk_algo hash_algo subpacket_data =
   (* Serialize the hashed parts of a signature packet *)
   (* TODO add error handling here:*)
+  Logs.debug (fun m -> m "serializing hashed manual: %s" __LOC__);
   serialize_signature_subpackets subpacket_data >>= fun serialized_subpackets ->
   let subpackets_len = Cs.len serialized_subpackets in
+  Logs.debug (fun m -> m "%s: total length of serialized subpackets: %d"
+                 __LOC__ subpackets_len);
 
   ((true_or_error (subpackets_len < 0xffff))
    (fun m -> m "TODO better error, but failing because subpackets are longer \
@@ -464,28 +473,31 @@ and construct_to_be_hashed_cs t : ('ok,'error) result =
     (SubpacketMap.to_list t.subpacket_data)
 
 and cs_of_signature_subpacket pkt =
+  Logs.debug (fun m -> m "%s" __LOC__);
   begin match pkt with
     | Features feats ->
       Ok (Cs.concat @@
           List.map (fun feat -> char_of_feature feat |> Cs.of_char) feats)
-  | Signature_creation_time time ->
-    Cs.BE.e_create_ptime32 (`Msg "invalid sig creation time") time
-  | ( Signature_expiration_time time
-    | Key_expiration_time time) ->
-    Cs.BE.e_create_ptimespan32 (`Msg "invalid expiry time") time
-  | Key_usage_flags flags -> Ok (cs_of_key_usage_flags flags)
-  | Issuer_fingerprint (v,fp) -> Ok (Cs.concat [cs_of_version v;fp])
-  | Preferred_hash_algorithms algos ->
-    Ok (Cs.concat @@ List.map cs_of_hash_algorithm algos)
-  | Preferred_symmetric_algorithms algos ->
-    Ok (Cs.concat @@ List.map cs_of_symmetric_algorithm algos)
-  | Preferred_compression_algorithms algos ->
-    Ok (Cs.concat @@ List.map cs_of_compression_algorithm algos)
-  | Reason_for_revocation str -> Ok (Cs.of_string str)
-  | Embedded_signature embedded -> Ok embedded
-  | Issuer_keyid cs
-  | Key_server_preferences cs
-  | Unimplemented_subpacket (_ , cs) -> Ok cs (* cs does not contain the tag *)
+    | Signature_creation_time time ->
+      Cs.BE.e_create_ptime32 (`Msg "invalid sig creation time") time
+    | ( Signature_expiration_time time
+      | Key_expiration_time time) ->
+      Cs.BE.e_create_ptimespan32 (`Msg "invalid expiry time") time
+    | Key_usage_flags flags ->
+      Ok (cs_of_key_usage_flags flags)
+    | Issuer_fingerprint (v,fp) -> Ok (Cs.concat [cs_of_version v;fp])
+    | Preferred_hash_algorithms algos ->
+      Ok (Cs.concat @@ List.map cs_of_hash_algorithm algos)
+    | Preferred_symmetric_algorithms algos ->
+      Ok (Cs.concat @@ List.map cs_of_symmetric_algorithm algos)
+    | Preferred_compression_algorithms algos ->
+      Ok (Cs.concat @@ List.map cs_of_compression_algorithm algos)
+    | Reason_for_revocation str -> Ok (Cs.of_string str)
+    | Embedded_signature embedded -> Ok embedded
+    | Issuer_keyid cs
+    | Key_server_preferences cs
+    | Unimplemented_subpacket (_ , cs) ->
+      Ok cs (* cs does not contain the tag *)
   end
   |> log_failed (fun m -> m "Error while serializing signature subpacket: %a"
                     pp_signature_subpacket pkt)
@@ -519,9 +531,8 @@ let parse_subpacket ~allow_embedded_signatures buf
     (Cs.to_hex data)
   ) ;
   begin match tag with
-  | Key_usage_flags when Cs.len data = 1 ->
-      Ok (Some (
-        Key_usage_flags (key_usage_flags_of_char @@ Cs.exc_get_char data 0)))
+    | Key_usage_flags ->
+      key_usage_flags_of_cs data >>| fun x -> Some (Key_usage_flags x)
   | Features -> Ok (Some (Features (Cs.map_char feature_of_char data)))
   (* Parse timestamps. Note that OpenPGP stores the expiration as an offset from
    * the creation time. *)

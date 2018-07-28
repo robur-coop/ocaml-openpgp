@@ -1,5 +1,15 @@
 open Rresult
 
+(* git commit -SKEYIDHERE files
+   /usr/bin/gpg
+   --status-fd=2
+   -b (* detached sig *)
+   -s (* sign *)
+   -a (* create ASCII-armored sig *)
+   -u (* keyid *)
+   "6F16B4AC46B2FB2E5C86716E30543734"...]
+*)
+
 (* TODO set umask when writing files *)
 let cs_of_file name =
   Fpath.of_string name >>= Bos.OS.File.read >>| Cs.of_string

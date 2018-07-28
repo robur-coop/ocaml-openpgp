@@ -100,7 +100,11 @@ let exc_check_pk, exc_check_sk =
     | Error (`Msg s) -> failwith s
   in
   let check pk ~uids ~subkeys =
-    (key_has_uids uids pk >>= fun () -> key_has_subkeys subkeys pk)
+    (key_has_uids uids pk
+     |> log_failed (fun m -> m "KEY DOES NOT HAVE UIDS")
+     >>= fun () ->
+     key_has_subkeys subkeys pk
+     |> log_failed (fun m -> m "KEY DOES NOT HAVE SUBKEYS"))
   in
   inner check
     (fun cs -> cs |> Openpgp.decode_public_key_block ~current_time
@@ -109,7 +113,8 @@ let exc_check_pk, exc_check_sk =
       (Openpgp.Signature.transferable_public_key_of_transferable_secret_key sk))
     (fun cs -> Openpgp.decode_secret_key_block ~current_time ~armored:true cs
       >>| fst |> R.reword_error (function
-            `Incomplete_packet -> `Msg "incomplete packet" | `Msg e -> `Msg e))
+            `Incomplete_packet -> `Msg "incomplete packet"
+          | `Msg e -> `Msg e))
 
 let test_broken_gnupg_maintainer_key () =
   (* This is not a valid transferable public key *)
@@ -161,7 +166,21 @@ let test_openpgpjs_key_002 () =
        exc_check_pk "test/keys/openpgpjs.key.002.pk.asc" ~uids:1 ~subkeys:1 )
 
 let test_openpgpjs_key_003 () = (*RSA with revocations*)
-  let _ = exc_check_pk "test/keys/openpgpjs.key.003.pk.asc" ~uids:1 ~subkeys:1
+  (* ROOT PK C076E634D32B498D ;
+     -  uid certification: "Signature Test"  ;
+     -  uid certification: "Second User" [expiry: 1day]  ;
+       - {self-revoke key 4A63613A4D6E4094: "Hurz"}  ;
+       - {self-revoke key C076E634D32B498D: "Testing Purposes"}  ;
+       - { "Second User": self-certify again without expiration }  ;
+       - { "Second User": certify with key 4A63613A4D6E4094}  ;
+     - subkey:559A986E7DAED341  ;
+       - {revocation sig on that subkey using root PK reason \003}  ;
+       - {binding sig on that subkey by ROOT PK}  ;
+     - subkey:AB1481E31E418F68  ;
+       - {binding sig on that subkey by ROOT PK, 1day expiry}
+     ... so we should not expect only the the "Signature Test" uid:
+  *)
+  let _ = exc_check_pk "test/keys/openpgpjs.key.003.pk.asc" ~uids:1 ~subkeys:0
   in ()
 
 let test_openpgpjs_key_004 () = (* priv_key_rsa *)

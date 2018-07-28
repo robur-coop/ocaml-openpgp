@@ -1,7 +1,7 @@
 opam-version: "1.2"
 maintainer: "root@localhost"
 authors: [ "none" ]
-license: "gopher://license.to.kill"
+license: "AGPL"
 homepage: "https://github.com/cfcs/ocaml-openpgp"
 dev-repo: "https://github.com/cfcs/ocaml-openpgp.git"
 bug-reports: "https://github.com/cfcs/ocaml-openpgp/issues"
@@ -19,10 +19,10 @@ build-test: [
 ]
 
 depends: [
-  "ocamlbuild" { build }
-  "ocamlfind"  { build }
-  "topkg"      { build }
-  "odoc"       { build & doc }
+  "ocamlbuild"
+  "ocamlfind"
+  "topkg"
+  "odoc"       { doc }
   "alcotest"   { test & >= "0.8.0" & < "0.9.0" }
   "cs"
   "decompress" { >=   "0.8" & <   "0.9" }

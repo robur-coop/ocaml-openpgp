@@ -79,7 +79,8 @@ let decode_ascii_armor (buf : Cs.t) =
   end >>= fun (begin_header, buf) ->
 
   Logs.debug (fun m -> m "Checking that armor begins with -----BEGIN PGP...") ;
-  Cs.e_split (`Msg "`Invalid") begin_header (String.length "-----BEGIN PGP ")
+  Cs.e_split (`Msg "`Invalid header")
+    begin_header (String.length "-----BEGIN PGP ")
   >>= fun (begin_pgp, begin_tl) ->
   Cs.e_equal_string (`Msg "Invalid") "-----BEGIN PGP " begin_pgp >>= fun () ->
 
@@ -618,7 +619,7 @@ struct
       in
       SubpacketMap.empty |>
       SubpacketMap.upsert Key_usage_flags
-        (Key_usage_flags { certify_keys = true ; unimplemented = '\000'
+        (Key_usage_flags { certify_keys = true ; unimplemented = ['\000']
                          ; sign_data = true ; encrypt_communications
                          ; encrypt_storage = false ; authentication = false })
       |> SubpacketMap.upsert Key_expiration_time
@@ -698,7 +699,9 @@ struct
     hash_packet V4 hash_cb (Signature_type signature) >>= fun () ->
 
     (* Check that the root key has not expired with this UID *)
-    public_key_not_expired current_time root_pk signature >>= fun () ->
+    ( public_key_not_expired current_time root_pk signature
+      |> log_failed (fun m -> m "root key expired with this UID")
+    ) >>= fun () ->
 
     check_signature current_time [root_pk] hash_final signature
     |> log_failed (fun m -> m "signature check failed on a uid sig")
