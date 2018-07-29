@@ -35,7 +35,7 @@ depends: [
   "usane"
 
   "nocrypto"   { = "0.5.4" }
-  "ppx_sexp_conv" { = "v.0.10.0" }
+  "ppx_sexp_conv" { = "0.10.0" }
 ]
 
 depopts: [
