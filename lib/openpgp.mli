@@ -79,8 +79,7 @@ module Signature : sig
     ((packet_type * Cs.t) list as 't) ->
     (transferable_public_key * 't
      ,
-     [> `Extraneous_packets_after_signature
-     | `Incomplete_packet
+     [> `Incomplete_packet
      | `Msg of string
      ])
       result

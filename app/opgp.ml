@@ -50,7 +50,8 @@ let do_verify _ current_time pk_file detached_file target_file
   Openpgp.decode_public_key_block ~current_time pk_content
   >>= fun (root_pk, _) ->
   Openpgp.decode_detached_signature detached_content >>= fun detached_sig ->
-  begin match Openpgp.Signature.verify_detached_cb ~current_time root_pk detached_sig (file_cb target_file) with
+  begin match Openpgp.Signature.verify_detached_cb
+                ~current_time root_pk detached_sig (file_cb target_file) with
     | Ok `Good_signature ->
       Logs.app (fun m -> m "Good signature!"); Ok ()
     | (Error (`Msg err)) ->

@@ -3,4 +3,5 @@
 \#*.*\#
 _build
 opgp
+opgp-git
 openpgp.install

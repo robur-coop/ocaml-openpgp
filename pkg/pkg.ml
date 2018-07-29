@@ -18,7 +18,9 @@ let () =
   let cli = Conf.value c _cli in
   Ok [ Pkg.mllib ~api:["Openpgp"] "lib/openpgp.mllib";
        Pkg.test "test/alcotest_lib";
-       Pkg.bin ~cond:cli "app/opgp"; ]
+       Pkg.bin ~cond:cli "app/opgp";
+       Pkg.bin ~dst:"opgp-git"  ~cond:cli "app/opgp_git";
+     ]
 (*
   let mirage = Conf.value c mirage in
   let lwt = Conf.value c lwt in

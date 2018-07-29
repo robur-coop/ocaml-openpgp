@@ -66,6 +66,42 @@ It can currently:
 - Decrypt messages to RSA root keys
   - Decompress ZIP(RFC1951) and ZLIB messages - BZip2 is still missing
 
+### Git OpenPGP signing integration
+
+`git` integrates cryptographic signature creation and verification by
+calling out to `gpg`.
+Peter Todd has a nice article about that in the
+[documentation for his OpenTimeStamps project](https://github.com/opentimestamps/opentimestamps-client/blob/master/doc/git-integration.md)
+(which is a separate project that combines `gpg`-signatures with
+date proofs using append-only logs like BitCoin).
+
+A _minimally **GnuPG**-compatible_ program `opgp-git` is provided with
+the `ocaml-openpgp` distribution to replace the use of `gpg` in this scenario.
+- **NB: At the moment only verification is supported,** and only against a
+  single public key contained in `~/opgp-git.asc` - as thus this is not super
+  useful, but is there as an example, and to remind me to fix the API to
+  support some sort of PKI / key database.
+
+To activate it, you will have to change the `gpg.program` variable to
+point to `opgp-git` instead of `gpg`:
+
+```shell
+$ git config --global gpg.program "$(opam config var openpgp:bin)/opgp-git"
+```
+
+- **NOTE** that `opgp-git` **does not** implement the full GnuPG command-line
+interface, it merely implements the handling of the functionality
+expected by `git`, namely `["opgp-git", "--verify", "$file", "-"]` and
+`["opgp-git", "-bsau", "$key"]`.
+See the `gpg.program` entry in `man git-config` for more details.
+
+Once configured, you can "manually" sign commits at commit-time with
+`git commit --gpg-sign=KEYID`, or you can configure git to do this automatically
+(see the `commit.gpgSign` entry in `man git-config` for more details).
+
+- To retrieve the purported PGP key for a Github account, you can add `.gpg` to
+the end of their URL. Example: https://github.com/rootkovska.gpg
+
 ### Resources
 
 The spec is included in this repository in the rfc/ subdirectory.
