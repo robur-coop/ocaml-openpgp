@@ -1,11 +1,11 @@
 OpenPGP library (RFC 4880) [![Build Status](https://travis-ci.org/cfcs/ocaml-openpgp.svg?branch=master)](https://travis-ci.org/cfcs/ocaml-openpgp)
 ===========================================
 
-This library implements rudimentary support for OpenPGP as used with signatures.
+This library implements rudimentary support for OpenPGP as used with signatures,
+and has basic support for decryption of messages.
 
-Right now it's a work in progress and should not be used for anything critical to security in a real-world situation.
+__Right now it's a work in progress and should not be used for anything critical to security in a real-world situation.__
 
-- Decryption of messages to the root key seems to work.
 - Encryption is being worked on.
 
 - Supporting El-Gamal and elliptic curve keys are out of scope due to lack of support for these in [nocrypto](https://github.com/mirleft/nocrypto).
@@ -47,26 +47,31 @@ ocaml pkg/pkg.ml build
 ### Roadmap
 
 - Consider support for inline signatures
-- GPG-agent protocol
+- ~~GPG-agent protocol~~ the GPG-agent protocol is inherently unsafe for
+  signing operations. Other projects (`git`, `qubes`, `enigmail`) seem to
+  implement GnuPG integration by shelling out to the `gpg` cli.
+  Some limited compatibility with that seems more useful to implement.
+- [Git signing / verification](https://git-scm.com/book/en/v2/Git-Tools-Signing-Your-Work), see [section below](#git-openpgp-integration)
 - MirageOS version of [Qubes split-gpg](https://github.com/QubesOS/qubes-app-linux-split-gpg)
 
 ### Cmdline usage
 
 The library ships with a sample application in `app/opgp.ml`.
 
-Usage is available with `--help`.
+**Usage details is available with `opgp --help`.**
 Examples of how to use the application are also given there.
 
 It can currently:
-- Generate a (DSA | RSA) private key (`opgp genkey`)
-- Produce a detached signature on a file (`opgp sign`)
-- Derive a public key from a private key (`opgp convert`)
-- Verify a detached signature (`opgp verify`)
-- List packets contained in armored or binary PGP streams (`opgp list-packets`)
-- Decrypt messages to RSA root keys
+- `opgp genkey`: Generate a (DSA | RSA) private key
+- `opgp sign`: Produce a detached signature on a file
+- `opgp convert`: Derive a public key from a private key
+- `opgp verify`: Verify a detached signature
+- `opgp list-packets`: List packets contained in armored or binary PGP streams
+- `opgp decrypt`: Decrypt messages to RSA root keys
   - Decompress ZIP(RFC1951) and ZLIB messages - BZip2 is still missing
 
-### Git OpenPGP signing integration
+
+### Git / OpenPGP integration
 
 `git` integrates cryptographic signature creation and verification by
 calling out to `gpg`.
@@ -102,13 +107,16 @@ Once configured, you can "manually" sign commits at commit-time with
 - To retrieve the purported PGP key for a Github account, you can add `.gpg` to
 the end of their URL. Example: https://github.com/rootkovska.gpg
 
+
 ### Resources
 
 The spec is included in this repository in the rfc/ subdirectory.
 
 [RFC 4880 - OpenPGP Message Format](rfc/RFC+4880+-+OpenPGP+Message+Format.html)
 
+
 ### Alternative implementations
+
 - [GnuPG (C, using libgcrypt)](https://gnupg.org/)
   - [GnuPG's list of FOSS implementations](https://wiki.gnupg.org/OtherFreeSoftwareOpenPGP)
 - [Keybase PGP (C)](https://github.com/keybase/kbpgp/)
