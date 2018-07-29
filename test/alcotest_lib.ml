@@ -117,7 +117,17 @@ let exc_check_pk, exc_check_sk =
           | `Msg e -> `Msg e))
 
 let test_broken_gnupg_maintainer_key () =
-  (* This is not a valid transferable public key *)
+  (* While the root PK is valid, IMHO the subkey should have an
+     embedded backsig since
+     - the KUF is not critical, meaning it would be legal to skip it
+       (and thus see only that's it's an RSA-sign-or-encrypt key
+     - the KUF specifies that this key may be used for "authentication",
+       which I interpret as a signing operation, thus triggering the requirement
+       for "signing" keys to have a valid backsig.
+       RFC 4880 is pretty unclear in their use of terminology, so this may
+       be contestable.
+     - FWIW GnuPG 2 disagrees and thinks the subkey is fine.
+*)
   let _ = exc_check_pk "test/keys/4F25E3B6.asc" ~uids:1 ~subkeys:0 in ()
 
 let test_gnupg_key_001 () =

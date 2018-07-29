@@ -526,9 +526,11 @@ let parse_subpacket ~allow_embedded_signatures buf
     *)
   in
   let tag = signature_subpacket_tag_of_char tag_c in
-  Logs.debug (fun m -> m "parse_subpacket: going to parse: [%a] %s"
-    pp_signature_subpacket_tag tag
-    (Cs.to_hex data)
+  Logs.debug (fun m -> m "parse_subpacket: going to parse: [%a] \
+                          [critical: %b] %s"
+                 pp_signature_subpacket_tag tag
+                 is_critical
+                 (Cs.to_hex data)
   ) ;
   begin match tag with
     | Key_usage_flags ->
