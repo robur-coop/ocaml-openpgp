@@ -51,7 +51,7 @@ ocaml pkg/pkg.ml build
   signing operations. Other projects (`git`, `qubes`, `enigmail`) seem to
   implement GnuPG integration by shelling out to the `gpg` cli.
   Some limited compatibility with that seems more useful to implement.
-- [Git signing / verification](https://git-scm.com/book/en/v2/Git-Tools-Signing-Your-Work), see [section below](#git-openpgp-integration)
+- [Git signing / verification](https://git-scm.com/book/en/v2/Git-Tools-Signing-Your-Work), see [section below](#git--openpgp-integration)
 - MirageOS version of [Qubes split-gpg](https://github.com/QubesOS/qubes-app-linux-split-gpg)
 
 ### Cmdline usage
@@ -59,6 +59,7 @@ ocaml pkg/pkg.ml build
 The library ships with a sample application in `app/opgp.ml`.
 
 **Usage details is available with `opgp --help`.**
+
 Examples of how to use the application are also given there.
 
 It can currently:
@@ -110,7 +111,7 @@ the end of their URL. Example: https://github.com/rootkovska.gpg
 
 ### Resources
 
-The spec is included in this repository in the rfc/ subdirectory.
+The spec is included in this repository in the `rfc/` subdirectory.
 
 [RFC 4880 - OpenPGP Message Format](rfc/RFC+4880+-+OpenPGP+Message+Format.html)
 
