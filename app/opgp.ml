@@ -69,7 +69,6 @@ let do_convert _ current_time secret_file =
  )|> R.reword_error Types.msg_of_error
 
 let do_genkey _ g current_time uid pk_algo =
-  (* TODO output private key too ; right now only a transferable public key is serialized *)
   Public_key_packet.generate_new ~current_time ?g pk_algo >>= fun root_key ->
   Openpgp.new_transferable_secret_key ~current_time Types.V4
     root_key [uid] []
