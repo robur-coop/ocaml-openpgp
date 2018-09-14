@@ -20,6 +20,8 @@ type t =
     asf : asf;
   }
 
+type symmetric_key = Types.symmetric_algorithm * Cs.t
+
 (* TODO
    An implementation MAY accept or use a Key ID of zero as a "wild card"
    or "speculative" Key ID.  In this case, the receiving implementation
@@ -47,7 +49,7 @@ let serialize t =
        encrypted to a subkey, then the Key ID of this subkey is used
        here instead of the Key ID of the primary key:*)
   Logs.debug (fun m -> m "key_id : %d = %S" (String.length t.key_id) t.key_id);
-  assert (String.length t.key_id = 8) ;
+  assert (String.length t.key_id = 8) ; (*TODO*)
   Cs.W.string w t.key_id ;
   (* - A one-octet number giving the public-key algorithm used:*)
   Cs.W.char w (Types.char_of_public_key_algorithm t.pk_algo) ;
@@ -114,7 +116,8 @@ let parse_session_key cs_r =
   Cs.R.equal_string cs_r "" >>| fun () -> algo, key
 
 let matches_key private_key t =
-  String.equal t.key_id Public_key_packet.(v4_key_id private_key.public)
+  String.equal t.key_id ("\000\000\000\000" ^ "\000\000\000\000") (* wildcard *)
+  || String.equal t.key_id Public_key_packet.(v4_key_id private_key.public)
 
 let decrypt (private_key : Public_key_packet.private_key) (t:t) =
   let open Public_key_packet in
@@ -137,30 +140,30 @@ let decrypt (private_key : Public_key_packet.private_key) (t:t) =
     >>| Cs.R.of_cs (R.msg "Invalid session key") >>= parse_session_key
   | _ -> R.error_msg "Only RSA decryption is implemented"
 
-let create ?g (pk : Public_key_packet.t) symmetric_algo =
-  let open Public_key_packet in
+let create_key ?g symmetric_algo =
   Types.key_byte_size_of_symmetric_algorithm symmetric_algo
   >>= fun key_byte_length ->
+  Ok (symmetric_algo, Nocrypto.Rng.generate ?g key_byte_length |> Cs.of_cstruct)
+
+let create ?g (pk : Public_key_packet.t) (symmetric_key:symmetric_key) =
+  let open Public_key_packet in
   match pk.algorithm_specific_data with
   | RSA_pubkey_encrypt_or_sign_asf key
   | RSA_pubkey_encrypt_asf key ->
-    let symmetric_key = Nocrypto.Rng.generate ?g key_byte_length in
     let key_container = (* GnuPG calls this "DEK" *)
-      Cstruct.concat
-        [ Types.cs_of_symmetric_algorithm symmetric_algo |> Cs.to_cstruct;
-          symmetric_key ;
-          Cs.(Types.two_octet_checksum @@ of_cstruct symmetric_key
-              |> to_cstruct)
-        ]
+      Cs.concat
+        [ Types.cs_of_symmetric_algorithm (fst symmetric_key);
+          (snd symmetric_key) ;
+          Cs.(Types.two_octet_checksum (snd symmetric_key))
+        ] |> Cs.to_cstruct
     in
     let m_pow_e = Nocrypto.Rsa.PKCS1.encrypt ?g ~key key_container
                   |> Cs.of_cstruct
                   |> Types.mpi_of_cs_no_header in
-    Ok ( Cs.of_cstruct symmetric_key,
-         { asf = RSA_message { m_pow_e } ;
-           key_id = Public_key_packet.v4_key_id pk ;
-           pk_algo = Public_key_packet.public_key_algorithm_of_asf
-               pk.algorithm_specific_data ;
-         } )
+    Ok { asf = RSA_message { m_pow_e } ;
+         key_id = Public_key_packet.v4_key_id pk ;
+         pk_algo = Public_key_packet.public_key_algorithm_of_asf
+             pk.algorithm_specific_data ;
+       }
   | _ -> R.error_msg "Only RSA encryption supported; \
                       target public key is not an RSA key"

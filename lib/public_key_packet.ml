@@ -336,6 +336,13 @@ let public_of_private (priv_key : private_key) : t = priv_key.public
 
 let can_sign t =
   (* TODO should also check the Key_usage_flags in the self-signature *)
+  Logs.warn (fun m -> m "public_key_packet: can_sign: not considering KUF");
   match public_key_algorithm_of_asf t.algorithm_specific_data with
   | RSA_sign_only | RSA_encrypt_or_sign | DSA -> true
   | Elgamal_encrypt_only | RSA_encrypt_only -> false
+
+let can_encrypt t =
+  Logs.warn (fun m -> m "public_key_packet: can_encrypt: not considering KUF");
+  match public_key_algorithm_of_asf t.algorithm_specific_data with
+  | RSA_sign_only | DSA -> false
+  | RSA_encrypt_or_sign | Elgamal_encrypt_only | RSA_encrypt_only -> true

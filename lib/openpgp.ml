@@ -66,7 +66,7 @@ let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cs.t)
     ; Cs.of_string "-----END PGP " ; cs_armor_magic ; Cs.of_string "-----\r\n"
     ]
 
-let decode_ascii_armor (buf : Cs.t) =
+let decode_ascii_armor ~allow_trailing (buf : Cs.t) =
   (* see https://tools.ietf.org/html/rfc4880#section-6.2 *)
   let max_length = 73 in (*maximum line length *)
 
@@ -157,14 +157,20 @@ let decode_ascii_armor (buf : Cs.t) =
   end
   >>= fun (end_line, buf) ->
 
-  Logs.debug (fun m -> m "Checking that there is no data after the footer") ;
-  let rec loop buf =
-    match Cs.next_line ~max_length buf with
-    | `Next_tuple (this,tl) ->
-      Cs.e_is_empty (`Msg "packet contains data after footer") this >>= fun () ->
-      loop tl
-    | `Last_line this -> Cs.e_is_empty (`Msg "last armor line is not empty") this
-  in loop buf >>= fun () ->
+  begin if allow_trailing
+    then Ok ()
+    else begin
+      Logs.debug (fun m -> m "Checking that there is no data after the footer");
+      let rec loop buf =
+        match Cs.next_line ~max_length buf with
+        | `Next_tuple (this,tl) ->
+          Cs.e_is_empty (`Msg "packet contains data after footer") this
+          >>= fun () -> loop tl
+        | `Last_line this ->
+          Cs.e_is_empty (`Msg "last armor line is not empty") this
+      in loop buf
+    end
+  end >>= fun () ->
 
   Logs.debug (fun m -> m "Checking that last armor contains correct END footer") ;
   end_line |> Cs.e_equal_string (`Msg "Armored message is missing end block")
@@ -176,7 +182,7 @@ let decode_ascii_armor (buf : Cs.t) =
   | Ascii_message_part_x_of_y _
   | Ascii_message -> "-----END PGP MESSAGE-----"
   end) >>= fun () ->
-  Ok (pkt_type, decoded)
+  Ok (pkt_type, decoded, buf)
 
 let parse_packet_body packet_tag pkt_body
   : (packet_type, [> `Msg of string | `Incomplete_packet ]) result =
@@ -382,20 +388,45 @@ struct
     ; subkeys = sk.secret_subkeys |> List.map public_subkey_of_private
     }
 
-  let can_decrypt { subpacket_data ; _ } =
-    Signature_packet.SubpacketMap.get Key_usage_flags subpacket_data >>|
-    function Key_usage_flags { encrypt_communications ; _ } ->
-      encrypt_communications
+  let key_can_be_used_in_context key_cb kuf_cb key certifications =
+    (* TODO we ignore revocations here since a revoked key should never
+       be constructed? *)
+    key_cb key
+    && List.exists (fun signature ->
+        begin match Signature_packet.SubpacketMap.get Key_usage_flags
+                      signature.subpacket_data with
+        | Ok Key_usage_flags kuf -> kuf_cb kuf
+        | Error _ -> true (* if no KUF then assume it's ok *)
+        end) certifications
 
-  let check_signature_transferable current_time (pk:transferable_public_key)
-                                   hash_final signature  =
-    let pks = pk.root_key :: (pk.subkeys |> List.map (fun k -> k.key)) in
-    (* ^-- TODO filter out non-signing-keys*)
+  let can_encrypt = key_can_be_used_in_context Public_key_packet.can_encrypt
+      (fun kuf -> kuf.encrypt_communications)
+
+  let can_sign = key_can_be_used_in_context Public_key_packet.can_sign
+      (fun kuf -> kuf.sign_data)
+
+  let secret_eligible_keys key_capability_cb tsk =
+    ( (List.map (fun (uid:uid) -> tsk.root_key, uid.certifications) tsk.uids)
+      @ List.map (fun (x:private_subkey) ->
+          x.secret_key, x.binding_signatures) tsk.secret_subkeys)
+    |> List.filter (fun (key, sigs) ->
+        key_capability_cb (Public_key_packet.public_of_private key) sigs)
+    |> List.map fst
+
+  let public_eligible_keys key_capability_cb (tpk:transferable_public_key) =
+    ( (List.map (fun (uid:uid) -> tpk.root_key, uid.certifications) tpk.uids)
+      @ List.map (fun (x:subkey) ->
+          x.key, x.binding_signatures) tpk.subkeys)
+    |> List.filter (fun (key, sigs) -> key_capability_cb key sigs)
+    |> List.map fst
+
+  let check_signature_transferable current_time (tpk:transferable_public_key)
+      hash_final signature  =
+    let pks = public_eligible_keys can_sign tpk in
     check_signature current_time pks hash_final signature
     |> R.reword_error (function
         | `Incomplete_packet ->  R.msg "TODO Incomplete packet"
-        | `Msg x -> `Msg x
-      )
+        | `Msg _ as msg -> msg)
 
   let verify_detached_cb ~current_time (pk:transferable_public_key)
       (signature:t) (cb:(unit -> (Cs.t option, [> R.msg]) result))
@@ -416,17 +447,19 @@ struct
     Logs.debug (fun m -> m "Checking detached signature");
     check_signature_transferable current_time pk hash_final signature
 
-  let verify_detached_cs ~current_time pk signature cs =
+  let verify_detached_cs ~current_time tpk signature cs =
      digest_callback signature.hash_algorithm >>= fun (hash_cb, hash_final) ->
     true_or_error (signature.signature_type = Signature_of_binary_document)
       (fun m -> m "TODO not implemented: we do not handle the newline-\
                    normalized@,(->\\r\\n) signature_type.Signature_of_canon\
-                   ical_text_document") >>= fun () ->
+                   ical_text_document. In this case we got a %a"
+          pp_signature_type signature.signature_type
+      ) >>= fun () ->
     Logs.debug (fun m -> m "hashing detached signature with Cs.t ...");
     hash_cb cs ;
     hash_packet V4 hash_cb (Signature_type signature) >>= fun () ->
     Logs.debug (fun m -> m "Checking detached signature");
-    check_signature_transferable current_time pk hash_final signature
+    check_signature_transferable current_time tpk hash_final signature
 
   let check_signature_on_root_and_subkey ~current_time sig_types
                                           root_pk subkey t =
@@ -581,8 +614,11 @@ struct
        { signature_type ; public_key_algorithm ; hash_algorithm
        ; algorithm_specific_data ; subpacket_data = signature_subpackets}
 
-  let sign_detached_cb ~current_time sk hash_algo ((hash_cb, _) as hash_tuple)
+  let sign_detached_cb ~current_time tsk hash_algo ((hash_cb, _) as hash_tuple)
       io_cb =
+    let keys = secret_eligible_keys can_sign tsk in
+    (if [] = keys then R.error_msgf "" else Ok (List.hd keys)
+    ) >>= fun signing_key ->
     let rec io_loop () =
       io_cb () >>= function
       | None -> Ok ()
@@ -590,53 +626,65 @@ struct
     in
     io_loop () >>= fun () ->
     let subpackets = SubpacketMap.empty in
-    sign ~current_time Signature_of_binary_document sk subpackets
+    sign ~current_time Signature_of_binary_document signing_key subpackets
          hash_algo hash_tuple
 
-  let sign_detached_cs ~current_time secret_key hash_algo target_cs =
+  let sign_detached_cs ~current_time tsk hash_algo target_cs =
+    let keys = secret_eligible_keys can_sign tsk in
+    (if [] = keys then R.error_msgf "" else Ok (List.hd keys)
+    ) >>= fun signing_key ->
     let subpackets = SubpacketMap.empty (* TODO support expiry time *) in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     hash_cb target_cs ;
     sign ~current_time
       Signature_of_binary_document
-      secret_key subpackets
+      signing_key subpackets
       hash_algo hash_tuple
+
+  let with_default_signature_subpackets ?(expires : Ptime.Span.t option)
+      (subpackets: signature_subpacket SubpacketMap.t) =
+    (* TODO limit this function to only deal with certifications *)
+    subpackets
+    (* Tell peers about validity time constraints, if any: *)
+    |> begin match expires with
+      | Some expiry -> SubpacketMap.add_if_empty Key_expiration_time
+                         (Key_expiration_time expiry)
+      | None -> (fun kuf -> kuf) end
+    (* Tell peers that we support MDC checking so they will at least SHA1
+       their encrypted messages to us:*)
+    |> SubpacketMap.add_if_empty Features (Features [Modification_detection])
 
   let certify_uid
       ~(current_time : Ptime.t)
+      ?(expires : Ptime.Span.t option)
+      (subpackets : signature_subpacket SubpacketMap.t)
       (priv_key : Public_key_packet.private_key) uid
     : (Signature_packet.t, [>]) result =
+    (* UIDs (on the root TPK)*)
     (* TODO handle V3 *)
+    begin match Public_key_packet.public_key_algorithm_of_asf
+             priv_key.Public_key_packet.public.
+               Public_key_packet.algorithm_specific_data with
+    | RSA_encrypt_or_sign | RSA_sign_only | DSA -> Ok ()
+    | ( RSA_encrypt_only | Elgamal_encrypt_only) as pk_alg
+      -> R.error_msgf "can't certify UID with an encryption-only key %a"
+           pp_public_key_algorithm pk_alg
+    end >>= fun () ->
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA384 in
     let subpackets : signature_subpacket SubpacketMap.t =
-      let encrypt_communications =
-        match Public_key_packet.public_key_algorithm_of_asf
-                priv_key.Public_key_packet.public.
-                  Public_key_packet.algorithm_specific_data with
-        | RSA_encrypt_or_sign | RSA_encrypt_only -> true
-        | _ -> false (*TODO don't hardcode this *)
-      in
-      SubpacketMap.empty |>
-      SubpacketMap.upsert Key_usage_flags
-        (Key_usage_flags { certify_keys = true ; unimplemented = ['\000']
-                         ; sign_data = true ; encrypt_communications
-                         ; encrypt_storage = false ; authentication = false })
-      |> SubpacketMap.upsert Key_expiration_time
-        (Key_expiration_time (Ptime.Span.of_int_s @@ 86400*365))
-      |> SubpacketMap.upsert Preferred_hash_algorithms
+      (* TODO UIDs need Preferred_*; can't have KUF *)
+      subpackets
+      (* Tell peers about supported hashing algorithms: *)
+      |> SubpacketMap.add_if_empty Preferred_hash_algorithms
         (Preferred_hash_algorithms [SHA384 ; SHA512 ; SHA256])
-      (* Tell peers about the ciphers we support: *)
-      |> SubpacketMap.upsert Preferred_symmetric_algorithms
-        (Preferred_symmetric_algorithms [AES256 ; AES192 ; AES128])
-      (* Tell peers that we support MDC checking so they will at least SHA1
-         their encrypted messages to us:*)
-      |> SubpacketMap.upsert Features (Features [ Modification_detection ])
-      (* specify that we don't support ZIP:
-         RFC 4880: 13.3.1: If the preferences are not present, then they are
-         assumed to be [ZIP(1), Uncompressed(0)].*)
-      |> SubpacketMap.upsert Preferred_compression_algorithms
+      (* Tell peers about supported compression algorithms: *)
+      |> SubpacketMap.add_if_empty Preferred_compression_algorithms
         (Preferred_compression_algorithms [ ZLIB ; ZIP ; Uncompressed ])
+      (* Tell peers about the ciphers we support: *)
+      |> SubpacketMap.add_if_empty Preferred_symmetric_algorithms
+        (Preferred_symmetric_algorithms [AES256 ; AES192 ; AES128])
+      |>  with_default_signature_subpackets ?expires
     in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
@@ -651,24 +699,52 @@ struct
       hash_algo hash_tuple
 
   let certify_subkey ~current_time
-                     (priv_key:Public_key_packet.private_key) subkey
+      ?(expires : Ptime.Span.t option)
+      ~key_usage_flags
+      (priv_key:Public_key_packet.private_key) subkey
     : (Signature_packet.t, [>]) result =
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
     let hash_algo = SHA384 in
+    begin
+      let open Public_key_packet in
+      let subkey_pk = public_of_private subkey in
+      match (can_sign subkey_pk), (can_encrypt subkey_pk), key_usage_flags with
+    (* TODO verify that unimpl = [\000]*)
+      | false, _, kuf when (kuf.certify_keys || kuf.sign_data
+                            || kuf.authentication) ->
+        R.error_msgf "Cannot create a certifyin/signing/authenticating key \
+                      for a key type that is unable to sign data: %a %a"
+          pp_key_usage_flags kuf
+          Public_key_packet.pp_secret subkey
+      | _, false, kuf when(kuf.encrypt_communications || kuf.encrypt_storage) ->
+        R.error_msgf "Cannot create a encryption key \
+                      for a key type that is unable to encrypt data: %a %a"
+          pp_key_usage_flags kuf
+          Public_key_packet.pp_secret subkey
+      | true, true, _ -> Ok ()
+      | _, _, { unimplemented = ['\000'] } -> Ok ()
+      | _ -> R.error_msgf "Cannot create a key with unknown unimplemented KUF \
+                           flags for a keytype that is not able to both \
+                           sign and encrypt data: %a %a"
+          pp_key_usage_flags key_usage_flags
+          Public_key_packet.pp_secret subkey
+    end >>= fun () ->
     let subpackets =
-      SubpacketMap.empty |>
-      SubpacketMap.upsert Key_usage_flags
-        (Key_usage_flags
-           {empty_key_usage_flags with
-            sign_data = Public_key_packet.(can_sign
-                                           @@ public_of_private subkey);})
+      (* Can't have Preferred_*; should have KUF *)
+      SubpacketMap.empty
+      |> SubpacketMap.upsert Key_usage_flags (Key_usage_flags key_usage_flags)
+      |> with_default_signature_subpackets ?expires
     in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
-    hash_packet V4 hash_cb (Public_key_packet
-       (Public_key_packet.public_of_private priv_key)) >>= fun () ->
-    (* TODO add Embedded_signature if the key can be used for signing
-            or certifying other keys *)
+    hash_packet V4 hash_cb
+      (Public_key_packet
+         (Public_key_packet.public_of_private priv_key)) >>= fun () ->
+    (if key_usage_flags.certify_keys || key_usage_flags.authentication then
+       R.error_msgf "Creating a certifying subkey requires an \
+                     Embedded_signature which is currently not implemented.\
+                     Please file a bug report."
+     else Ok () ) >>= fun () ->
     hash_packet V4 hash_cb (Public_key_packet
       (Public_key_packet.public_of_private subkey)) >>= fun () ->
     sign ~current_time
@@ -941,15 +1017,17 @@ let armored_or_not ?armored armor_type cs =
   match armored with
   | Some false -> Ok cs
   | _ ->
-  let decoded = decode_ascii_armor cs in
+  let decoded = decode_ascii_armor ~allow_trailing:false cs in
   begin match armored, decoded with
-  | (Some true | None), Ok (my_armor, cs) when my_armor = armor_type -> Ok cs
-  | None , Error _->
-    Logs.err(fun m -> m "Failed decoding ASCII armor %a, parsing as raw instead"
-                pp_ascii_packet_type armor_type ) ; Ok cs
-  | _ , _ -> error_msg
-      (fun m -> m "Cannot decode OpenPGP ASCII armor of supposed type %a"
-          pp_ascii_packet_type armor_type)
+    | (Some true | None), Ok (my_armor, cs, trailing)
+      when my_armor = armor_type -> Ok cs
+    | None , Error _->
+      Logs.err(fun m -> m "Failed decoding ASCII armor %a, parsing as \
+                           raw instead"
+                  pp_ascii_packet_type armor_type ) ; Ok cs
+    | _ -> error_msg
+             (fun m -> m "Cannot decode OpenPGP ASCII armor of supposed type %a"
+                 pp_ascii_packet_type armor_type)
   end
 
 let decode_public_key_block ~current_time ?armored cs
@@ -976,24 +1054,48 @@ type encrypted_message =
 let decrypt_message ~current_time
     ~(secret_key:Signature.transferable_secret_key)
     {public_sessions ; data; signatures ; symmetric_session = _} =
-  (* TODO check signatures *)
-  Signature.can_decrypt (List.hd (List.hd secret_key.Signature.uids).certifications) ;
-  List.filter (Public_key_encrypted_session_packet.matches_key
-                 secret_key.root_key)
-    public_sessions;
-  Public_key_encrypted_session_packet.decrypt
-    secret_key.Signature.root_key List.(hd public_sessions)
-  >>= fun (sym_algo, dec) ->
+  Logs.warn (fun m -> m "decrypt_message: TODO check signatures") ;
+  let trial_decryption_candidates =
+    List.map
+      (fun key ->
+         let open Public_key_encrypted_session_packet in
+         key, List.filter (matches_key key) public_sessions)
+      (Signature.(secret_eligible_keys can_encrypt) secret_key)
+  in
+  let rec trial_decrypt = function
+    | [] -> R.error_msgf "None of our secret keys could decrypt the message"
+    | (key, sessions)::candidate_tl ->
+      let open Public_key_encrypted_session_packet in
+      let rec trial_decrypt_session = function
+        | [] -> R.error_msgf "No sessions were encrypted for this key"
+        | session::session_tl ->
+          Logs.debug (fun m -> m "Trying to decrypt session %a using key %a"
+                         pp session Public_key_packet.pp_secret key);
+          begin match decrypt key session with
+            | Error _ -> trial_decrypt_session session_tl
+            | Ok _ as res -> res
+          end
+      in
+      begin match trial_decrypt_session sessions with
+        | Ok _ as res ->
+          Logs.info (fun m -> m "Decrypted using key ID %s"
+                        Public_key_packet.(v4_key_id_hex
+                                           @@ public_of_private key)) ;
+          res
+        | Error _ -> trial_decrypt candidate_tl
+      end
+  in trial_decrypt trial_decryption_candidates >>= fun (sym_algo, dec) ->
   Logs.debug (fun m -> m "decrypted message using %a"
                  pp_symmetric_algorithm sym_algo);
   Encrypted_packet.decrypt ~key:dec data >>= fun payload ->
+  Logs.debug (fun m -> m "Decrypted: %a" Cs.pp_hex payload);
   let consume_all payload =
     Types.consume_packet_header payload >>= fun (header, payload) ->
     Logs.debug (fun m -> m "Got header %a" Types.pp_packet_header header );
     Types.consume_packet_length header.Types.length_type payload
     >>= fun (payload, rest) ->
     Types.true_or_error (0 = Cs.len rest)
-      (fun m -> m "Extraneous data in decrypted payload")
+      (fun m -> m "Extraneous data in decrypted payload: %a" Cs.pp_hex rest)
     >>| fun () -> header, payload
   in
   let handle_literal payload =
@@ -1021,6 +1123,22 @@ let decrypt_message ~current_time
     | unexpected_tag -> R.error_msgf "Expected Literal Data in message, got %a"
                           Types.pp_packet_tag unexpected_tag
   end
+
+let encode_message ?(armored=true) (message:encrypted_message) =
+  result_ok_list_or_error
+    (fun ps -> serialize_packet V4 (Public_key_encrypted_session_packet ps))
+        message.public_sessions
+  >>= fun pk_sessions ->
+  (*message.symmetric_session ; (*TODO*)*)
+  serialize_packet V4 (Encrypted_packet message.data) >>= fun data ->
+  result_ok_list_or_error
+    (fun s -> serialize_packet V4 (Signature_type s))
+    message.signatures >>= fun sigs ->
+  let encoded = Cs.concat [Cs.concat pk_sessions; data; Cs.concat sigs] in
+  if armored then
+    encode_ascii_armor Ascii_message encoded
+  else
+    Ok encoded
 
 let decode_message ?armored cs
   : (encrypted_message, [> R.msg]) result =
@@ -1075,22 +1193,55 @@ let decode_detached_signature ?armored cs =
       | [] -> error_msg (fun m -> m "No packets found in supposed detached sig")
       )
 
+let encrypt_message ?rng
+    ~current_time (* time is needed in case we want to sign it*)
+    ~(public_keys:Signature.transferable_public_key list)
+    payload : (encrypted_message, [> R.msg]) result=
+  true_or_error ([] <> public_keys)
+    (fun m -> m "Refusing to encrypt message without recipients") >>= fun () ->
+  (* TODO use Preferred_symmetric_algorithms *)
+  Public_key_encrypted_session_packet.create_key ?g:rng AES256
+  >>= fun symmetric_key ->
+  result_ok_list_or_error
+    (fun tpk ->
+       match Signature.public_eligible_keys Signature.can_encrypt tpk with
+     | [] -> R.error_msgf "No encryption key provided for TPK TODO print id"
+     | recipient::_ ->
+       Public_key_encrypted_session_packet.create ?g:rng recipient symmetric_key
+    ) public_keys >>= fun public_sessions ->
+  (* consume_packet_header -> packet_header_of_char *)
+  (* consume_packet_length -> *)
+  (*  serialize_packet V4 (Literal_data_packet payload) >>= fun encoded_payload ->*)
+  Encrypted_packet.encrypt ?g:rng ~symmetric_key:(snd symmetric_key)
+    payload >>= fun data ->
+  Ok { public_sessions; symmetric_session = [] ; data ; signatures = [] }
+
 let new_transferable_secret_key
     ~(current_time : Ptime.t)
     version
     (root_key : Public_key_packet.private_key)
-      (* TODO revocations *)
+    (* TODO revocations *)
     (uncertified_uids : Uid_packet.t list) (* TODO revocations*)
     (* TODO user_attributes *)
-    (priv_subkeys : Public_key_packet.private_key list) (* TODO revocations*)
+    (priv_subkeys : (Public_key_packet.private_key * key_usage_flags) list)
+  (* TODO revocations*)
   : (Signature.transferable_secret_key, [>]) result =
   if version <> V4 then error_msg (fun x -> x "wrong version %d" 3)
   else
   let () = Logs.debug (fun m -> m "trying to certify UIDs") in
-  (* TODO create relevant signature subpackets *)
+  (* TODO create expiry subpacket *)
+  let subpackets =
+    let open Signature_packet in
+    SubpacketMap.empty
+    |> SubpacketMap.add_if_empty Key_usage_flags
+      (Signature_packet.Key_usage_flags
+         { certify_keys = true ; unimplemented = ['\000']
+         ; sign_data = false ; encrypt_communications = false
+         ; encrypt_storage = false ; authentication = false })
+  in
   uncertified_uids
   |> result_ok_list_or_error (fun uid ->
-      Signature.certify_uid ~current_time root_key uid
+      Signature.certify_uid ~current_time subpackets root_key uid
       >>| fun certification ->
       { Signature.uid ; certifications = [certification] }
   )
@@ -1100,8 +1251,8 @@ let new_transferable_secret_key
     error_msg (fun m ->m "No UIDs given. Need at least one.")
   else
   priv_subkeys |> result_ok_list_or_error
-    (fun subkey ->
-       Signature.certify_subkey ~current_time root_key subkey
+    (fun (subkey, key_usage_flags) ->
+       Signature.certify_subkey ~current_time ~key_usage_flags root_key subkey
        >>| fun certification -> {Signature.secret_key = subkey
                                 ; binding_signatures = [certification]
                                 ; revocations = [] }

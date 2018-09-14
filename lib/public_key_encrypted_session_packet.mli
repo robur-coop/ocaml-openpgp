@@ -1,5 +1,7 @@
 type t
 
+type symmetric_key = (Types.symmetric_algorithm * Cs.t) (* TODO make private ?*)
+
 open Rresult
 
 val parse_packet : Cs.t -> (t, [> `Incomplete_packet | R.msg] )result
@@ -30,13 +32,17 @@ val decrypt : Public_key_packet.private_key -> t ->
   (Types.symmetric_algorithm * Cs.t, [> R.msg]) result
 (** [decrypt private_key session_packet] is a tuple of
     (symmetric algorithm * symmetric key) resulting of the
-    decryption of the [session_packet] using [private_key].
+    decryption of the [session_packet] using {!private_key}.
 *)
 
-val create : ?g:Nocrypto.Rng.g -> Public_key_packet.t ->
-  Types.symmetric_algorithm ->
-  (Cs.t * t, [> R.msg] ) result
-(** [create ?rng target_pk key_byte_length] is a tuple of
-    a key of [key_byte_length] bytes randomly generated using ?rng,
-    and the same random key encrypted to the [target_pk].
+val create_key : ?g:Nocrypto.Rng.g -> Types.symmetric_algorithm ->
+  (symmetric_key, [> R.msg]) result
+(** [create_key ?rng algo] is a {!symmetric_key} of the length mandated
+    by [algo], using the [?rng].
+    TODO consider putting in {!Types}?
+*)
+
+val create : ?g:Nocrypto.Rng.g -> Public_key_packet.t -> symmetric_key ->
+  (t, [> R.msg] ) result
+(** [create ?rng target_pk key] is the [key] encrypted to the [target_pk].
 *)

@@ -215,43 +215,44 @@ let test_integrity_with_algo algo target_hashes : unit =
                      |> function Some time -> time | None -> failwith "x" in
   let g =
     let seed = Cs.of_string "a deterministic seed 9e5cbce8"
-             |> Cs.to_cstruct
+               |> Cs.to_cstruct
     in
     Nocrypto.Rng.create ~seed (module Nocrypto.Rng.Generators.Fortuna) in
-  (Public_key_packet.generate_new ~current_time ~g algo >>= fun root_sk ->
-  Public_key_packet.generate_new ~current_time ~g algo >>= fun subkey_sk ->
-  Openpgp.Signature.sign_detached_cs ~current_time root_sk Types.SHA384
-    message_cs
-  >>= (fun sig_t -> Openpgp.serialize_packet Types.V4
-                      (Openpgp.Signature_type sig_t)
-      )>>= Openpgp.encode_ascii_armor Types.Ascii_signature >>= fun sig_cs ->
-  Openpgp.new_transferable_secret_key ~current_time Types.V4 root_sk
-                                      [uid] [subkey_sk] >>= fun sk ->
+  (
+    (Public_key_packet.generate_new ~current_time ~g algo >>= fun root_sk ->
+     Public_key_packet.generate_new ~current_time ~g algo >>= fun subkey_sk ->
+     Openpgp.new_transferable_secret_key ~current_time Types.V4 root_sk
+       [uid] [subkey_sk, create_key_usage_flags ~sign_data:true ()]
+    ) >>= fun sk ->
+    Openpgp.Signature.sign_detached_cs ~current_time sk Types.SHA384 message_cs
+    >>= (fun sig_t -> Openpgp.serialize_packet Types.V4
+            (Openpgp.Signature_type sig_t)
+        ) >>= Openpgp.encode_ascii_armor Types.Ascii_signature >>= fun sig_cs ->
 
-  Openpgp.serialize_transferable_secret_key Types.V4 sk
-  >>= Openpgp.encode_ascii_armor Types.Ascii_private_key_block
-  >>= fun sk_asc_cs ->
-  Openpgp.decode_secret_key_block ~current_time sk_asc_cs >>| fst
-  >>| Openpgp.Signature.transferable_public_key_of_transferable_secret_key
-  >>= fun root_pk ->
-  key_has_uids 1 root_pk >>= fun () -> key_has_subkeys 1 root_pk >>= fun () ->
-  Openpgp.decode_detached_signature sig_cs
-  >>= fun signature -> Openpgp.Signature.verify_detached_cs ~current_time
-    root_pk signature message_cs
-  >>| fun `Good_signature ->
-  let hashes = List.map (fun x -> Nocrypto.Hash.MD5.digest x
-                                  |> Cs.of_cstruct)
-      (List.map Cs.to_cstruct [sk_asc_cs; sig_cs]) in
-  Logs.app (fun m -> m "%a" (Fmt.list Cs.pp_hex) hashes);
-  (* This test case ensures that we didn't forget to pass the Nocrypo rng (?g)
-     somewhere - being able to deterministically generate keys from a seed is
-     tremendously useful for debugging and for minimizing test vectors: *)
-   Alcotest.(check @@ list a_cs) "deterministic generation of secret key & sig \
-                                  (this checks against a hardcoded hash; did \
-                                  you modify the key generation?)"
-     (List.map (fun h -> Cs.of_hex h |> R.get_ok) target_hashes)
-     hashes ;
-   `Good_signature
+    Openpgp.serialize_transferable_secret_key Types.V4 sk
+    >>= Openpgp.encode_ascii_armor Types.Ascii_private_key_block
+    >>= fun sk_asc_cs ->
+    Openpgp.decode_secret_key_block ~current_time sk_asc_cs >>| fst
+    >>| Openpgp.Signature.transferable_public_key_of_transferable_secret_key
+    >>= fun root_pk ->
+    key_has_uids 1 root_pk >>= fun () -> key_has_subkeys 1 root_pk >>= fun () ->
+    Openpgp.decode_detached_signature sig_cs
+    >>= fun signature -> Openpgp.Signature.verify_detached_cs ~current_time
+      root_pk signature message_cs
+    >>| fun `Good_signature ->
+    let hashes = List.map (fun x -> Nocrypto.Hash.MD5.digest x
+                                    |> Cs.of_cstruct)
+        (List.map Cs.to_cstruct [sk_asc_cs; sig_cs]) in
+    Logs.app (fun m -> m "%a" (Fmt.list Cs.pp_hex) hashes);
+    (* This test case ensures that we didn't forget to pass the Nocrypo rng (?g)
+       somewhere - being able to deterministically generate keys from a seed is
+       tremendously useful for debugging and for minimizing test vectors: *)
+    Alcotest.(check @@ list a_cs) "deterministic generation of secret key & \
+                                   sig (this checks against a hardcoded hash; \
+                                   did you modify the key generation?)"
+      (List.map (fun h -> Cs.of_hex h |> R.get_ok) target_hashes)
+      hashes ;
+    `Good_signature
   ) |> function | Ok `Good_signature -> ()
                 | Error (`Msg s) -> failwith s
                 | Error `Incomplete_packet -> failwith "incomplete packet"
@@ -261,17 +262,25 @@ let test_create_pk_session_packet () : unit =
   let open Public_key_encrypted_session_packet in
   begin match
       pk_of_file "test/keys/gnupg.test.001.pk.asc" >>= fun pk ->
-      create pk.root_key AES256
+      create_key AES256 >>= fun symmetric_key ->
+      create pk.root_key symmetric_key
     with
-    | Ok (key, t) ->
-      Alcotest.(check int) "Length of generated symmetric key is 256 bits"
-        256 (8 * Cs.len key) ;
+    | Ok t ->
+      (*Alcotest.(check int) "Length of generated symmetric key is 256 bits"
+        256 (8 * Cs.len key) ;*)
       Alcotest.(check @@ result pass reject) "Can serialize the message"
         (Ok Cs.empty) (serialize t) ;
       Alcotest.(check @@ result pass reject) "Can parse the serialized message"
         (Ok t) (serialize t >>= parse_packet)
     | Error `Msg s -> failwith s
   end
+
+let test_invalid_key_usage_000 () : unit =
+  (* test/keys/invalid.kuf.000.pk.asc *)
+  (* test/keys/message.001.txt *)
+  (* test/keys/invalid.kuf.000.sig.asc *)
+  (* should fail due to lack of valid KUF *)
+  ()
 
 let test_cfb_fixed () : unit =
   let key = Cs.of_hex "fab932fd112bc4a0184fc64c3a8c2130\
@@ -310,6 +319,8 @@ let test_literal_data_packet () : unit =
     Literal_data_packet.parse packet
   end with
   | Error `Msg s -> failwith s
+  | Ok Literal_data_packet.Streaming_t _ ->
+    Alcotest.(check bool) "Streaming_t not implemented" true false
   | Ok (Literal_data_packet.In_memory_t (_state,acc) as t) ->
     let res = String.concat "" acc in
     Alcotest.(check @@ string) "parsing literal data packet" "abcdef" res ;
@@ -317,21 +328,21 @@ let test_literal_data_packet () : unit =
       packet @@ Literal_data_packet.serialize t
 
 let test_integrity_dsa () : unit =
-  ["5513e173b497fdbcd5877aaf6a30b0f6" ;
-   "2b8d620fa5c755b1d34c570e36588d15" ]
+  ["cbe6a279e3690265f020788c7e16a053" ;
+   "732a9a5da95d56b9d4e88b8dde391cd7" ]
   |> test_integrity_with_algo DSA
 let test_integrity_rsa () : unit =
-  ["0e24ca0da59aaafdae0762035222fb78" ;
-   "a86680d3768b7e4f923f87305f7b995e" ]
+  [ "5408f870e38db0ee6655c896d855c308";
+    "1eb9d4349ae15d73baffcf891dd057e2" ]
   |> test_integrity_with_algo RSA_encrypt_or_sign
 
 let tests =
   [
-    "utilities",
+    "Utilities",
     [ "S2K count_of_char", `Quick, test_s2k_count_of_char ;
-      "packet length self-check", `Quick, test_packet_length_selfcheck ;
-      "packet header", `Quick, test_packet_header ;
-      "signature subpacket map", `Quick, test_signature_subpacket_map ;
+      "Packet length self-check", `Quick, test_packet_length_selfcheck ;
+      "Packet header", `Quick, test_packet_header ;
+      "Signature subpacket map", `Quick, test_signature_subpacket_map ;
       (* TODO ping the rnp people with the vectors I collected
          https://github.com/riboseinc/rnp/issues/372*)
       (* http://csrc.nist.gov/publications/nistpubs/800-38a/sp800-38a.pdf *)
@@ -339,10 +350,13 @@ let tests =
       "OpenPGP-CFB (hardcoded verified vector)", `Quick, test_cfb_fixed ;
       "OpenPGP-CFB (internal consistency)", `Quick, test_cfb_internal ;
     ]
-  ; "constants",
-    [ "signature subpacket", `Quick, test_signature_subpacket_char ]
+  ; "Constants",
+    [ "Signature subpacket", `Quick, test_signature_subpacket_char ]
   ; "Encryption",
-    [ "create encrypted session packet", `Quick, test_create_pk_session_packet
+    [ "Create encrypted session packet", `Quick, test_create_pk_session_packet
+    ]
+  ; "Signatures",
+    [ "Invalid key usage (000)", `Quick, test_invalid_key_usage_000
     ]
   ; "Parsing keys",
     [ "Fail broken GnuPG maintainer key (4F25E3B6)", `Quick,

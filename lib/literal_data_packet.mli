@@ -63,3 +63,5 @@ val serialize : 'kind t -> Cs.t
     If [t] is a [streaming t], you must use [serialize] to obtain the header
     yourself, and fill in the body yourself.
 *)
+
+val create_binary : string -> string list -> in_memory t

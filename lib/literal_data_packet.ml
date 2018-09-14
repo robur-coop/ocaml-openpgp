@@ -234,3 +234,9 @@ let serialize (type kind) (t: kind t) =
   begin match t with | Streaming_t _ -> state
                | In_memory_t (_, saved) -> String.concat "" (state::saved)
   end |> Cs.of_string
+
+let create_binary filename msg : in_memory t =
+  In_memory_t ({ format = Literal_binary;
+                time = "\000\000\000\000";
+                filename ;
+              }, msg)

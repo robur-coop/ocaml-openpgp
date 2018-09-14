@@ -16,8 +16,8 @@ type _ t =
   | Encrypted : { payload : payload ; (* encrypted payload *)
                   key : Cs.t option ; (* may not be available *)
                 } -> encrypted t
-  | Decrypted : { key : Cs.t ;
-                  payload : payload ; (* decrypted payload *)
+  | Decrypted : { payload : payload ; (* decrypted payload *)
+                  key : Cs.t ;
                 } -> decrypted t
 
 let module_name = "Sym. Encrypted Integrity Protected Data Packet"
@@ -30,17 +30,18 @@ let pp (type kind) fmt : kind t -> unit = function
 
 open Rresult
 
-let parse_payload cs =
-  Types.consume_packet_header cs
+let parse_payload (Decrypted {payload ; key = _}) =
+  Types.consume_packet_header payload
 
 let create ?g ~key data =
   Cfb.encrypt ?g ~key data >>| fun payload ->
   Encrypted { payload ; key = Some key }
 
 let serialize (Encrypted t) =
-  let w = Cs.W.create (1 + Cs.len t.payload) in
+  let w = Cs.W.create (1 + 5 + Cs.len t.payload) in
   (* - A one-octet version number.  The only currently defined value is "1": *)
   Cs.W.char w '\x01' ;
+
   Cs.W.cs   w t.payload ;
   Ok (Cs.W.to_cs w)
 
@@ -62,3 +63,27 @@ let decrypt ?key (Encrypted { payload ; key = stored_key }) =
       | None, Some key) -> Ok key
     | Some provided, Some _stored -> Ok provided
   end >>= fun key -> Cfb.decrypt ~key payload
+
+let encrypt ?g ~symmetric_key plaintext =
+  let literal_plaintext =
+    Literal_data_packet.(
+      serialize (create_binary "" [Cs.to_string plaintext]))
+  in
+  let w = Cs.W.create (5+Cs.len literal_plaintext) in
+  Types.(char_of_packet_header
+                 { new_format = false;
+                   length_type = Some (packet_length_type_of_size
+                                         (Cs.len literal_plaintext
+                                          |> Usane.Uint32.of_int)) ;
+                   packet_tag = Literal_data_packet_tag
+                 }) >>| Cs.W.char w >>= fun () ->
+  Cs.W.cs   w (Types.serialize_packet_length literal_plaintext) ;
+  Cs.W.cs   w literal_plaintext ;
+  let plaintext_payload = Cs.W.to_cs w in
+
+  Logs.debug (fun m -> m "Encrypting payload:@,%a"
+                 Cs.pp_hex plaintext_payload);
+  Cfb.encrypt ?g ~key:symmetric_key plaintext_payload >>| fun payload ->
+  Logs.debug (fun m -> m "EncryptED payload:@,%a"
+                 Cs.pp_hex payload);
+  Encrypted { payload ; key = Some symmetric_key }

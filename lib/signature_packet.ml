@@ -179,19 +179,7 @@ and pp_signature_subpacket ppf (pkt) =
     | Signature_creation_time time -> Fmt.pf fmt "UTC: %a" Ptime.pp time
     | ( Signature_expiration_time time
       | Key_expiration_time time) -> Fmt.pf fmt "%a" Ptime.Span.pp time
-    | Key_usage_flags (* TODO also prettyprint unimplemented flags *)
-        { certify_keys = certs
-        ; sign_data = sign_data
-        ; encrypt_communications = enc_comm
-        ; encrypt_storage = enc_store
-        ; authentication = auth
-        ; unimplemented = unimpl_char }
-      ->
-      Fmt.pf fmt "@[<v>{ @[<v>certify: %a ;@ sign data: %a ;@ encrypt \
-                     communications: %a ;@ encrypt storage: %a ;@ \
-                     authentication: %a ;@ raw decimal char: [%a]@]}@]"
-        pp_bool certs pp_bool sign_data pp_bool enc_comm pp_bool enc_store
-        pp_bool auth Fmt.(list ~sep:(unit"; ") (Fmt.fmt "%C")) unimpl_char
+    | Key_usage_flags kuf -> pp_key_usage_flags fmt kuf
     | Issuer_fingerprint (v,fp) -> begin match v with
         | V3 (*TODO is this valid for V3? *)
         | V4 -> Fmt.pf fmt "SHA1: %s" (Cs.to_hex fp)
@@ -348,7 +336,7 @@ The signature was not signed by this public key.|}
       in
         e_true `Invalid_signature
           (Nocrypto.Rsa.PKCS1.verify
-             ~hash:hash_algo
+             ~hashp:((=) hash_algo)
              ~signature:(cs_of_mpi_no_header m_pow_d_mod_n |> Cs.to_cstruct)
              ~key:pub (`Digest (Cs.to_cstruct digest)))
         |> log_failed (fun m -> m "RSA signature validation failed")

@@ -367,17 +367,35 @@ let signature_type_enum =
   ]
 
 type key_usage_flags = (* RFC 4880: 5.2.3.21 Key Flags *)
-  { certify_keys : bool
-  ; sign_data : bool
-  ; encrypt_communications : bool
-  ; encrypt_storage : bool
-  ; authentication : bool
+  { certify_keys : bool (* signing-like *)
+  ; sign_data : bool (* signing-like *)
+  ; encrypt_communications : bool (* encryption-like *)
+  ; encrypt_storage : bool (* encryption-like *)
+  ; authentication : bool (* signing-like *)
   ; unimplemented : char list
   }
 
-let empty_key_usage_flags =
-  { certify_keys = false; sign_data = false; encrypt_communications = false;
-    encrypt_storage = false; authentication = false; unimplemented = ['\000']; }
+let pp_key_usage_flags fmt { certify_keys = certs
+                           ; sign_data = sign_data
+                           ; encrypt_communications = enc_comm
+                           ; encrypt_storage = enc_store
+                           ; authentication = auth
+                           ; unimplemented = unimpl_char } =
+  (* TODO also prettyprint unimplemented flags *)
+  Fmt.pf fmt "@[<v>{ @[<v>certify: %a ;@ sign data: %a ;@ encrypt \
+              communications: %a ;@ encrypt storage: %a ;@ \
+              authentication: %a ;@ raw decimal char: [%a]@]}@]"
+    pp_bool certs pp_bool sign_data pp_bool enc_comm pp_bool enc_store
+    pp_bool auth Fmt.(list ~sep:(unit"; ") (Fmt.fmt "%C")) unimpl_char
+
+
+let create_key_usage_flags ?(certify_keys=false) ?(sign_data=false)
+    ?(encrypt_communications=false) ?(encrypt_storage=false)
+    ?(authentication=false) ?(unimplemented=['\000']) () =
+  { certify_keys; sign_data; encrypt_communications;
+    encrypt_storage; authentication; unimplemented; }
+
+let empty_key_usage_flags = create_key_usage_flags ()
 
 let key_usage_flags_of_cs needle =
   if Cs.len needle > 0 then
@@ -431,7 +449,7 @@ type signature_subpacket_tag =
   | Key_usage_flags
   | Signers_user_id
   | Reason_for_revocation
-  | Features
+  | Features (* should only be read from UID certifications *)
   | Signature_target
   | Embedded_signature
   | Issuer_fingerprint

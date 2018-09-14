@@ -8,8 +8,9 @@ val encode_ascii_armor : ascii_packet_type -> Cs.t -> (Cs.t, [> R.msg]) result
     [buf], with the header and footer lines determined by [typ]. *)
 
 
-val decode_ascii_armor : Cs.t -> (ascii_packet_type * Cs.t,
-                                  [> `Msg of string ]) result
+val decode_ascii_armor : allow_trailing:bool ->
+  Cs.t -> (ascii_packet_type * Cs.t * Cs.t,
+           [> `Msg of string ]) result
 (** [decode_ascii_armor buf] attempt to decode [buf] and returns the type of
     the header ("PGP PUBLIC KEY BLOCK", etc.) along with the decoded bytes. *)
 
@@ -98,7 +99,7 @@ module Signature : sig
 
   val sign_detached_cb :
      current_time:Ptime.t ->
-     Public_key_packet.private_key ->
+     transferable_secret_key ->
      Types.hash_algorithm ->
      (Cs.t -> unit) * Types.digest_finalizer -> (*hash_cb,hash_finalize*)
      (unit (** io callback for reading the data to sign *) ->
@@ -108,9 +109,18 @@ module Signature : sig
 
   val sign_detached_cs :
            current_time:Ptime.t ->
-           Public_key_packet.private_key ->
+           transferable_secret_key ->
            Types.hash_algorithm ->
            Cs.t -> (t, [> `Msg of string ]) Result.result
+
+  val can_encrypt : Public_key_packet.t -> t list -> bool
+  (** [can_encrypt key certifications] is [Ok true] when at least one of the
+      [certifications] (which could be a binding signature on a subkey,
+      or a certification of a UID)
+      permit decryption/encryption, and the subject key type
+      is capable of encryption. Note that KeyUsageFlags is NOT REQUIRED by the
+      OpenPGP 4 spec, so if KUF is missing, we assume that encryption is OK.*)
+
 end with type t = Signature_packet.t
 
 val serialize_packet : Types.openpgp_version ->
@@ -179,13 +189,31 @@ val decrypt_message : current_time:Ptime.t ->
 (** [decrypt_message time key msg] is [msg] decrypted with [key],
     honouring [time].*)
 
+val encrypt_message : ?rng:Nocrypto.Rng.g ->
+  current_time:Ptime.t ->
+  public_keys:Signature.transferable_public_key list -> Cs.t ->
+  (encrypted_message, [> R.msg]) result
+(** [decrypt_message time key msg] is [msg] decrypted with [key],
+    honouring [time].*)
+
+val encode_message : ?armored:bool -> encrypted_message ->
+  (Cs.t, [> R.msg ]) result
+(** [decode_message] is the parsed PGP message before decryption.*)
+
+
 val new_transferable_secret_key :
   current_time:Ptime.t ->
   Types.openpgp_version ->
   Public_key_packet.private_key ->
   Uid_packet.t list ->
-  Public_key_packet.private_key list ->
+  (Public_key_packet.private_key * key_usage_flags) list ->
   (Signature.transferable_secret_key, [> `Msg of string ]) result
+(** [new_transferable_secret_key current_time version root_key uids subkeys]
+    is a TSK consisting of the element arguments, and the required
+    certifications issued by the respective secret keys.
+    The subkey argument is a list of tuples, each element consisting of the
+    subkey plus the intended usage flags for the key.
+*)
 
 val serialize_transferable_public_key :
   Signature.transferable_public_key ->

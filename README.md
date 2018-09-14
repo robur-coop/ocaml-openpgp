@@ -6,7 +6,8 @@ and has basic support for decryption of messages.
 
 __Right now it's a work in progress and should not be used for anything critical to security in a real-world situation.__
 
-- Encryption is being worked on.
+- Encryption is being worked on; currently GnuPG won't read our messages
+  (but we can read their messages!).
 
 - Supporting El-Gamal and elliptic curve keys are out of scope due to lack of support for these in [nocrypto](https://github.com/mirleft/nocrypto).
 
@@ -63,14 +64,15 @@ The library ships with a sample application in `app/opgp.ml`.
 Examples of how to use the application are also given there.
 
 It can currently:
-- `opgp genkey`: Generate a (DSA | RSA) private key
+- `opgp genkey`: Generate a (DSA | RSA) private key with subkeys for
+  signing+encryption
 - `opgp sign`: Produce a detached signature on a file
 - `opgp convert`: Derive a public key from a private key
 - `opgp verify`: Verify a detached signature
 - `opgp list-packets`: List packets contained in armored or binary PGP streams
-- `opgp decrypt`: Decrypt messages to RSA root keys
+- `opgp decrypt`: Decrypt messages to RSA keys
   - Decompress ZIP(RFC1951) and ZLIB messages - BZip2 is still missing
-
+- `opgp encrypt`: Encrypt messages to RSA keys
 
 ### Git / OpenPGP integration
 

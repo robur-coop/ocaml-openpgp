@@ -201,7 +201,8 @@ let finalize_decryption (Decryption state) ciphertext_opt =
       hash mdc mdc_header
       |> Nocrypto.Hash.SHA1.get )
   in
-  Logs.debug (fun m -> m "target mdc: %a@,computed_mdc: %a"
+  Logs.debug (fun m -> m "mdc header: %a@,target mdc: %a@,computed_mdc: %a"
+                 Cstruct.hexdump_pp mdc_header
                  Cstruct.hexdump_pp target_mdc
                  Cstruct.hexdump_pp computed_mdc
              );
@@ -254,25 +255,31 @@ let finalize_encryption (Encryption state) plaintext_opt =
   in
   (* Append MDC (aka SHA1) of everything encrypted so far: *)
   let plaintext = Cs.concat [ plaintext ; Cs.of_cstruct mdc_header ; mdc] in
+  Logs.debug (fun m -> m "finalized encrypt MDC: %a :: %a"
+                 Cs.pp_hex (Cs.of_cstruct mdc_header) Cs.pp_hex mdc);
   loop [] t @@ plaintext
 
 let encrypt ?g ~key plain : (Cs.t, [> R.msg]) result =
   init_encryption ?g ~key >>= fun (t, ciphertext_start) ->
   full ~until_remains:block_size
     encrypt_streaming t (Some plain) >>= fun (t, encrypted, leftover) ->
-  finalize_encryption t leftover >>| fun trailing ->
+  finalize_encryption t leftover >>= fun trailing ->
   let output = Cs.concat (ciphertext_start::Cs.concat encrypted::trailing) in
-  assert(Cs.len output = block_size + 2 + Cs.len plain + 2 + 20) ;
+  Types.true_or_error
+    (Cs.len output = block_size + 2 + Cs.len plain + 2 + 20)
+    (fun m -> m "length assertion failed at cfb.ml:encrypt") >>| fun () ->
   output
 
 let decrypt ~key ciphertext =
   init_decryption ~key >>= fun t ->
   full ~until_remains:(2+20+block_size) decrypt_streaming t (Some ciphertext)
   >>= fun (t, decrypted, leftover) ->
-  finalize_decryption t leftover >>| fun (last) ->
+  finalize_decryption t leftover >>= fun (last) ->
   let plaintext =
     Cs.concat [ (Cs.concat decrypted) ; last]
   in
   (* nonce, "quickcheck", MDC header, MDC SHA1: *)
-  assert(Cs.len plaintext = Cs.len ciphertext - block_size - 2 - 2 - 20) ;
+  Types.true_or_error
+    (Cs.len plaintext = Cs.len ciphertext - block_size - 2 - 2 - 20)
+    (fun m -> m "length assertion failed at cfb.ml:decrypt") >>| fun () ->
   plaintext
