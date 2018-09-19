@@ -40,6 +40,7 @@ type t =
   { signature_type : Types.signature_type ;
     public_key_algorithm : Types.public_key_algorithm;
     hash_algorithm : Types.hash_algorithm;
+    two_octet_checksum : Cs.t (** hash of what was signed. TODO the `parse` function needs to know what was parsed before it in order to validate the damned two-octet checksum. currently we just don't validate (before we check the signature). yolo. *) ;
     subpacket_data : signature_subpacket SubpacketMap.t;
     algorithm_specific_data : signature_asf;
   }

@@ -90,6 +90,7 @@ type t = {
   signature_type : signature_type ;
   public_key_algorithm : public_key_algorithm ;
   hash_algorithm : hash_algorithm ;
+  two_octet_checksum : Cs.t;
   (* This implementation ignores "unhashed subpacket data",
      so we only store "hashed subpacket data": *)
   subpacket_data : signature_subpacket SubpacketMap.t ;
@@ -427,14 +428,16 @@ and serialize_hashed version {signature_type ; public_key_algorithm
 and serialize (t:t) : (Cs.t, [> R.msg]) result =
   (* TODO handle V3 *)
   serialize_hashed V4 t >>= fun hashed ->
-  compute_digest t.hash_algorithm hashed
-  >>| (fun digest -> Cs.exc_sub digest 0 2) >>= fun two_octet_checksum ->
+
+  Logs.debug (fun m -> m "two-octet checksum(%a): %a"
+                 pp_hash_algorithm t.hash_algorithm
+                 Cs.pp_hex t.two_octet_checksum);
   serialize_asf t.algorithm_specific_data >>| fun asf_cs ->
   Cs.concat [ hashed
               (* length of unhashed subpackets (which we don't support): *)
             ; Cs.BE.create_uint16 0
               (* leftmost 16 bits of the signed hash value: *)
-            ; two_octet_checksum
+            ; t.two_octet_checksum
             ; asf_cs ]
 
 and construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
@@ -623,13 +626,18 @@ let parse_packet ?(allow_embedded_signatures=false) buf : (t, 'error) result =
   Cs.e_sub `Incomplete_packet buf (6+hashed_len+2) unhashed_len
   >>= fun unhashed_subpacket_data ->
   (* TODO decide what to do with unhashed subpacket data*)
-  Logs.debug (fun m -> m "Signature contains unhashed subpacket data (not handled in this implementation: %a" Cs.pp_hex unhashed_subpacket_data);
+  if 0 <> Cs.len unhashed_subpacket_data then
+    Logs.debug (fun m -> m "Signature contains unhashed subpacket data \
+                            (not handled in this implementation: %a"
+                   Cs.pp_hex unhashed_subpacket_data) ;
 
   (* 6+hashed_len+2+unhashed_len: 2: leftmost 16 bits of the signed hash value (what the fuck) *)
-  (* TODO currently ignored:
+
   Cs.e_sub `Incomplete_packet buf (6+hashed_len+2+unhashed_len) 2
-  >>= fun two_byte_checksum ->
-  *)
+  >>= fun two_octet_checksum ->
+  Logs.warn (fun m -> m "Two-octet checksum: %a: %a"
+                (pp_red Fmt.string) "TODO WE DIDN'T VALIDATE"
+                Cs.pp_hex two_octet_checksum);
 
   let asf_offset = 6+hashed_len +2 + unhashed_len + 2 in
   Cs.e_sub `Incomplete_packet buf asf_offset ((Cs.len buf) -asf_offset)
@@ -659,5 +667,6 @@ let parse_packet ?(allow_embedded_signatures=false) buf : (t, 'error) result =
   { signature_type
   ; public_key_algorithm = pk_algo
   ; hash_algorithm = hash_algo
+  ; two_octet_checksum
   ; subpacket_data
   ; algorithm_specific_data }

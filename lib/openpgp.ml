@@ -611,8 +611,9 @@ struct
       error_msg (fun m -> m "Cannot sign with El-Gamal key")
     end
     >>| fun algorithm_specific_data ->
-       { signature_type ; public_key_algorithm ; hash_algorithm
-       ; algorithm_specific_data ; subpacket_data = signature_subpackets}
+    { signature_type ; public_key_algorithm ; hash_algorithm ;
+      two_octet_checksum = Cs.exc_sub digest 0 2 ;
+      algorithm_specific_data ; subpacket_data = signature_subpackets}
 
   let sign_detached_cb ~current_time tsk hash_algo ((hash_cb, _) as hash_tuple)
       io_cb =
