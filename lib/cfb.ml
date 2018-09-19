@@ -12,6 +12,7 @@ open Nocrypto.Cipher_block.AES.ECB
 open Rresult
 
 let of_secret cs =
+  (* override because Nocrypto throws an undocumented exception without this: *)
   if Array.mem (Cs.len cs) key_sizes then
     Ok (of_secret (cs |> Cs.to_cstruct))
   else

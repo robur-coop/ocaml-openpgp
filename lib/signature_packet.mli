@@ -10,6 +10,7 @@ type signature_subpacket =
   | Key_expiration_time of Ptime.Span.t
   | Key_usage_flags of Types.key_usage_flags
   | Issuer_fingerprint of Types.openpgp_version * Cs.t
+  | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
   | Preferred_hash_algorithms of Types.hash_algorithm list
   | Preferred_symmetric_algorithms of Types.symmetric_algorithm list
   | Preferred_compression_algorithms of Types.compression_algorithm list
@@ -19,7 +20,6 @@ type signature_subpacket =
                                   parsing to a later point. *)
   | Key_server_preferences of Cs.t
   | Reason_for_revocation of string
-  | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
   | Features of Types.feature list
   | Unimplemented_subpacket of Types.signature_subpacket_tag * Cs.t
 

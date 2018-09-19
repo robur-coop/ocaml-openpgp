@@ -106,12 +106,25 @@ module Signature : sig
          (Cs.t option, [> `Msg of string ] as 'a
          ) Result.result) ->
      (t, 'a) Result.result
+  (** [sign_detached_cb time tsk hash message_paging_f] is a signature over a
+      [hash_algo] checksum of the data provided by [message_paging_f],
+      signed by [tsk] at [time].
+      [message_paging_f] signals that it is done providing data by
+      returning [Ok None].
+      An [Error _] is treated as an IO error and causes [sign_detached_cb]
+      to abort and return the IO error to its caller.
+
+      The OpenPGP signature type produced is {!Signature_of_binary_document}
+  *)
 
   val sign_detached_cs :
            current_time:Ptime.t ->
            transferable_secret_key ->
            Types.hash_algorithm ->
            Cs.t -> (t, [> `Msg of string ]) Result.result
+  (** [sign_detached_cs] is the batch (non-streaming) version of
+      {!sign_detached_cb}. The underlying implementation is identical.
+  *)
 
   val can_encrypt : Public_key_packet.t -> t list -> bool
   (** [can_encrypt key certifications] is [Ok true] when at least one of the

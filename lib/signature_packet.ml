@@ -16,6 +16,7 @@ type signature_subpacket =
   | Key_expiration_time of Ptime.Span.t
   | Key_usage_flags of key_usage_flags
   | Issuer_fingerprint of openpgp_version * Cs.t
+  | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
   | Preferred_hash_algorithms of hash_algorithm list
   | Preferred_symmetric_algorithms of symmetric_algorithm list
   | Preferred_compression_algorithms of compression_algorithm list
@@ -25,7 +26,6 @@ type signature_subpacket =
                                   parsing to a later point. *)
   | Key_server_preferences of Cs.t
   | Reason_for_revocation of string
-  | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
   | Features of feature list
   | Unimplemented_subpacket of signature_subpacket_tag * Cs.t
 
@@ -219,13 +219,15 @@ let public_key_not_expired (current_time : Ptime.t)
   match SubpacketMap.get_opt Key_expiration_time t.subpacket_data with
   | Some (Key_expiration_time expiry) ->
     e_log_ptime_plus_span_is_smaller
-      (fun m -> m "public_key_not_expired: EXPIRED: %a > %a from %a"
-                     Ptime.pp current_time
-                     Ptime.Span.pp expiry Ptime.pp timestamp)
+      (fun m -> m "public_key_not_expired: %a: %a > %a from %a"
+          (pp_red Fmt.string) "EXPIRED"
+          Ptime.pp current_time
+          Ptime.Span.pp expiry Ptime.pp timestamp)
       (timestamp,expiry) current_time >>| fun () ->
-    Logs.debug (fun m -> m "public_key_not_expired: Good: %a < %a from %a"
-                 Ptime.pp current_time
-                 Ptime.Span.pp expiry Ptime.pp timestamp )
+    Logs.debug (fun m -> m "public_key_not_expired: %a: %a < %a from %a"
+                   (pp_green Fmt.string) "Good"
+                   Ptime.pp current_time
+                   Ptime.Span.pp expiry Ptime.pp timestamp )
   | (None | Some _) ->
     Logs.debug (fun m -> m "public_key_not_expired: No expiration timestamp") ;
     Ok ()
@@ -240,10 +242,11 @@ let signature_expiration_date_is_valid (current_time : Ptime.t) (t : t) =
     | Some (Signature_expiration_time expiry) ->
       e_log_ptime_plus_span_is_smaller
         (fun m -> m "Bad time: %a > %a + %a"
-            Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base )
+            (pp_red Ptime.pp) current_time Ptime.Span.pp expiry Ptime.pp base )
         (base,expiry) current_time >>| fun () ->
       Logs.debug (fun m -> m "Good time: %a < %a + %a"
-                     Ptime.pp current_time Ptime.Span.pp expiry Ptime.pp base )
+                     (pp_green Ptime.pp) current_time
+                     Ptime.Span.pp expiry Ptime.pp base )
     | (None | Some _) -> Ok ()
   end | _ -> failwith "TODO SubpacketMap.get"
 
@@ -273,17 +276,45 @@ let check_signature (current_time : Ptime.t)
       pks |> List.partition (fun pk ->
           let pk_fp = pk.Public_key_packet.v4_fingerprint in
           let pk_keyid = Cs.exc_sub pk_fp 12 8 in
-          (* TODO should check that [pk] has Key_usage_flags {signing=true;_}*)
+          Logs.warn (fun m -> m "%s: TODO should check that [pk] has \
+                                 Key_usage_flags {signing=true;_}" __LOC__);
           Public_key_packet.can_sign pk &&
           begin match issuer_fp, issuer_keyid with
-          (* Try pk that has fp = SHA1 from t.Issuer_fingerprint: *)
-          | Some(Issuer_fingerprint (V4,sig_fp)),_ when Cs.equal sig_fp pk_fp ->
-            true
-          (* Try pk that has fp = truncated SHA1 from t.Issuer_keyid: *)
-          | _ , Some (Issuer_keyid sig_id) when Cs.equal sig_id pk_keyid -> true
-          (* Try pk if [t] does not have Issuer_fingerprint nor Issuer_keyid *)
-          | None, None -> true
-          | _ , _-> false
+            | Some Issuer_fingerprint (V4, sig_fp),
+              Some Issuer_keyid sig_keyid ->
+              if (Cs.equal pk_keyid sig_keyid) && (Cs.equal pk_fp sig_fp) then
+                true
+              else begin
+                Logs.err (fun m -> m "Sig has both Issuer_keyid && \
+                                      Issuer_fingerprint, but they don't \
+                                      match up: %a == %a && %a == %a"
+                             Cs.pp_hex pk_keyid Cs.pp_hex sig_keyid
+                             Cs.pp_hex pk_fp    Cs.pp_hex sig_fp) ;
+                false
+              end
+            (* Try pk that has fp = SHA1 from t.Issuer_fingerprint: *)
+            | Some(Issuer_fingerprint (V4,sig_fp)), _ ->
+              if Cs.equal sig_fp pk_fp then
+                true
+              else begin
+                Logs.warn (fun m -> m "Issuer_fingerprint mismatch"); false
+              end
+            (* Try pk that has fp = truncated SHA1 from t.Issuer_keyid: *)
+            | _ , Some (Issuer_keyid sig_keyid) ->
+              if Cs.equal sig_keyid pk_keyid then
+                true
+              else begin
+                Logs.warn (fun m -> m "Issuer_keyid %a <> pk keyid %a"
+                              Cs.pp_hex sig_keyid Cs.pp_hex pk_keyid);
+                false end
+            (* Try pk if [t] doesn't have Issuer_fingerprint nor Issuer_keyid *)
+            | None, None -> true
+            | a, b ->
+              Logs.err (fun m -> m "check_signature: get_opt: this is wrong: \
+                                    %a %a" Fmt.(option pp_signature_subpacket) a
+                           Fmt.(option pp_signature_subpacket) b
+                       );
+              false
           end
         )
     in
@@ -340,12 +371,13 @@ The signature was not signed by this public key.|}
              ~hashp:((=) hash_algo)
              ~signature:(cs_of_mpi_no_header m_pow_d_mod_n |> Cs.to_cstruct)
              ~key:pub (`Digest (Cs.to_cstruct digest)))
-        |> log_failed (fun m -> m "RSA signature validation failed")
+        |> log_failed (fun m -> m "%a" (pp_red Fmt.string)
+                          "RSA signature validation failed")
         >>| fun () -> `Good_signature
     | pk_asf , sig_asf ->
       error_msg
-        (fun m -> m {|@[<v>%s@ PK type: %a@ %a@]|}
-            {|Not implemented: Validating signatures with|}
+        (fun m -> m {|@[<v>%a@ PK type: %a@ %a@]|}
+            (pp_red Fmt.string) {|Not implemented: Validating signatures with|}
             Public_key_packet.pp_pk_asf pk_asf
             pp_signature_asf sig_asf
         )
@@ -454,8 +486,11 @@ and construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
   Cs.concat [ buf
             ; Cs.BE.create_uint16 0x04_ff
             ; Cs.BE.create_uint32 (Cs.len buf |> Int32.of_int) ]
-   ) >>= fun tbh -> (Ok tbh) |>
-  log_msg (fun m -> m "signature to be hashed: @ %a" Cs.pp_hex tbh)
+    ) >>= fun tbh ->
+  (Ok tbh)
+  |>
+  log_msg (fun m -> m "signature to be hashed (%d bytes): @[%a@]"
+              (Cs.len tbh) Cs.pp_hex tbh)
 
 and construct_to_be_hashed_cs t : ('ok,'error) result =
   (* This is a helper function to be used on [t]s for verification purposes *)
@@ -549,6 +584,8 @@ let parse_subpacket ~allow_embedded_signatures buf
         | V4 -> error_msg (fun m -> m "Invalid issuer fingerprint packet: %a"
                               Cs.pp_hex data)
       end
+  | Issuer_keyid when Cs.len data = 8 ->
+    Ok (Some (Issuer_keyid data))
   | Preferred_hash_algorithms ->
     Ok (Some (
         Preferred_hash_algorithms (Cs.map_char hash_algorithm_of_char data)))
@@ -657,7 +694,7 @@ let parse_packet ?(allow_embedded_signatures=false) buf : (t, 'error) result =
       consume_mpi r_tl_cs >>| fun (s , asf_tl) -> DSA_sig_asf {r ; s} , asf_tl
     | Elgamal_encrypt_only
     | RSA_encrypt_only ->
-      error_msg (fun m -> m "TODO signature algorithm uses an encrypt-only key")
+      error_msg (fun m -> m "%s: TODO signature algorithm uses an encrypt-only key" __LOC__)
    end
   >>= fun (algorithm_specific_data, should_be_empty) ->
   true_or_error (Cs.len should_be_empty = 0)

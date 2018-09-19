@@ -1055,7 +1055,8 @@ type encrypted_message =
 let decrypt_message ~current_time
     ~(secret_key:Signature.transferable_secret_key)
     {public_sessions ; data; signatures ; symmetric_session = _} =
-  Logs.warn (fun m -> m "decrypt_message: TODO check signatures") ;
+  if signatures <> [] then
+    Logs.warn (fun m -> m "%s: TODO check signatures" __LOC__) ;
   let trial_decryption_candidates =
     List.map
       (fun key ->
@@ -1180,7 +1181,11 @@ let decode_message ?armored cs
     | `Trailing (pkt, sigs)-> trailing_packet pkt sigs packets
   in loop `Container ~public:[] packets
   >>=  fun (public_sessions, data, signatures) ->
-  (* TODO validation *)
+  true_or_error (public_sessions <> [])
+    (fun m -> m "This message contains no public key slots") >>= fun () ->
+  begin if signatures = [] then
+      Logs.warn (fun m -> m "%s: Message is not signed" __LOC__)
+  end ;
   Ok { public_sessions ; symmetric_session = [] ; data; signatures }
 
 let decode_detached_signature ?armored cs =

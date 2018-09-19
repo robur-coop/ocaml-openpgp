@@ -369,10 +369,11 @@ let signature_type_enum =
 type key_usage_flags = (* RFC 4880: 5.2.3.21 Key Flags *)
   { certify_keys : bool (* signing-like *)
   ; sign_data : bool (* signing-like *)
-  ; encrypt_communications : bool (* encryption-like *)
-  ; encrypt_storage : bool (* encryption-like *)
   ; authentication : bool (* signing-like *)
   ; unimplemented : char list
+  (* RFC doesn't distinguish between these two really: *)
+  ; encrypt_communications : bool (* encryption-like *)
+  ; encrypt_storage : bool (* encryption-like *)
   }
 
 let pp_key_usage_flags fmt { certify_keys = certs
@@ -447,7 +448,7 @@ type signature_subpacket_tag =
   | Primary_user_id
   | Policy_URI
   | Key_usage_flags
-  | Signers_user_id
+  | Signers_user_id (* not for User Attributes *)
   | Reason_for_revocation
   | Features (* should only be read from UID certifications *)
   | Signature_target
@@ -1110,8 +1111,10 @@ let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
     | 1024 , 160 ,(SHA1|SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | 2048 , 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
     | (2048|3072), 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
-    | _ , _ , _ ->  Logs.debug (fun m -> m "failing dsa param checks") ;
-                    Error mpi_error
+    | bits_p , bits_q , _ ->
+      Logs.debug (fun m -> m "failing dsa param checks algo: %a p:%d q:%d"
+                     pp_hash_algorithm hash_algo bits_p bits_q) ;
+      Error mpi_error
   end >>= fun () ->
 
   (* - q : q < p *)
