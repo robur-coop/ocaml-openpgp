@@ -65,6 +65,10 @@ let decrypt ?key (Encrypted { payload ; key = stored_key }) =
   end >>= fun key -> Cfb.decrypt ~key payload
 
 let encrypt ?g ~symmetric_key plaintext =
+  (* TODO should pass in a list of things that are valid inside here,
+     then serialize them. If they're literal data packets we
+     should probably also compress them.*)
+  (* TODO streaming encryption. *)
   let literal_plaintext =
     Literal_data_packet.(
       serialize (create_binary "" [Cs.to_string plaintext]))
@@ -83,6 +87,7 @@ let encrypt ?g ~symmetric_key plaintext =
 
   Logs.debug (fun m -> m "Encrypting payload:@,%a"
                  Cs.pp_hex plaintext_payload);
+
   Cfb.encrypt ?g ~key:symmetric_key plaintext_payload >>| fun payload ->
   Logs.debug (fun m -> m "EncryptED payload:@,%a"
                  Cs.pp_hex payload);

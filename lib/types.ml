@@ -571,12 +571,14 @@ let digest_callback hash_algo: (digest_feeder, [> ]) result =
   nocrypto_module_of_hash_algorithm hash_algo >>= fun m ->
   let module H = (val (m)) in
   let t = ref H.empty in
+  let debug_id = Nocrypto.Rng.Int.gen 99999 in
   let feeder cs =
     (t := H.feed !t (Cs.to_cstruct cs))
     |> log_msg
-      (fun m -> m "@[<v>%s:@ %a hashing %d bytes:@ %a@]"
+      (fun m -> m "@[<v>%s:@ %a [%0x] hashing %d bytes:@ %a@]"
           __LOC__
           pp_hash_algorithm hash_algo
+          debug_id (* used to keep track of ctx in debug output *)
           (Cs.len cs) Cs.pp_hex cs)
   in Ok (feeder,
         (fun () -> H.get !t |> Cs.of_cstruct))

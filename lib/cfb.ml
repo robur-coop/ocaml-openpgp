@@ -42,7 +42,10 @@ let cs_of_opt = function None -> Cs.empty | Some cs -> cs
 let opt_of_cs cs = if Cs.len cs = 0 then None else Some cs
 
 let initialize ~key =
-  assert (block_size >= 8) ;
+  Types.true_or_error (block_size >= 8)
+    (fun m -> m "block_size < 8") >>= fun () ->
+  Types.true_or_error (32 >= Cs.len key)
+    (fun m -> m "key < 256 bits") >>= fun () ->
   of_secret key >>= fun key ->
   (* 1. The feedback register (FR) is set to the IV, which is all zeros. *)
   Ok { fr = Cs.create block_size ;
@@ -102,7 +105,7 @@ let init_encryption ?g ~key
     4. FR is loaded with C[1] through C[BS]: *)
   let random_data = Nocrypto.Rng.generate ?g block_size |> Cs.of_cstruct in
 
-  enc (Encryption state) random_data >>= fun (Encryption state, ciphertext) ->
+  enc (Encryption state) random_data >>= fun (Encryption state, iv_first) ->
 
   (* From the spec:
      - 6. The left two octets of FRE get xored with the next two octets of
@@ -114,10 +117,14 @@ let init_encryption ?g ~key
      This makes us incompatible with vulnerable implementations.
      - https://eprint.iacr.org/2005/033.pdf
      - https://tools.ietf.org/html/rfc4880#page-84 *)
-  let prepend = Some (Nocrypto.Rng.generate ?g 2 |> Cs.of_cstruct) in
+  (*enc (Encryption state) (Cs.exc_sub random_data (block_size-2) 2)
+    >>= fun (Encryption state, iv_repeated) ->*)
+  (*let prepend = Some (Cs.exc_sub (calc_fr_e state) (block_size-2) 2) in*)
+  (*let prepend = Some (Nocrypto.Rng.generate ?g 2 |> Cs.of_cstruct) in*)
+  let prepend = Some (Cs.exc_sub random_data (block_size-2) 2) in
 
   (* return new encryption state *)
-  Ok (Encryption { state with prepend }, ciphertext)
+  Ok (Encryption { state with prepend }, iv_first)
 
 let get_block data = Cs.split_result data block_size
 

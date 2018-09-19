@@ -300,7 +300,7 @@ let test_cfb_fixed () : unit =
     Alcotest.(check a_cs) "matches our fixed test vector" plain plain_b
 
 let test_cfb_internal () : unit =
-  let key = Cs.of_cstruct (Nocrypto.Rng.generate 16) in
+  let key = Cs.of_cstruct (Nocrypto.Rng.generate 32) in
   for plain_len = 0 to 1000 do
     let plain = Nocrypto.Rng.generate plain_len |> Cs.of_cstruct in
     begin match begin
@@ -357,6 +357,10 @@ let tests =
     ]
   ; "Signatures",
     [ "Invalid key usage (000)", `Quick, test_invalid_key_usage_000
+    (* TODO check that
+       (min Signature_expiration_time Key_expiration_time) is honoured.*)
+    (* TODO hit this test case (SHA1 not allowed for DSA > 1024bit):
+       alcotest_lib.native: [DEBUG] failing dsa param checks algo: SHA1 p:3072 q:256 *)
     ]
   ; "Parsing keys",
     [ "Fail broken GnuPG maintainer key (4F25E3B6)", `Quick,
