@@ -91,7 +91,21 @@ let msg_of_error err =
   | `Msg str -> str
   )
 
-let pp_mpi = Z.pp_print
+let pp_mpi fmt z =
+  let rec loop = function
+    | i when i <= 0 -> ()
+    | i when i > 8 ->
+      Fmt.pf fmt "%02x" (Z.extract z (i-8) 8 |> Z.to_int) ;
+      loop (i-8)
+    | i -> Fmt.pf fmt "%02x" (Z.extract z 0 i |> Z.to_int)
+  in
+  let zbits = Z.numbits z in
+  let rounded_bits =
+    Fmt.pf fmt "%d:0x" zbits ;
+    zbits - zbits mod 8
+  in if rounded_bits <> zbits || zbits = 0 then begin
+    Fmt.pf fmt "%02x" (Z.extract z rounded_bits 8 |> Z.to_int)
+  end ; loop (rounded_bits)
 
 let msg_of_invalid_mpi_parameters mpi_list : [> `Msg of string ]=
   `Msg (Fmt.strf "Invalid MPIs:@[<v>%a@]" Fmt.(list ~sep:(unit "; ") pp_mpi)

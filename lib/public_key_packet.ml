@@ -67,12 +67,23 @@ let cs_of_public_key_asf asf =
   end
   |> cs_of_mpi_list
 
+let rsa_q_prime ~p ~q =
+  (* here because nocrypto's sk.q' is some other number?? *)
+  Logs.warn (fun m -> m "TODO should this RSA ((p**-1) %% q) be blinded??") ;
+  Z.invert p q
+
+let rsa_d_secret_exponent ~e ~p ~q =
+  (* here because nocrypto's sk.d seems to be some other number?? *)
+  Logs.warn (fun m -> m "TODO should this RSA d computation be blinded?");
+  Z.invert e @@ Z.lcm (Z.pred p) (Z.pred q)
+
 let cs_of_secret_key_asf asf =
   Logs.debug (fun m -> m "cs_of_secret_key_asf called") ;
   begin match asf with
     | Elgamal_privkey_asf {x} -> [x]
     | DSA_privkey_asf {Nocrypto.Dsa.x ; _} -> [x]
-    | RSA_privkey_asf {Nocrypto.Rsa.d; p; q; q'; _} -> [d;p;q;q']
+    | RSA_privkey_asf {Nocrypto.Rsa.d; p; q; e; _} ->
+      [ rsa_d_secret_exponent ~e ~p ~q ; p; q; rsa_q_prime ~p ~q ]
   end
   |> cs_of_mpi_list
 
@@ -202,7 +213,7 @@ let parse_secret_elgamal_asf (_:'pk) buf =
   consume_mpi buf >>| fun (x, tl) ->
   Elgamal_privkey_asf {x}, tl
 
-let parse_secret_rsa_asf ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
+let parse_secret_rsa_asf ?g ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
   : (private_key_asf * Cs.t, [> `Msg of string]) result =
   (* Algorithm-Specific Fields for RSA secret keys:
      - multiprecision integer (MPI) of RSA secret exponent d.
@@ -213,20 +224,45 @@ let parse_secret_rsa_asf ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
   consume_mpi buf >>= fun (p, buf) ->
   consume_mpi buf >>= fun (q, buf) ->
   consume_mpi buf >>= fun (check_q', tl) -> (* "u" aka Nocrypto.Rsa.priv.q' *)
-  (* TODO the spec says to check that p < q -- not sure it worked *)
+
+  let sk_q_prime = rsa_q_prime ~p ~q in
+  true_or_error (Z.equal check_q' sk_q_prime)
+    (fun m -> m "RSA multiplicate inverse of p mod q is incorrect") >>= fun ()->
+
+  let sk_d = rsa_d_secret_exponent ~e ~p ~q in
+  true_or_error (Z.equal check_d sk_d)
+    (fun m -> m "RSA secret exponent incorrect") >>= fun () ->
+
+  Logs.warn (fun m -> m "SKIPPING RSA CHECK p < q BECAUSE ... well, nocrypto doesn't do that.");
+(*  true_or_error (Z.compare p q < 0) (* verify p < q *)
+    (fun m -> m "RSA secret key [%d]p >= [%d]q" (Z.numbits p) (Z.numbits q)
+    ) >>= fun () ->*)
+
   mpis_are_prime [e;q;p] >>= fun () ->
-  begin match Nocrypto.Rsa.priv_of_primes ~e ~q ~p with
-  | exception _ -> Error (msg_of_invalid_mpi_parameters [e;p;q])
-  | sk -> (*TODO comparison p < q*)
-    let open Nocrypto.Rsa in
-    (* validate key parameters; check "d" and "u"; "n"="p"*"q" *)
-    true_or_error (check_d = sk.d && check_q' = sk.q' && n = sk.n)
-    (fun m -> m {|Inconsistent RSA secret key parameters read (d;q';d;q'):
-{%a}
-{pk.n = %a ; sk.p*s.q = %a } |}
-        Fmt.(list ~sep:(unit "; ") pp_mpi) [check_d;check_q';sk.d;sk.q]
-        pp_mpi n pp_mpi sk.n)
-    >>| fun () -> (RSA_privkey_asf sk, tl)
+
+  (*begin match Nocrypto.Rsa.priv_of_primes ~e ~q ~p with*)
+  begin match Nocrypto.Rsa.priv_of_exp ?g ~e ~d:check_d n with
+    | exception _ -> Error (msg_of_invalid_mpi_parameters [e;p;q])
+    | sk -> (*TODO comparison p < q*)
+      (* gpg --list-packets translation key:
+         pkey[0] -> pk.n
+         skey[2] -> check_d
+         skey[3] -> sk.p
+         skey[4] -> sk.q
+         skey[5] -> Z.invert p q
+      *)
+
+      let open Nocrypto.Rsa in
+      (* validate key parameters; check "d" and "u"; "n"="p"*"q" *)
+      true_or_error (Z.equal n sk.n
+      (* TODO && Z.equal check_q' sk.q' && Z.equal check_d sk.d*) )
+        (fun m -> m {|Inconsistent RSA secret key parameters read \
+                      (d;q';computed.d;computed.q'):
+                      {%a}
+                      {pk.n = %a ; sk.p*s.q = %a } |}
+            Fmt.(list ~sep:(unit "; ") pp_mpi) [check_d;check_q';sk.d;sk.q']
+            pp_mpi n pp_mpi sk.n)
+      >>| fun () -> (RSA_privkey_asf sk, tl)
   end
 
 let parse_packet_return_extraneous_data (buf:Cs.t)
@@ -265,7 +301,7 @@ let parse_packet buf =
   Cs.e_is_empty (`Msg "Public key contains extraneous data") buf_tl
   >>| fun () -> pk
 
-let parse_secret_packet buf : (private_key, 'error) result =
+let parse_secret_packet ?g buf : (private_key, 'error) result =
   parse_packet_return_extraneous_data buf >>= fun (public,buf) ->
   Logs.debug (fun m -> m "got the public part of secret key") ;
   Cs.e_split_char `Incomplete_packet buf >>= fun (string_to_key, asf_cs) ->
@@ -275,11 +311,11 @@ let parse_secret_packet buf : (private_key, 'error) result =
   >>| log_msg (fun m -> m "secret key not encrypted; good") >>= fun _ ->
 
   begin match public.algorithm_specific_data with
-  | DSA_pubkey_asf pk -> parse_secret_dsa_asf pk asf_cs
-  | RSA_pubkey_sign_asf pk -> parse_secret_rsa_asf pk asf_cs
-  | RSA_pubkey_encrypt_asf pk -> parse_secret_rsa_asf pk asf_cs
-  | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf pk asf_cs
+  | RSA_pubkey_sign_asf pk
+  | RSA_pubkey_encrypt_asf pk
+  | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf ?g pk asf_cs
   | Elgamal_pubkey_asf _ -> parse_secret_elgamal_asf () asf_cs
+  | DSA_pubkey_asf pk -> parse_secret_dsa_asf pk asf_cs
   end
   >>= fun (priv_asf, checksum_tl) ->
 

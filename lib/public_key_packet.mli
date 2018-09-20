@@ -33,7 +33,8 @@ type parse_error = [ `Incomplete_packet | `Msg of string ]
 
 val parse_packet : Cs.t -> ( t, [> parse_error]) result
 
-val parse_secret_packet : Cs.t -> (private_key, [> parse_error] ) result
+val parse_secret_packet : ?g:Nocrypto.Rng.g -> Cs.t ->
+  (private_key, [> parse_error] ) result
 
 val serialize : Types.openpgp_version -> t -> (Cs.t,[> `Msg of string]) result
 

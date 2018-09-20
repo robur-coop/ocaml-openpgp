@@ -74,15 +74,15 @@ let do_genkey _ g current_time uid pk_algo =
   Public_key_packet.generate_new ~current_time ?g pk_algo >>= fun encrypt_key ->
   Openpgp.new_transferable_secret_key ~current_time Types.V4
     root_key [uid]
-    Types.[signing_key , create_key_usage_flags ~sign_data:true()
-          ; encrypt_key, create_key_usage_flags ~encrypt_communications:true ()]
+    Types.[ signing_key, create_key_usage_flags ~sign_data:true ()
+          ; encrypt_key, create_key_usage_flags ~encrypt_storage:true ~encrypt_communications:true () ]
   >>= Openpgp.serialize_transferable_secret_key Types.V4
   >>= fun key_cs ->
   Openpgp.encode_ascii_armor Types.Ascii_private_key_block key_cs
   >>| fun encoded_pk ->
   Logs.app (fun m -> m "%s" (Cs.to_string encoded_pk))
 
-let do_list_packets _ target =
+let do_list_packets _ g target =
   Logs.info (fun m ->
       m "Listing packets in ascii-armored structure in %s" target) ;
   let res =
@@ -100,7 +100,7 @@ let do_list_packets _ target =
                     Types.pp_ascii_packet_type) arm_typ
              );
     Logs.info (fun m -> m "@.%a" Cs.pp_hex raw_cs ) ;
-    Openpgp.parse_packets raw_cs
+    Openpgp.parse_packets ?g raw_cs
     >>= fun pkts_tuple ->
     (* TODO Only print hexdump if -v is passed *)
     Logs.app (fun m -> m "Packets:@.|  %a"
@@ -113,11 +113,11 @@ let do_list_packets _ target =
   in
   res |> R.reword_error Types.msg_of_error
 
-let do_sign _ current_time secret_file target_file =
+let do_sign _ g current_time secret_file target_file =
   (
   cs_of_file secret_file >>= fun sk_cs ->
   cs_of_file target_file >>= fun target_content ->
-  Openpgp.decode_secret_key_block ~current_time sk_cs
+  Openpgp.decode_secret_key_block ?g ~current_time sk_cs
   >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (tsk,_) ->
   (* TODO pick hash algo from Preferred_hash_algorithms *)
   Openpgp.Signature.sign_detached_cs ~current_time tsk
@@ -128,10 +128,10 @@ let do_sign _ current_time secret_file target_file =
   Logs.app (fun m -> m "%s" encoded) ; Ok ()
   )|> R.reword_error Types.msg_of_error
 
-let do_decrypt _ current_time secret_file target_file =
+let do_decrypt _ rng current_time secret_file target_file =
   ( cs_of_file secret_file >>= fun sk_cs ->
     cs_of_file target_file >>= fun target_content ->
-    Openpgp.decode_secret_key_block ~current_time sk_cs
+    Openpgp.decode_secret_key_block ?g:rng ~current_time sk_cs
     >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (secret_key,_) ->
     ( Openpgp.decode_message target_content
       |>  R.reword_error Types.msg_of_error)
@@ -287,8 +287,9 @@ let decrypt_cmd =
     `P {|Decrypt the $(i,FILE) using the provided secret key.|};
     ]
   in
-  Term.(term_result (const do_decrypt $ setup_log $ override_timestamp $ sk
-                                      $ target)),
+  Term.(term_result (const do_decrypt $ setup_log $ rng_seed
+                     $ override_timestamp
+                     $ sk $ target)),
   Term.info "decrypt" ~doc ~sdocs
     ~exits:Term.default_exits ~man
     ~man_xrefs:[`Cmd "encrypt"]
@@ -313,7 +314,7 @@ let encrypt_cmd =
 let list_packets_cmd =
   let doc = "Pretty-print the packets contained in a file" in
   let man = [] in
-  Term.(term_result (const do_list_packets $ setup_log $ target)),
+  Term.(term_result (const do_list_packets $ setup_log $ rng_seed $ target)),
   Term.info "list-packets" ~doc ~sdocs
             ~exits:Term.default_exits ~man
 
@@ -329,7 +330,7 @@ let sign_cmd =
     `P "This is similar to GnuPG's $(b,--detach-sign)" ;
     ]
   in
-  Term.(term_result (const do_sign $ setup_log $ override_timestamp
+  Term.(term_result (const do_sign $ setup_log $ rng_seed $ override_timestamp
                                    $ sk $ target)),
   Term.info "sign" ~doc ~exits:Term.default_exits ~man ~sdocs
                    ~man_xrefs:[`Cmd "verify"]

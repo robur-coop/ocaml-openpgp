@@ -116,7 +116,7 @@ the end of their URL. Example: https://github.com/rootkovska.gpg
 The spec is included in this repository in the `rfc/` subdirectory.
 
 [RFC 4880 - OpenPGP Message Format](rfc/RFC+4880+-+OpenPGP+Message+Format.html)
-
+[TODO - IANA registry updates](https://www.rnpgp.com/specs/draft-openpgp-iana-registry-updates/)
 
 ### Alternative implementations
 
@@ -125,7 +125,7 @@ The spec is included in this repository in the `rfc/` subdirectory.
 - [Keybase PGP (C)](https://github.com/keybase/kbpgp/)
 - [libsimplepgp (C)](http://mrmekon.tumblr.com/post/12781181931/announcing-libsimplepgp)
 - [NetPGP (C)](http://netpgp.com/)
-  - [maintained/improved fork](https://github.com/riboseinc/rnp)
+  - [rnp - maintained/improved fork](https://github.com/riboseinc/rnp)
 - [pgcrypto (C, from postgresql)](https://doxygen.postgresql.org/pgp-info_8c.html)
 - [TinyGPG (C, using libgcrypt)](https://github.com/gpg/tgpg)
 - [CalcCrypto OpenPGP (C++)](https://github.com/calccrypto/OpenPGP)
