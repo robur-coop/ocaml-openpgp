@@ -12,6 +12,7 @@ PKG bos
 PKG ptime
 PKG ptime.clock.os
 PKG alcotest
+PKG mrmime
 
 PKG angstrom
 

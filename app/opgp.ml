@@ -141,6 +141,113 @@ let do_decrypt _ rng current_time secret_file target_file =
     print_string decrypted
   ) |> R.reword_error Types.msg_of_error
 
+let do_mail_decrypt _ rng current_time secret_file target_file =
+  ( cs_of_file secret_file
+    >>= Openpgp.decode_secret_key_block ?g:rng ~current_time
+    |>  R.reword_error Types.msg_of_error
+  ) >>= fun (secret_key, _) ->
+  Logs.debug (fun m -> m "Going to decode the email in %S" target_file);
+  let open MrMime in
+  let (read_input, read_buffer, _close) =
+    let ch = open_in_bin target_file in
+    let read_buffer = Bytes.make 1024 '\000' in
+    let len = Bytes.length read_buffer in
+    ((fun () -> input ch read_buffer 0 len), read_buffer,
+     (fun () -> close_in ch)) in
+  let rec get decoder =
+    match Convenience.decode decoder with
+    | `Continue ->
+      let n = read_input () in (* Read another chunk, *)
+      Convenience.src decoder read_buffer 0 n; (* hand it to the decoder, *)
+      get decoder (* and carry on parsing *)
+    | `Done v -> Ok v
+    | `Error _exn -> Error (`Msg "Error during parsing") in
+  let decoder = Convenience.decoder
+      (Input.create_bytes 4096) Message.Decoder.p_message in
+  get decoder >>= fun (header, message) ->
+  begin match message with
+    | Message.Multipart (content,b,next_parts) -> Ok (content, next_parts)
+    | _ -> R.error_msgf "Email is not Multipart; can't be PGP/MIME"
+  end >>= fun (content, tl_content) ->
+  Logs.debug (fun m -> m "Outer content: %a@.%a@." Header.pp header Content.pp content);
+  begin match content.Content.ty with
+    | {ContentType.ty = `Multipart ; subty = `Iana_token "encrypted"
+      ; _}  as xx when List.exists
+          (function "protocol", `String "application/pgp-encrypted" -> true
+                  | _ -> false) xx.ContentType.parameters ->
+      Logs.debug (fun m -> m "%a\n" ContentType.pp xx) ; Ok ()
+    | _ -> R.error_msgf "Email mime type is not application/pgp-encrypted: %a"
+             Content.pp content
+  end >>= fun () ->
+  let our_potential_addrs = Header.(header.to' @ header.cc @ header.bcc) in
+  List.map (fun x ->
+      (* Foo <baz@bar.example> *)
+      Logs.debug (fun m -> m "%a -- %s\n" Address.pp x (Address.to_string x));
+      x |>function (`Group xxx:Address.address) -> [""]
+                 | `Mailbox x ->
+                   begin match x.Address.name with
+                     | None -> []
+                     | Some name ->
+                       List.map (function `Dot -> "." | `Encoded (a,b) -> a
+                                        | `Word (`Atom x| `String x) -> x) name
+                   end @
+                   List.map
+                     (fun domain ->
+                        (String.concat "_" @@
+                         List.map (function `Atom x -> x
+                                          | `String x -> x) x.Address.local)
+                        ^ "@" ^ begin match domain with
+                          | `Domain labels -> String.concat "." labels
+                          | `Literal (Rfc5321.IPv4 v4a)->
+                            Ipaddr.to_string (V4 v4a)
+                          | `Literal (Rfc5321.IPv6 v6a) ->
+                            Ipaddr.to_string (V6 v6a)
+                        end) (fst x.Address.domain :: snd x.Address.domain)
+    )
+    our_potential_addrs |> List.flatten
+  |> fun abc ->
+  Logs.info (fun m -> m "Potential receiver UIDs: %a@,"
+                Fmt.(list ~sep:(unit " ;; ") string) abc);
+  begin match tl_content with | [] -> R.error_msgf "TODO" | x::tl -> Ok (x,tl)
+  end >>= fun ((content, _, _message),tl_content) ->
+  Logs.debug (fun m -> m "@.content_msg: %a@." Content.pp content);
+  begin match content.Content.ty with
+    | {ContentType.ty = `Application ; subty = `Iana_token "pgp-encrypted"
+      ; parameters = [] } -> Ok ()
+    | _ -> R.error_msgf "well PART 1 this is not for us: @,%a"
+             ContentType.pp content.Content.ty
+  end >>= fun () ->
+  (* _message here usually contains "Version: 1" *)
+
+  begin match tl_content with | [] -> R.error_msgf "TODO" | x::tl -> Ok (x,tl)
+  end >>= fun ((content, _, message),tl_content) ->
+  Fmt.pr "@.content_msg2: %a@." Content.pp content;
+  begin match content.Content.ty, content.Content.description with
+    | {ContentType.ty = `Application ; subty = `Iana_token "octet-stream"
+      ; parameters = ["name" , `Token "encrypted.asc"] },
+      (* ^-- question for dinosaure: may this could be a Set?*)
+      Some [`WSP; `Text "OpenPGP";
+            `WSP; `Text "encrypted";
+            `WSP; `Text "message"] -> Ok ()
+    | _ -> Error (`Msg "well PART 2 this is not for us")
+  end >>= fun () ->
+
+  begin match message with
+    | Some Message.PDiscrete Message.Raw raw_msg ->
+      Logs.debug (fun m -> m "Got PGP message body");
+      Openpgp.decode_message ?g:rng ~armored:true (Cs.of_string raw_msg)
+      |> R.reword_error Types.msg_of_error
+      >>= Openpgp.decrypt_message ~current_time ~secret_key
+      |> R.reword_error Types.msg_of_error
+      >>= fun ({Literal_data_packet.filename ; _},b) ->
+      Logs.app (fun m -> m "DECRYPTED %S: %s" filename b);
+      Ok ()
+    | _ -> R.error_msgf "Unable to decode MIME part"
+  end >>= fun () ->
+  Types.true_or_error (tl_content = [])
+    (fun m -> m "This PGP/MIME email seems to have more parts; not \
+                 sure how to handle that.")
+
 let do_encrypt _ rng current_time public_file target_file =
   ( cs_of_file public_file >>= Openpgp.decode_public_key_block ~current_time
     >>= fun (tpk, _) ->
@@ -292,7 +399,7 @@ let decrypt_cmd =
                      $ sk $ target)),
   Term.info "decrypt" ~doc ~sdocs
     ~exits:Term.default_exits ~man
-    ~man_xrefs:[`Cmd "encrypt"]
+    ~man_xrefs:[`Cmd "mail-decrypt"; `Cmd "encrypt"]
 
 let encrypt_cmd =
   let doc = "Encrypted a file to a public key" in
@@ -308,15 +415,30 @@ let encrypt_cmd =
                      $ pk $ target)),
   Term.info "encrypt" ~doc ~sdocs
     ~exits:Term.default_exits ~man
-    ~man_xrefs:[`Cmd "decrypt"]
+    ~man_xrefs:[`Cmd "mail-encrypt"; `Cmd "decrypt";]
 
 
 let list_packets_cmd =
   let doc = "Pretty-print the packets contained in a file" in
-  let man = [] in
+  let man = [
+    `S Manpage.s_description ;
+    `P {|This subcommand is similar in purpose to $(b,gpg --list-packets).|}
+  ] in
   Term.(term_result (const do_list_packets $ setup_log $ rng_seed $ target)),
   Term.info "list-packets" ~doc ~sdocs
             ~exits:Term.default_exits ~man
+
+let mail_decrypt_cmd =
+  let doc = "Decrypt a PGP/MIME-encrypted email" in
+  let man = []
+  in
+  Term.(term_result (const do_mail_decrypt $ setup_log $ rng_seed
+                     $ override_timestamp
+                     $ sk $ target)),
+  Term.info "mail-decrypt" ~doc ~sdocs
+    ~exits:Term.default_exits ~man
+    ~man_xrefs:[`Cmd "decrypt"; `Cmd "mail-encrypt"]
+
 
 let sign_cmd =
   let doc = "Produce a detached signature on a file" in
@@ -377,7 +499,7 @@ let help_cmd =
   Term.info "opgp" ~version:(Manpage.escape "%%VERSION_NUM%%") ~man ~doc ~sdocs
 
 let cmds = [ verify_cmd ; genkey_cmd; convert_cmd; list_packets_cmd; sign_cmd ;
-             decrypt_cmd ; encrypt_cmd ]
+             decrypt_cmd ; encrypt_cmd; mail_decrypt_cmd ]
 
 let () =
   Nocrypto_entropy_unix.initialize () ;
