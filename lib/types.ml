@@ -270,6 +270,7 @@ let string_of_ascii_packet_type = function
 
 type packet_tag_type = (* TODO add comments with gpg constants for these: *)
   | Signature_tag
+  | One_pass_signature_tag
   | Secret_key_tag
   | Public_key_tag
   | Secret_subkey_tag
@@ -284,30 +285,31 @@ type packet_tag_type = (* TODO add comments with gpg constants for these: *)
 
 let pp_packet_tag ppf v =
   Fmt.string ppf @@ match v with
-  | Signature_tag -> "signature"
-  | Secret_key_tag -> "secret key"
-  | Public_key_tag -> "public key"
-  | Secret_subkey_tag -> "secret subkey"
-  | Uid_tag -> "uid"
-  | Public_subkey_tag -> "public subkey"
-  | User_attribute_tag -> "user attribute"
-  | Trust_packet_tag -> "trust packet"
-  | Encrypted_packet_tag -> "Encrypted packet"
-  | Literal_data_packet_tag -> "Literal Data Packet"
-  | Compressed_data_packet_tag -> "Compressed Data Packet"
+  | Signature_tag -> "Signature"
+  | One_pass_signature_tag -> "One-Pass Signature"
+  | Secret_key_tag -> "Secret Key"
+  | Public_key_tag -> "Public Key"
+  | Secret_subkey_tag -> "Secret Subkey"
+  | Uid_tag -> "Uid"
+  | Public_subkey_tag -> "Public Subkey"
+  | User_attribute_tag -> "User Attribute"
+  | Trust_packet_tag -> "Trust"
+  | Encrypted_packet_tag -> "Encrypted"
+  | Literal_data_packet_tag -> "Literal Data"
+  | Compressed_data_packet_tag -> "Compressed Data"
   | Public_key_encrypted_session_packet_tag ->
-    "Public-Key encrypted session packet"
+    "PK Encrypted Session"
 
 (* see RFC 4880: 4.3 Packet Tags *)
 let packet_tag_enum =
   (* note that in OCaml \XXX is decimal, not octal *)
-  [ ('\001', Public_key_encrypted_session_packet_tag)
-  ; ('\002', Signature_tag)
+  [ '\001', Public_key_encrypted_session_packet_tag
+  ; '\002', Signature_tag
     (* '\003', Symmetric-Key Encrypted Session Key Packet*)
-    (* '\004', One-Pass Signature Packet *)
-  ; ('\005', Secret_key_tag)
-  ; ('\006', Public_key_tag)
-  ; ('\007', Secret_subkey_tag)
+  ; '\004', One_pass_signature_tag
+  ; '\005', Secret_key_tag
+  ; '\006', Public_key_tag
+  ; '\007', Secret_subkey_tag
   ; '\008', Compressed_data_packet_tag
     (* '\009', Symmetrically Encrypted Data Packet *)
     (* '\010', Marker Packet *)
@@ -1034,7 +1036,9 @@ let packet_header_of_char (c : char)
     begin match new_format with
       | true ->
         bits_5_through_0 c_int |> Char.chr
-        |> packet_tag_type_of_char >>= fun pt ->
+        |> packet_tag_type_of_char
+        |> R.reword_error_msg (fun _ -> R.msgf "^--> packet_header_of_char new_format: %C" c)
+        >>= fun pt ->
         Logs.debug (fun m -> m "Read a V4 packet header %a" pp_packet_tag pt) ;
         R.ok (pt, None)
       | false ->
