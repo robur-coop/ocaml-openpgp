@@ -94,6 +94,7 @@ let decode_ascii_armor ~allow_trailing (buf : Cs.t) =
   begin match Cs.to_string begin_type with
       | "PUBLIC KEY BLOCK" -> Ok Ascii_public_key_block
       | "SIGNATURE" -> Ok Ascii_signature
+      | "ARMORED MESSAGE"
       | "MESSAGE" -> Ok Ascii_message
       | "PRIVATE KEY BLOCK" -> Ok Ascii_private_key_block
       | unknown -> error_msg (fun m -> m "Unknown armor type: %S" unknown)
@@ -173,15 +174,24 @@ let decode_ascii_armor ~allow_trailing (buf : Cs.t) =
   end >>= fun () ->
 
   Logs.debug (fun m -> m "Checking that last armor contains correct END footer") ;
-  end_line |> Cs.e_equal_string (`Msg "Armored message is missing end block")
-  (begin match pkt_type with
-  | Ascii_public_key_block -> "-----END PGP PUBLIC KEY BLOCK-----"
-  | Ascii_signature -> "-----END PGP SIGNATURE-----"
-  | Ascii_private_key_block -> "-----END PGP PRIVATE KEY BLOCK-----"
-  | Ascii_message_part_x _ (* TODO need to verify that this is correct *)
-  | Ascii_message_part_x_of_y _
-  | Ascii_message -> "-----END PGP MESSAGE-----"
-  end) >>= fun () ->
+  ( let err = `Msg "Armored message is missing end block" in
+    begin match pkt_type with
+      | Ascii_public_key_block ->
+        Cs.e_equal_string err "-----END PGP PUBLIC KEY BLOCK-----" end_line
+      | Ascii_signature ->
+        Cs.e_equal_string err "-----END PGP SIGNATURE-----" end_line
+      | Ascii_private_key_block ->
+        Cs.e_equal_string err "-----END PGP PRIVATE KEY BLOCK-----" end_line
+      | Ascii_message_part_x _ (* TODO need to verify that this is correct *)
+      | Ascii_message_part_x_of_y _
+      | Ascii_message ->
+        begin match
+            Cs.e_equal_string err "-----END PGP MESSAGE-----" end_line with
+        | Ok _ as res -> res
+        | Error _ ->
+          Cs.e_equal_string err "-----END PGP ARMORED MESSAGE-----" end_line
+        end
+    end) >>= fun () ->
   Ok (pkt_type, decoded, buf)
 
 let parse_packet_body ?g packet_tag pkt_body
