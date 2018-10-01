@@ -40,8 +40,9 @@ opam pin add -n usane 'https://github.com/hannesm/usane.git'
 opam pin add -n cs 'https://github.com/cfcs/ocaml-cs.git'
 opam pin add -n gmap 'https://github.com/hannesm/gmap.git'
 opam pin add -n nocrypto -k git 'https://github.com/mirleft/ocaml-nocrypto.git#79d5db2488e338d161d7e170cd681a8120ce07d1'
+opam pin add -n mrmime -k git https://github.com/oklm-wsh/MrMime.git
 opam install alcotest bos cmdliner cs cstruct fmt fpath gmap hex logs \
-             nocrypto ptime qcheck rresult usane topkg
+             nocrypto ptime qcheck rresult usane topkg mrmime
 ocaml pkg/pkg.ml build
 ```
 
@@ -73,6 +74,7 @@ It can currently:
 - `opgp decrypt`: Decrypt messages to RSA keys
   - Decompress ZIP(RFC1951) and ZLIB messages - BZip2 is still missing
 - `opgp encrypt`: Encrypt messages to RSA keys
+- `opgp mail-decrypt`: Carve out PGP/MIME messages and decrypt them. Currently does not check signatures.
 
 ### Git / OpenPGP integration
 
